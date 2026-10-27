@@ -1,0 +1,384 @@
+<div id="joi-designs">
+  <div class="viz-carousel" aria-label="joi-observer terminal concepts" data-previous-label="Previous" data-next-label="Next">
+    <section data-variant="Neon Grid" aria-label="Neon Grid overview">
+      <div class="terminal neon" id="joi-neon" aria-label="Neon Grid appearance">
+        <header class="mast"><div><span class="brand"><span class="secondary">Joi</span><span class="dim">::</span>Observer</span><span class="edition">NEON GRID</span></div><button type="button" class="theme-switch cursor-interaction" data-theme-toggle aria-label="Theme: Moonlight. Switch to Hologram" aria-pressed="false">Theme: Moonlight ↔</button></header>
+        <div class="hostline"><span>joi <span class="dim">/ H3C R5300 G6 / Ubuntu 24.04</span></span><span class="dim">15:42:08 CST</span></div>
+        <main class="neon-main">
+          <div class="neon-top">
+            <fieldset class="gpu-panel"><legend> GPU FABRIC <span class="dim">/ 5 DEVICES</span> </legend><div class="group-label"><span>GPU 0–3 <span class="dim">→ FLASH-NEXT</span></span><span class="secondary">TP 4 + EP</span></div><div class="gpu-stack"></div><div class="group-label auxiliary"><span>GPU 4 <span class="dim">→ RETRIEVAL / OCR</span></span><span class="secondary">SHARED</span></div><div class="gpu-aux"></div></fieldset>
+            <div class="host-stack">
+              <fieldset><legend> HOST RESOURCES </legend><div class="resource"><div><span>CPU</span><strong>34.2<span class="dim"> %</span></strong></div><div class="host-meter gpu-segments" data-percent="34.2" role="meter" aria-label="CPU utilization" aria-valuemin="0" aria-valuemax="100" aria-valuenow="34.2"></div></div><div class="resource"><div><span>RAM</span><strong><span class="dim">82.0 / </span>256<span class="dim"> GiB</span></strong></div><div class="host-meter gpu-segments" data-percent="32.03125" role="meter" aria-label="RAM usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="32.03125"></div></div></fieldset>
+              <fieldset class="storage-panel"><legend> STORAGE </legend><div class="kvline"><span class="dim">/</span><span>126 / 894 GiB</span></div><div class="kvline"><span class="dim">/data</span><span>2.1 / 7.0 TiB</span></div></fieldset>
+              <fieldset class="docker-panel"><legend> DOCKER </legend><div class="docker-list" aria-label="Mock Docker container states"></div></fieldset>
+            </div>
+          </div>
+          <fieldset class="model-panel"><legend> vLLM </legend><div class="neon-service-layout"><aside class="neon-model-list" aria-label="Choose a vLLM model"><div class="rail-title">MODELS / 3</div><div class="service-buttons"></div></aside><div class="neon-model-detail" aria-live="polite"></div></div></fieldset>
+          <div class="neon-service-tabs" role="tablist" aria-label="Service navigation (planned)"><button type="button" role="tab" aria-selected="true">vLLM</button><button type="button" role="tab" aria-selected="false" disabled data-tooltip="Planned">WebUI</button></div>
+        </main>
+        <footer class="keybar"><span><b>↑↓</b> Select model</span><span><b>Enter</b> Details</span><span><b>p</b> Pause</span><span><b>q</b> Quit</span><span class="right dim">Keymap concept / Click a model to preview</span></footer>
+      </div>
+    </section>
+    <section data-variant="Amber Relay" aria-label="Amber Relay model control" hidden>
+      <div class="terminal amber" id="joi-amber" aria-label="Amber Relay appearance">
+        <header class="mast"><div><span class="brand"><span class="secondary">Joi</span><span class="dim">::</span>Observer</span><span class="edition">AMBER RELAY</span></div><div class="preview">UI CONCEPT · MOCK DATA</div></header>
+        <div class="hostline"><span>joi <span class="dim">/ INFERENCE CONTROL</span></span><span class="dim">Ubuntu 24.04 · 15:42:08 CST</span></div>
+        <div class="amber-status"><span><b>3</b> MODEL ENDPOINTS</span><span><b>6</b> RUNNING</span><span class="warn"><b>8</b> WAITING</span><span class="dim">SAMPLE 1s · Last success 0.4s ago</span></div>
+        <main class="amber-main">
+          <aside class="service-rail"><div class="rail-title">vLLM / MODELS</div><div class="service-buttons"></div><div class="rail-title future-title">EXTENSIONS / NOT CONNECTED</div><div class="rail-future"><span>┆ LiteLLM</span><small>:4000</small></div><div class="rail-future"><span>┆ Open WebUI</span><small>:3000</small></div><div class="rail-future"><span>┆ Docling OCR</span><small>:5001</small></div><div class="rail-note">GPU 4 shared by retrieval and OCR</div></aside>
+          <div class="model-focus" aria-live="polite"></div>
+        </main>
+        <div class="host-strip"><span>CPU <b>34.2%</b></span><span>RAM <b>82 / 256 GiB</b></span><span>/data <b>30%</b></span><span>NET <b>↓18.4 ↑3.2 MiB/s</b></span></div>
+        <footer class="keybar"><span><b>↑↓</b> Select model</span><span><b>Tab</b> Switch pane</span><span><b>q</b> Quit</span><span class="right dim">Keymap concept / Click a model to preview</span></footer>
+      </div>
+    </section>
+    <section data-variant="Vector Matrix" aria-label="Vector Matrix operations" hidden>
+      <div class="terminal matrix" id="joi-matrix" aria-label="Vector Matrix appearance">
+        <header class="mast"><div><span class="brand"><span class="secondary">Joi</span><span class="dim">::</span>Observer</span><span class="edition">VECTOR MATRIX</span></div><div class="preview">UI CONCEPT · MOCK DATA</div></header>
+        <div class="hostline"><span>joi <span class="dim">/ H3C R5300 G6 / Ubuntu 24.04</span></span><span class="accent">SAMPLE 1s <span class="dim">· 15:42:08</span></span></div>
+        <div class="matrix-host"><div><span class="dim">CPU</span><b>34.2%</b><span class="mini-chart accent">▂▃▂▃▄▅▃▄▃▃</span></div><div><span class="dim">MEMORY</span><b>82 / 256 GiB</b><span class="mini-chart accent">▂▂▃▃▃▃▃▃▃▃</span></div><div><span class="dim">DATA DISK</span><b>2.1 / 7.0 TiB</b><span class="dim">/data · ext4</span></div><div><span class="dim">NETWORK</span><b>↓18.4 ↑3.2</b><span class="dim">MiB/s · ens5f0</span></div></div>
+        <main class="matrix-main">
+          <div class="section-line"><span>GPU INVENTORY</span><span class="dim">UTIL ≠ VRAM ≠ KV CACHE</span></div><div class="matrix-gpu-table"></div>
+          <div class="section-line"><span>INFERENCE ENDPOINTS</span><span class="dim">PER MODEL · GENERATION RATE FOR CHAT ONLY</span></div><div class="matrix-model-table"></div>
+          <div class="matrix-bottom"><fieldset><legend> SELECTED GPU </legend><div class="gpu-inspector" aria-live="polite"></div></fieldset><fieldset><legend> SAMPLE STATUS </legend><div class="kvline"><span class="dim">Host / GPU</span><span class="accent">OK · 0.2s ago</span></div><div class="kvline"><span class="dim">vLLM × 3</span><span class="accent">OK · 0.4s ago</span></div><div class="divider"></div><div class="health-controls"><span>Preview sample state</span><button type="button" class="cursor-interaction" data-health="fresh" aria-pressed="true">Normal</button><button type="button" class="cursor-interaction" data-health="stale" aria-pressed="false">Offline</button></div><div class="health-result dim" aria-live="polite">OK / Latest sample available</div></fieldset></div>
+          <div class="futureline"><span class="dim">EXTENSIONS / NOT CONNECTED</span><span>LiteLLM</span><span>Open WebUI</span><span>Docling</span></div>
+        </main>
+        <footer class="keybar"><span><b>↑↓</b> Select device</span><span><b>Enter</b> Expand</span><span><b>q</b> Quit</span><span class="right dim">Keymap concept / Preview GPU and connection states</span></footer>
+      </div>
+    </section>
+  </div>
+</div>
+<style>
+#joi-designs { width:100%; max-width:1024px; margin:0 auto; }
+#joi-designs .terminal { --bg:#080e18; --surface:#0d1522; --line:#2d3b50; --ink:#d4ddeb; --dim:#8a9db5; --accent:#52efe8; --secondary:#ec75d5; --warning:#ffb85b; --selection:#12333e; --mono-size:12px; --cell-pad:8px; background:var(--bg); color:var(--ink); font:400 var(--mono-size)/1.55 "Cascadia Code","SFMono-Regular",Consolas,"Liberation Mono",monospace; padding:16px; min-height:738px; box-sizing:border-box; display:flex; flex-direction:column; color-scheme:dark; border:1px solid var(--line); }
+#joi-designs .terminal * { box-sizing:border-box; }
+#joi-designs .terminal.neon { --accent:#7ddfff; --secondary:#c6a7ff; --warning:#ffa45b; --selection:#172b40; }
+#joi-designs .terminal.neon[data-theme="hologram"] { --accent:#7b9fff; --secondary:#e570d0; }
+#joi-designs .neon .theme-switch { background:var(--surface); border:1px solid var(--line); padding:4px 9px; color:var(--accent); font-size:11px; white-space:nowrap; }
+#joi-designs .neon .theme-switch:hover { border-color:var(--accent); }
+#joi-designs .neon .warn { color:var(--warning); }
+#joi-designs .terminal.amber { --bg:#12100f; --surface:#1b1713; --line:#483c2f; --ink:#eee2d1; --dim:#b0a18e; --accent:#ffc16c; --secondary:#9ad8d4; --warning:#ff8b72; --selection:#382a1a; }
+#joi-designs .terminal.matrix { --bg:#0b1110; --surface:#101a16; --line:#2d4437; --ink:#d5e1d7; --dim:#91a798; --accent:#b1f17a; --secondary:#e496dc; --warning:#ffd479; --selection:#243622; }
+#joi-designs .mast { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; padding:0 0 8px; }
+#joi-designs .mast>div:first-child { display:flex; align-items:center; gap:20px; flex-wrap:wrap; }
+#joi-designs .brand { color:var(--accent); font-size:23px; font-weight:500; letter-spacing:-1px; }
+#joi-designs .edition { color:var(--secondary); font-size:11px; letter-spacing:1px; }
+#joi-designs .preview { color:var(--dim); font-size:11px; padding:3px 7px; border:1px solid var(--line); }
+#joi-designs .hostline { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; padding-bottom:10px; }
+#joi-designs .dim { color:var(--dim); }
+#joi-designs .accent { color:var(--accent); }
+#joi-designs .secondary { color:var(--secondary); }
+#joi-designs .warn { color:var(--warning); }
+#joi-designs .right { margin-left:auto; }
+#joi-designs b,#joi-designs strong { font-weight:500; }
+#joi-designs .modebar { display:flex; flex-wrap:wrap; align-items:center; gap:20px; color:var(--dim); border-block:1px solid var(--line); padding:7px 0; }
+#joi-designs .modebar .active { color:var(--accent); }
+#joi-designs main { flex:1; }
+#joi-designs .neon-main { padding-top:12px; }
+#joi-designs fieldset { min-width:0; margin:0; padding:10px 12px 12px; border:1px solid var(--line); background:var(--bg); }
+#joi-designs legend { padding:0 5px; color:var(--accent); font-weight:500; letter-spacing:0.5px; font-size:11px; }
+#joi-designs .neon-top { display:grid; grid-template-columns:1.55fr 1fr; gap:12px; }
+#joi-designs .group-label { display:flex; justify-content:space-between; gap:8px; font-size:11px; padding-bottom:6px; }
+#joi-designs .group-label.auxiliary { margin-top:8px; padding-top:8px; border-top:1px solid var(--line); }
+#joi-designs .gpu-row { display:grid; grid-template-columns:27px minmax(0,1fr) auto; gap:7px; padding:5px 0; }
+#joi-designs .gpu-index { align-self:center; color:var(--dim); }
+#joi-designs .gpu-row.linked .gpu-index { color:var(--accent); }
+#joi-designs .gpu-name { display:flex; justify-content:space-between; gap:4px; }
+#joi-designs .gpu-memory { color:var(--dim); font-size:11px; }
+#joi-designs .gpu-metric { text-align:right; align-self:center; white-space:nowrap; }
+#joi-designs .gpu-metric span { display:block; font-size:11px; color:var(--dim); }
+#joi-designs .gpu-gauge { display:grid; grid-template-columns:minmax(0,1fr) 4ch; gap:8px; align-items:center; margin-top:4px; width:50%; min-width:min(100%,150px); }
+#joi-designs .gpu-segments { display:grid; grid-template-columns:repeat(16,minmax(0,1fr)); gap:2px; height:12px; }
+#joi-designs .gpu-segment { background:var(--line); }
+#joi-designs .gpu-segment.filled { background:currentColor; }
+#joi-designs .gpu-percent { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+#joi-designs .track { color:var(--line); }
+#joi-designs .gpu-row.linked .gpu-gauge { color:var(--accent); }
+#joi-designs .gpu-row:not(.linked) .gpu-gauge { color:var(--dim); }
+#joi-designs .host-stack { display:flex; flex-direction:column; gap:8px; }
+#joi-designs .host-stack fieldset { flex:1; }
+#joi-designs .neon .host-stack { display:grid; grid-template-rows:auto 1fr auto; gap:6px; }
+#joi-designs .neon .host-meter { grid-template-columns:repeat(20,minmax(0,1fr)); width:min(100%,180px); margin-top:4px; color:var(--secondary); }
+#joi-designs .neon .storage-panel { padding-top:3px; padding-bottom:6px; }
+#joi-designs .neon .storage-panel .kvline { padding:1px 0; }
+#joi-designs .neon .docker-panel { padding-top:5px; padding-bottom:4px; }
+#joi-designs .docker-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:baseline; gap:8px; padding:2px 0; }
+#joi-designs .docker-name { overflow-wrap:anywhere; }
+#joi-designs .docker-status { color:var(--ink); white-space:nowrap; font-size:11px; }
+#joi-designs .docker-status.running { color:var(--accent); }
+#joi-designs .resource + .resource { margin-top:9px; }
+#joi-designs .resource>div:first-child { display:flex; justify-content:space-between; flex-wrap:wrap; gap:3px; }
+#joi-designs .blockline { letter-spacing:1px; font-size:13px; overflow-wrap:anywhere; }
+#joi-designs .tiny { font-size:11px; }
+#joi-designs .value { color:var(--ink); float:right; }
+#joi-designs .kvline { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px; padding:3px 0; }
+#joi-designs .divider { height:1px; background:var(--line); margin:7px 0; }
+#joi-designs .model-panel { margin-top:12px; }
+#joi-designs table { width:100%; border-collapse:collapse; font-size:var(--mono-size); table-layout:auto; }
+#joi-designs th { font-weight:400; font-size:11px; color:var(--dim); text-align:right; padding:5px 6px; border-bottom:1px solid var(--line); }
+#joi-designs th:first-child { text-align:left; }
+#joi-designs td { padding:var(--cell-pad) 6px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums; }
+#joi-designs tbody tr:last-child td { border-bottom:0; }
+#joi-designs td:first-child { text-align:left; white-space:normal; overflow-wrap:anywhere; }
+#joi-designs tr.selected { background:var(--selection); }
+#joi-designs tr.selected td:first-child { color:var(--accent); }
+#joi-designs .terminal button { font:inherit; color:inherit; }
+#joi-designs .row-button { width:100%; display:block; background:transparent; border:0; padding:0; text-align:left; overflow-wrap:anywhere; }
+#joi-designs .terminal button:focus-visible { outline:2px solid var(--secondary); outline-offset:2px; }
+#joi-designs .selection-detail { margin-top:6px; padding:8px 0 0; border-top:1px solid var(--line); color:var(--dim); font-size:11px; min-height:28px; }
+#joi-designs .futureline { display:flex; flex-wrap:wrap; gap:6px 18px; padding:12px 0; color:var(--dim); font-size:11px; }
+#joi-designs .keybar { margin-top:8px; padding-top:9px; border-top:1px solid var(--line); display:flex; flex-wrap:wrap; gap:7px 18px; font-size:11px; }
+#joi-designs .keybar b { color:var(--accent); }
+#joi-designs .amber-status { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 14px; border-block:1px solid var(--line); padding:10px 0; }
+#joi-designs .amber-status b { color:var(--accent); }
+#joi-designs .amber-status .warn b { color:var(--warning); }
+#joi-designs .amber-main { display:grid; grid-template-columns:220px minmax(0,1fr); margin-top:14px; }
+#joi-designs .service-rail { padding-right:16px; border-right:1px solid var(--line); }
+#joi-designs .rail-title { color:var(--dim); letter-spacing:1px; font-size:11px; margin-bottom:9px; }
+#joi-designs .service-button { display:block; text-align:left; width:100%; background:transparent; border:1px solid transparent; padding:12px 9px; margin-bottom:6px; }
+#joi-designs .service-button[aria-pressed="true"] { border-color:var(--accent); background:var(--selection); }
+#joi-designs .service-button .name { color:var(--ink); display:block; font-size:13px; margin-bottom:4px; }
+#joi-designs .service-button[aria-pressed="true"] .name { color:var(--accent); }
+#joi-designs .service-button .type { color:var(--dim); font-size:11px; }
+#joi-designs .service-button .counts { display:flex; justify-content:space-between; margin-top:6px; font-size:11px; }
+#joi-designs .future-title { margin-top:20px; }
+#joi-designs .rail-future { display:flex; justify-content:space-between; padding:5px 9px; color:var(--dim); }
+#joi-designs .rail-future small { font-size:11px; }
+#joi-designs .rail-note { border-top:1px solid var(--line); margin-top:12px; padding-top:10px; font-size:11px; color:var(--dim); }
+#joi-designs .model-focus { padding-left:20px; min-width:0; }
+#joi-designs .focus-title { color:var(--accent); font-size:17px; overflow-wrap:anywhere; margin:0; font-weight:500; }
+#joi-designs .focus-sub { color:var(--dim); margin-top:4px; font-size:11px; }
+#joi-designs .focus-state { margin:14px 0; display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+#joi-designs .focus-state .state { color:var(--warning); }
+#joi-designs .queue-box { display:grid; grid-template-columns:1fr 1.2fr; border-block:1px solid var(--line); padding:15px 0; gap:12px; }
+#joi-designs .big-number { font-size:36px; font-weight:500; color:var(--ink); line-height:1.2; }
+#joi-designs .queue-label { color:var(--dim); font-size:11px; letter-spacing:1px; }
+#joi-designs .queue-blocks { color:var(--accent); margin-top:9px; letter-spacing:5px; font-size:16px; }
+#joi-designs .queue-blocks.waiting { color:var(--warning); }
+#joi-designs .queue-caption { color:var(--dim); font-size:11px; margin-top:4px; }
+#joi-designs .focus-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; padding:15px 0; }
+#joi-designs .focus-metrics .metric-value { display:block; font-size:18px; color:var(--ink); }
+#joi-designs .focus-metrics .metric-label { display:block; font-size:11px; color:var(--dim); }
+#joi-designs .history-block { background:var(--surface); padding:10px 12px; margin-bottom:12px; }
+#joi-designs .history-heading { display:flex; justify-content:space-between; font-size:11px; gap:6px; flex-wrap:wrap; color:var(--dim); }
+#joi-designs .history-graph { display:flex; gap:6px; align-items:end; justify-content:space-between; color:var(--secondary); height:43px; margin:6px 0 4px; }
+#joi-designs .history-graph span { flex:1; text-align:center; font-size:22px; line-height:1; }
+#joi-designs .assigned-head { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px; margin-top:10px; margin-bottom:6px; font-size:11px; color:var(--dim); }
+#joi-designs .assigned-gpus { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+#joi-designs .assigned-gpu { border:1px solid var(--line); padding:7px; }
+#joi-designs .assigned-gpu b { color:var(--secondary); }
+#joi-designs .assigned-gpu span { display:block; font-size:11px; color:var(--dim); }
+#joi-designs .host-strip { margin-top:14px; display:flex; flex-wrap:wrap; gap:6px 20px; padding:8px 0; border-top:1px solid var(--line); color:var(--dim); font-size:11px; }
+#joi-designs .host-strip b { color:var(--ink); }
+#joi-designs .matrix-host { display:grid; grid-template-columns:repeat(4,1fr); border-block:1px solid var(--line); gap:12px; padding:12px 0; }
+#joi-designs .matrix-host>div { display:flex; flex-direction:column; gap:3px; font-size:11px; }
+#joi-designs .matrix-host b { font-size:15px; }
+#joi-designs .mini-chart { letter-spacing:2px; }
+#joi-designs .section-line { display:flex; justify-content:space-between; flex-wrap:wrap; gap:4px; font-size:11px; color:var(--accent); letter-spacing:0.4px; padding:15px 0 3px; }
+#joi-designs .matrix td { padding-top:7px; padding-bottom:7px; }
+#joi-designs .matrix-gpu-table td:nth-child(2) { text-align:left; }
+#joi-designs .matrix-gpu-table th:nth-child(2) { text-align:left; }
+#joi-designs .matrix-gpu-table .row-button { white-space:nowrap; }
+#joi-designs .matrix-bottom { display:grid; grid-template-columns:1.1fr 1fr; gap:12px; margin-top:14px; }
+#joi-designs .gpu-inspector .inspector-title { color:var(--accent); margin-bottom:7px; }
+#joi-designs .gpu-inspector .inspector-services { font-size:11px; color:var(--dim); }
+#joi-designs .gpu-inspector .inspector-services span { display:block; margin-top:4px; }
+#joi-designs .health-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:11px; color:var(--dim); }
+#joi-designs .health-controls button { border:1px solid var(--line); background:var(--bg); padding:2px 8px; }
+#joi-designs .health-controls button[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); background:var(--selection); }
+#joi-designs .health-result { padding-top:7px; font-size:11px; }
+#joi-designs .matrix.stale .matrix-model-table { color:var(--dim); }
+#joi-designs .status-fresh { color:var(--accent); }
+#joi-designs .status-stale { color:var(--warning); }
+#joi-designs .neon .hostline { border-bottom:1px solid var(--line); }
+#joi-designs .neon .host-stack legend,
+#joi-designs .neon .model-panel legend,
+#joi-designs .neon .selection-detail .accent { color:var(--secondary); }
+#joi-designs .neon-service-layout { display:grid; grid-template-columns:190px minmax(0,1fr); gap:16px; }
+#joi-designs .neon-model-list { border-right:1px solid var(--line); padding-right:14px; }
+#joi-designs .neon-model-list .rail-title { margin-bottom:7px; }
+#joi-designs .neon-model-list .service-button { padding:9px 8px; margin-bottom:5px; }
+#joi-designs .neon-model-list .service-button:last-child { margin-bottom:0; }
+#joi-designs .neon-model-list .service-button .name { font-size:12px; margin-bottom:2px; }
+#joi-designs .neon-model-list .service-button .counts { margin-top:3px; }
+#joi-designs .neon-model-detail { min-width:0; }
+#joi-designs .neon-detail-heading { display:flex; justify-content:space-between; flex-wrap:wrap; gap:3px 10px; align-items:baseline; }
+#joi-designs .neon-detail-heading h2 { margin:0; color:var(--accent); font-size:14px; font-weight:500; overflow-wrap:anywhere; }
+#joi-designs .neon-detail-route { font-size:11px; color:var(--secondary); margin:2px 0 8px; }
+#joi-designs .neon-queues { display:grid; grid-template-columns:1fr 1fr; gap:14px; border-block:1px solid var(--line); padding:7px 0; }
+#joi-designs .neon-queue { display:grid; grid-template-columns:1fr auto; align-items:baseline; gap:1px 6px; }
+#joi-designs .neon-queue + .neon-queue { border-left:1px solid var(--line); padding-left:14px; }
+#joi-designs .neon-queue .queue-label { letter-spacing:0; }
+#joi-designs .neon-queue strong { font-size:24px; line-height:1.25; font-variant-numeric:tabular-nums; }
+#joi-designs .neon-queue strong small { font-size:12px; color:var(--dim); }
+#joi-designs .neon-queue .queue-caption { grid-column:1 / -1; margin:0; }
+#joi-designs .neon-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; padding:9px 0; }
+#joi-designs .neon-metrics .metric-label { display:block; color:var(--dim); font-size:11px; }
+#joi-designs .neon-metrics .metric-value { display:block; font-size:16px; font-variant-numeric:tabular-nums; }
+#joi-designs .neon .history-block { margin-bottom:0; padding:8px 10px; }
+#joi-designs .neon .history-graph { gap:6px; height:48px; margin:5px 0; color:var(--accent); }
+#joi-designs .neon .history-graph .history-column { flex:1; max-width:13px; min-width:0; display:block; background:var(--accent); }
+#joi-designs .neon-service-tabs { display:flex; gap:14px; margin-top:8px; }
+#joi-designs .neon-service-tabs button { padding:5px 12px; background:transparent; border:0; border-bottom:2px solid transparent; color:var(--dim); }
+#joi-designs .neon-service-tabs button[aria-selected="true"] { color:var(--accent); border-bottom-color:var(--accent); }
+#joi-designs .neon-service-tabs button:disabled { opacity:1; }
+@media(max-width:850px) {
+  #joi-designs .neon-service-layout { grid-template-columns:166px minmax(0,1fr); gap:12px; }
+  #joi-designs .neon-model-list { padding-right:10px; }
+  #joi-designs .neon-metrics { gap:6px; }
+}
+@media(max-width:850px) {
+  #joi-designs .terminal { padding:12px; min-height:800px; }
+  #joi-designs .edition { display:none; }
+  #joi-designs .neon-top { grid-template-columns:1.3fr 1fr; gap:8px; }
+  #joi-designs .gpu-memory { font-size:11px; }
+  #joi-designs .gpu-metric { font-size:11px; }
+  #joi-designs .optional { display:none; }
+  #joi-designs .amber-main { grid-template-columns:175px minmax(0,1fr); }
+  #joi-designs .service-rail { padding-right:10px; }
+  #joi-designs .model-focus { padding-left:12px; }
+  #joi-designs .assigned-gpus { grid-template-columns:repeat(2,1fr); }
+}
+@media(max-width:600px) {
+  #joi-designs .terminal { min-height:1260px; padding:10px; }
+  #joi-designs .brand { font-size:21px; }
+  #joi-designs .mast { gap:8px; }
+  #joi-designs .hostline { font-size:11px; }
+  #joi-designs .hostline>span { overflow-wrap:anywhere; }
+  #joi-designs .modebar { gap:8px; font-size:11px; }
+  #joi-designs .modebar .right { display:none; }
+  #joi-designs .neon-top { grid-template-columns:1fr; }
+  #joi-designs .host-stack { display:grid; grid-template-columns:1fr; }
+  #joi-designs .gpu-name { flex-wrap:wrap; }
+  #joi-designs .narrow-hide { display:none; }
+  #joi-designs th,#joi-designs td { padding-left:3px; padding-right:3px; }
+  #joi-designs .selection-detail { min-height:55px; }
+  #joi-designs .amber-main { display:block; }
+  #joi-designs .service-rail { border:0; padding:0; }
+  #joi-designs .service-buttons { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; }
+  #joi-designs .service-button { padding:7px 5px; }
+  #joi-designs .service-button .name { font-size:11px; overflow-wrap:anywhere; }
+  #joi-designs .service-button .counts { flex-wrap:wrap; gap:3px; }
+  #joi-designs .service-button .type { font-size:11px; }
+  #joi-designs .future-title,#joi-designs .rail-future,#joi-designs .rail-note { display:none; }
+  #joi-designs .model-focus { padding:12px 0 0; }
+  #joi-designs .focus-title { font-size:15px; }
+  #joi-designs .focus-metrics { gap:6px; }
+  #joi-designs .focus-metrics .metric-value { font-size:16px; }
+  #joi-designs .history-graph span:nth-child(2n) { display:none; }
+  #joi-designs .matrix-host { grid-template-columns:repeat(2,1fr); }
+  #joi-designs .matrix-host b { font-size:13px; }
+  #joi-designs .matrix-bottom { grid-template-columns:1fr; }
+  #joi-designs .keybar .right { margin-left:0; }
+  #joi-designs .neon-service-layout { grid-template-columns:1fr; gap:10px; }
+  #joi-designs .neon-model-list { border-right:0; padding-right:0; }
+  #joi-designs .neon-model-list .service-button { padding:7px 5px; margin-bottom:0; }
+  #joi-designs .neon-model-list .service-button .name { font-size:11px; }
+  #joi-designs .neon-detail-heading h2 { font-size:13px; }
+  #joi-designs .neon-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px 10px; }
+  #joi-designs .neon-queues { gap:8px; }
+  #joi-designs .neon-queue + .neon-queue { padding-left:8px; }
+}
+@media(prefers-reduced-motion:reduce) { #joi-designs * { transition:none; animation:none; } }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('joi-designs');
+  const neon = document.getElementById('joi-neon');
+  const amber = document.getElementById('joi-amber');
+  const matrix = document.getElementById('joi-matrix');
+  const gpu = [
+    {id:0, name:'RTX 5090', util:94, mem:'29.6 / 32', temp:67, power:433, group:'FLASH-NEXT'},
+    {id:1, name:'RTX 5090', util:91, mem:'29.4 / 32', temp:65, power:421, group:'FLASH-NEXT'},
+    {id:2, name:'RTX 5090', util:96, mem:'29.7 / 32', temp:69, power:448, group:'FLASH-NEXT'},
+    {id:3, name:'RTX 5090', util:92, mem:'29.5 / 32', temp:66, power:427, group:'FLASH-NEXT'},
+    {id:4, name:'RTX 5060 Ti', util:37, mem:'9.1 / 15.9', temp:48, power:84, group:'SHARED'}
+  ];
+  const models = [
+    {id:'chat', short:'Flash-Next', name:'qwen3.8-flash-next', full:'Qwen3.8-Flash-Next-NVFP4', type:'CHAT', port:8000, devices:[0,1,2,3], run:3, wait:7, capacity:3, kv:'87%', throughput:'128.4', unit:'tok/s', req:'0.42', ttft:'1.24s', queue:'2.80s', prompt:'1,850', history:'▁▂▂▃▂▃▄▃▄▅▅▆▄▆▅▇▆▆▅▆▇▅▆▆'},
+    {id:'embed', short:'Embedding', name:'qwen3-embedding-4b', full:'Qwen3-Embedding-4B', type:'EMBEDDING', port:8001, devices:[4], run:1, wait:0, capacity:2, kv:'—', throughput:'3.2', unit:'req/s', req:'3.20', ttft:'—', queue:'0.02s', prompt:'—', history:'▂▁▃▁▂▄▂▅▃▂▁▃▂▃▁▃▂▄▂▃▂▁▃▂'},
+    {id:'rank', short:'Reranker', name:'qwen3-reranker-0.6b', full:'Qwen3-Reranker-0.6B', type:'RERANK', port:8002, devices:[4], run:2, wait:1, capacity:2, kv:'—', throughput:'5.6', unit:'req/s', req:'5.60', ttft:'—', queue:'0.18s', prompt:'—', history:'▁▂▁▃▂▄▃▅▄▃▂▄▃▂▄▅▃▄▃▅▄▃▄▃'}
+  ];
+  const containers = [
+    {name:'flash-next-vllm',status:'RUNNING'},
+    {name:'qwen3-embedding-vllm',status:'RUNNING'},
+    {name:'qwen3-reranker-vllm',status:'RUNNING'},
+    {name:'litellm',status:'RUNNING'},
+    {name:'open-webui',status:'RESTARTING'}
+  ];
+  const state = { neonModel:'chat', amberModel:'chat', gpuId:4, health:'fresh', theme:'moonlight' };
+  function bar(percent,n=16) { const used=Math.round(Math.max(0,Math.min(100,percent))*n/100); return Array.from({length:n},(_,i)=>`<span class="gpu-segment${i<used?' filled':''}"></span>`).join(''); }
+  function gpuRow(g, devices) { return `<div class="gpu-row ${devices.includes(g.id)?'linked':''}"><span class="gpu-index">[${g.id}]</span><div><div class="gpu-name"><span>${g.name}</span><span class="gpu-memory">${g.mem} GiB</span></div><div class="gpu-gauge" role="meter" aria-label="GPU ${g.id} utilization" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${g.util}"><span class="gpu-segments" aria-hidden="true">${bar(g.util)}</span><span class="gpu-percent" aria-hidden="true">${g.util}%</span></div></div><div class="gpu-metric">${g.temp}°C<span>${g.power} W</span></div></div>`; }
+  function renderTheme() {
+    neon.dataset.theme=state.theme;
+    const button=neon.querySelector('[data-theme-toggle]');
+    const name=state.theme==='hologram'?'Hologram':'Moonlight';
+    const next=state.theme==='hologram'?'Moonlight':'Hologram';
+    button.textContent=`Theme: ${name} ↔`;
+    button.setAttribute('aria-label',`Theme: ${name}. Switch to ${next}`);
+    button.setAttribute('aria-pressed',String(state.theme==='hologram'));
+  }
+  function modelTable(selected, compact=false, stale=false) {
+    return `<table aria-label="Model activity and queues (mock data)"><thead><tr><th>MODEL / ENDPOINT</th><th>RUN</th><th>WAIT</th><th class="narrow-hide">KV</th><th>${compact?'RATE':'GEN tok/s'}</th><th class="optional">${compact?'HEALTH':'TTFT'}</th><th class="narrow-hide">GPU</th></tr></thead><tbody>${models.map(m=>`<tr class="${m.id===selected?'selected':''}" data-model="${m.id}"><td><button type="button" class="row-button cursor-interaction" data-model="${m.id}" aria-pressed="${m.id===selected}">${m.id===selected?'› ':'  '}${m.name}</button></td><td>${stale?'—':m.run}</td><td class="${m.wait>0?'warn':''}">${stale?'—':m.wait}</td><td class="narrow-hide">${stale?'—':m.kv}</td><td>${stale?'—':(compact?m.throughput+'<span class="dim tiny"> '+m.unit+'</span>':(m.id==='chat'?m.throughput:'—'))}</td><td class="optional ${stale?'status-stale':''}">${compact?(stale?'STALE':'OK'):m.ttft}</td><td class="narrow-hide">${m.devices.length===4?'0–3':'4'}</td></tr>`).join('')}</tbody></table>`;
+  }
+  function renderNeon() {
+    const m=models.find(m=>m.id===state.neonModel);
+    neon.querySelectorAll('.host-meter').forEach(meter=>{meter.innerHTML=bar(Number(meter.dataset.percent),20);});
+    neon.querySelector('.docker-list').innerHTML=containers.slice(0,5).map(container=>`<div class="docker-row"><span class="docker-name">${container.name}</span><span class="docker-status ${container.status==='RUNNING'?'running':''}">${container.status}</span></div>`).join('');
+    neon.querySelector('.gpu-stack').innerHTML=gpu.slice(0,4).map(g=>gpuRow(g,m.devices)).join('');
+    neon.querySelector('.gpu-aux').innerHTML=gpuRow(gpu[4],m.devices);
+    neon.querySelector('.service-buttons').innerHTML=models.map(item=>`<button type="button" class="service-button cursor-interaction" data-model="${item.id}" aria-pressed="${item.id===m.id}"><span class="name">${item.id===m.id?'› ':''}${item.short}</span><span class="type">${item.type} / :${item.port}</span><span class="counts"><span>${item.run} running</span><span class="dim"><span class="${item.wait>0?'warn':''}">${item.wait}</span> waiting</span></span></button>`).join('');
+    const metrics=m.id==='chat'?
+      [['DECODE / tok/s',m.throughput],['PREFILL / tok/s',m.prompt],['TTFT / s',m.ttft.replace('s','')],['KV CACHE / %',m.kv.replace('%','')]]:
+      [['RATE / req/s',m.throughput],['QUEUE AVG / s',m.queue.replace('s','')],['TTFT / s','—'],['KV CACHE / %','—']];
+    neon.querySelector('.neon-model-detail').innerHTML=`
+      <div class="neon-detail-heading"><h2>${m.name}</h2><span class="tiny ${m.wait?'warn':'dim'}">${m.wait?'QUEUED':'READY'}</span></div>
+      <div class="neon-detail-route">↳ :${m.port} · ${m.id==='chat'?'TP4 + EP · NVFP4 · 256K':'TP1 · BF16 · 4K'}</div>
+      <div class="neon-queues">
+        <div class="neon-queue"><span class="queue-label">RUNNING</span><strong>${m.run}<small> / ${m.capacity}</small></strong><span class="queue-caption">${m.id==='chat'?`Total ${m.run+m.wait} / 15`:`Concurrency limit: ${m.capacity} sequences`}</span></div>
+        <div class="neon-queue"><span class="queue-label">WAITING</span><strong class="${m.wait>0?'warn':''}">${m.wait}</strong><span class="queue-caption">${m.id==='chat'?`Avg queue ${m.queue}`:'Unit: requests'}</span></div>
+      </div>
+      <div class="neon-metrics">${metrics.map(([label,value])=>`<div><span class="metric-label">${label}</span><span class="metric-value">${value}</span></div>`).join('')}</div>
+      <div class="history-block"><div class="history-heading"><span>${m.id==='chat'?'DECODE':'REQUEST'} HISTORY / ${m.unit}</span><span></span></div><div class="history-graph" role="img" aria-label="${m.short} throughput over 60 seconds (mock data)">${Array.from(m.history).map(c=>`<span class="history-column" style="height:${(c.charCodeAt(0)-0x2580)*6}px"></span>`).join('')}</div><div class="history-heading"><span>−60s</span><span>NOW ${m.throughput} ${m.unit}</span></div></div>`;
+  }
+  function renderAmber() {
+    const m=models.find(m=>m.id===state.amberModel);
+    amber.querySelector('.service-buttons').innerHTML=models.map(item=>`<button type="button" class="service-button cursor-interaction" data-model="${item.id}" aria-pressed="${item.id===m.id}"><span class="name">${item.id===m.id?'› ':''}${item.short}</span><span class="type">${item.type} / :${item.port}</span><span class="counts"><span>${item.run} running</span><span class="${item.wait?'warn':'dim'}">${item.wait} waiting</span></span></button>`).join('');
+    amber.querySelector('.model-focus').innerHTML=`<h2 class="focus-title">${m.name}</h2><div class="focus-sub">${m.full} · 127.0.0.1:${m.port}</div><div class="focus-state"><span class="state">${m.wait?'QUEUED':'READY'}</span><span class="dim">${m.id==='chat'?'TP 4 + EP · NVFP4 · 256K':'TP 1 · BF16 · 4K'}</span></div><div class="queue-box"><div><div class="queue-label">RUNNING</div><div class="big-number">${m.run}<span class="dim" style="font-size:16px"> / ${m.capacity}</span></div><div class="queue-blocks">${'■'.repeat(m.run)}<span class="track">${'□'.repeat(m.capacity-m.run)}</span></div><div class="queue-caption">Concurrency limit: ${m.capacity} sequences</div></div><div><div class="queue-label">WAITING</div><div class="big-number">${m.wait}</div><div class="queue-blocks waiting">${m.wait?'▪'.repeat(m.wait):'—'}</div><div class="queue-caption">Total ${m.run+m.wait}${m.id==='chat'?' / 15':''} · Avg queue ${m.queue}</div></div></div><div class="focus-metrics"><div><span class="metric-label">${m.id==='chat'?'DECODE / tok/s':'THROUGHPUT / req/s'}</span><span class="metric-value">${m.throughput}</span></div><div><span class="metric-label">${m.id==='chat'?'TTFT / seconds':'QUEUE / seconds'}</span><span class="metric-value">${m.id==='chat'?'1.24':m.queue.replace('s','')}</span></div><div><span class="metric-label">${m.id==='chat'?'KV CACHE / %':'GPU SHARING'}</span><span class="metric-value">${m.id==='chat'?'87':'GPU 4'}</span></div></div><div class="history-block"><div class="history-heading"><span>${m.id==='chat'?'DECODE':'REQUEST'} HISTORY / ${m.unit} <span class="dim"></span></span><span>LAST 60s</span></div><div class="history-graph" role="img" aria-label="Throughput over 60 seconds (mock data)">${Array.from(m.history).map(c=>`<span>${c}</span>`).join('')}</div><div class="history-heading"><span>−60s</span><span>NOW ${m.throughput} ${m.unit}</span></div></div><div class="assigned-head"><span>ASSIGNED GPU</span><span>${m.id==='chat'?'4 × RTX 5090':'RTX 5060 Ti · Shared by retrieval / OCR'}</span></div><div class="assigned-gpus">${gpu.filter(g=>m.devices.includes(g.id)).map(g=>`<div class="assigned-gpu"><b>[${g.id}] ${g.util}%</b><span>${g.temp}°C · ${g.power}W</span><span>${g.mem} GiB</span></div>`).join('')}</div>`;
+  }
+  function renderMatrix() {
+    const g=gpu.find(g=>g.id===state.gpuId);
+    matrix.querySelector('.matrix-gpu-table').innerHTML=`<table aria-label="Five GPU device metrics (mock data)"><thead><tr><th>ID / GPU</th><th class="narrow-hide">ASSIGNMENT</th><th>UTIL</th><th>VRAM GiB</th><th class="narrow-hide">TEMP</th><th class="optional">POWER</th></tr></thead><tbody>${gpu.map(g=>`<tr class="${g.id===state.gpuId?'selected':''}"><td><button type="button" class="row-button cursor-interaction" data-gpu="${g.id}" aria-pressed="${g.id===state.gpuId}">${g.id===state.gpuId?'›':' '} ${g.id} <span class="dim">${g.name}</span></button></td><td class="narrow-hide">${g.group}</td><td>${g.util}%</td><td>${g.mem}</td><td class="narrow-hide">${g.temp}°C</td><td class="optional">${g.power} W</td></tr>`).join('')}</tbody></table>`;
+    matrix.classList.toggle('stale',state.health==='stale');
+    matrix.querySelector('.matrix-model-table').innerHTML=modelTable(null,true,state.health==='stale');
+    matrix.querySelectorAll('.matrix-model-table .row-button').forEach(button=>{ button.removeAttribute('aria-pressed'); button.setAttribute('aria-label',button.textContent.trim()+', inspect assigned GPU'); });
+    matrix.querySelector('.gpu-inspector').innerHTML=`<div class="inspector-title">[${g.id}] ${g.name} <span class="dim">/ ${g.id===4?'SHARED':'TP4 MEMBER'}</span></div><div class="kvline"><span class="dim">Temperature / Power</span><span>${g.temp}°C / ${g.power} W</span></div><div class="inspector-services">${g.id===4?'<span>├ qwen3-embedding-4b · :8001</span><span>├ qwen3-reranker-0.6b · :8002</span><span>└ Docling OCR · Planned / Not connected</span>':'<span>└ qwen3.8-flash-next · :8000</span><span>  GPU 0–3 · TP4 + EP</span><span>  KV cache shown in model metrics</span>'}</div>`;
+    matrix.querySelector('.health-result').innerHTML=state.health==='stale'?'<span class="warn">STALE / vLLM offline for 12s; model metrics unavailable</span>':'OK / Latest sample available';
+    matrix.querySelectorAll('[data-health]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.health===state.health)));
+    const status=matrix.querySelectorAll('.matrix-bottom fieldset:nth-child(2) .kvline span')[3];
+    status.className=state.health==='stale'?'warn':'accent';
+    status.textContent=state.health==='stale'?'STALE · 12s ago':'OK · 0.4s ago';
+  }
+  function renderAll(){renderTheme();renderNeon();renderAmber();renderMatrix();}
+  function save(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{selectedNeonModel:state.neonModel,selectedAmberModel:state.amberModel,selectedGpu:state.gpuId,sampleState:state.health,theme:state.theme},privateContent:{...state}}).catch(()=>{});}
+  function restore(saved){const p=saved?.privateContent;if(!p)return;if(models.some(m=>m.id===p.neonModel))state.neonModel=p.neonModel;if(models.some(m=>m.id===p.amberModel))state.amberModel=p.amberModel;if(gpu.some(g=>g.id===p.gpuId))state.gpuId=p.gpuId;if(['fresh','stale'].includes(p.health))state.health=p.health;if(['moonlight','hologram'].includes(p.theme))state.theme=p.theme;}
+  restore(window.openai?.widgetState);
+  renderAll();
+  neon.addEventListener('click',e=>{if(e.target.closest('button[data-theme-toggle]')){state.theme=state.theme==='moonlight'?'hologram':'moonlight';renderTheme();save();return;}const b=e.target.closest('button[data-model]');if(!b)return;state.neonModel=b.dataset.model;renderNeon();neon.querySelector(`button[data-model="${state.neonModel}"]`)?.focus();save();});
+  amber.addEventListener('click',e=>{const b=e.target.closest('button[data-model]');if(!b)return;state.amberModel=b.dataset.model;renderAmber();amber.querySelector(`button[data-model="${state.amberModel}"]`)?.focus();save();});
+  matrix.addEventListener('click',e=>{const g=e.target.closest('button[data-gpu]'),m=e.target.closest('button[data-model]'),h=e.target.closest('button[data-health]');if(g)state.gpuId=Number(g.dataset.gpu);else if(m)state.gpuId=models.find(item=>item.id===m.dataset.model).devices[0];else if(h)state.health=h.dataset.health;else return;renderMatrix();if(g)matrix.querySelector(`button[data-gpu="${state.gpuId}"]`)?.focus();if(m)matrix.querySelector(`button[data-model="${m.dataset.model}"]`)?.focus();save();});
+  window.addEventListener('openai:set_globals',e=>{if(e.detail?.globals?.widgetState){restore(e.detail.globals.widgetState);renderAll();}});
+  if(globalThis.Tweak){
+    [neon,amber,matrix].forEach(panel=>{
+      const palette=getComputedStyle(panel);
+      const settings={accent:palette.getPropertyValue('--accent').trim(),secondary:palette.getPropertyValue('--secondary').trim(),font:12};
+      const tweak=new Tweak({container:panel,onChange:()=>{
+        if(panel!==neon){panel.style.setProperty('--accent',settings.accent);panel.style.setProperty('--secondary',settings.secondary);}
+        panel.style.setProperty('--mono-size',settings.font+'px');
+      }});
+      if(panel!==neon)tweak.addColorPicker(settings,'accent',{label:'Primary accent',reference:'terminal.accent'});
+      tweak.addSlider(settings,'font',{label:'Font size',min:11,max:14,step:1,unit:'px',reference:'terminal.font'});
+    });
+  }
+})();
+</script>
