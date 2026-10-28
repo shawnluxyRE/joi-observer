@@ -6,7 +6,7 @@
 .
 ├── src/joi_observer/         # Python 包目录
 │   ├── __main__.py           # 启动入口
-│   ├── config.py             # 采样间隔、服务地址等配置
+│   ├── config.yaml           # 采样间隔、服务地址等配置
 │   ├── monitor.py            # 调度采集、更新状态、通知刷新
 │   ├── data/                 # 数据对象与内存状态，不存放数据文件
 │   │   ├── models.py         # 硬件、模型、服务状态的数据对象
@@ -30,6 +30,16 @@
 - `data/state.py` 中的 `MonitorState` 是独立内存对象，保存最新数据、上次采样值及时间、最近约 60 秒的有界历史和错误状态；不使用数据库，不持久化监控数据。
 - 采集器独立于界面；未来 Web 看板共享同一状态对象，避免重复采集，且仅提供只读接口。
 
+# Info For Skills
+
+- project_root：D:\Documents\joi-observer
+- work_id：dev-0
+- work_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0
+- req_id：
+- req_dir：
+- design_dir：D:\Documents\joi-observer\docs\design
+- requirements_path：D:\Documents\joi-observer\docs\dev-workflow\dev-0\requirements.md
+
 # Design
 
 - 设计稿：`docs/design/joi-observer.html`（精简 HTML 片段，作为布局、配色和交互参考；独立预览时按需导出完整 HTML）。
@@ -43,5 +53,6 @@
 # Rules
 
 - 禁止尝试连接任何服务器
+- 不清楚服务器内部的部署情况时，可查看 `D:\Documents\llm_server\Ubuntu_Server_03_显卡驱动.md` 和 `D:\Documents\llm_server\Ubuntu_Server_04_服务部署.md`
 
 # Tests

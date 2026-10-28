@@ -9,14 +9,14 @@
             <fieldset class="gpu-panel"><legend> GPU FABRIC <span class="dim">/ 5 DEVICES</span> </legend><div class="group-label"><span>GPU 0–3 <span class="dim">→ FLASH-NEXT</span></span><span class="secondary">TP 4 + EP</span></div><div class="gpu-stack"></div><div class="group-label auxiliary"><span>GPU 4 <span class="dim">→ RETRIEVAL / OCR</span></span><span class="secondary">SHARED</span></div><div class="gpu-aux"></div></fieldset>
             <div class="host-stack">
               <fieldset><legend> HOST RESOURCES </legend><div class="resource"><div><span>CPU</span><strong>34.2<span class="dim"> %</span></strong></div><div class="host-meter gpu-segments" data-percent="34.2" role="meter" aria-label="CPU utilization" aria-valuemin="0" aria-valuemax="100" aria-valuenow="34.2"></div></div><div class="resource"><div><span>RAM</span><strong><span class="dim">82.0 / </span>256<span class="dim"> GiB</span></strong></div><div class="host-meter gpu-segments" data-percent="32.03125" role="meter" aria-label="RAM usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="32.03125"></div></div></fieldset>
-              <fieldset class="storage-panel"><legend> STORAGE </legend><div class="kvline"><span class="dim">/</span><span>126 / 894 GiB</span></div><div class="kvline"><span class="dim">/data</span><span>2.1 / 7.0 TiB</span></div></fieldset>
+              <fieldset class="storage-panel"><legend> STORAGE </legend><div class="kvline"><span class="dim">/</span><span><span class="dim">126 / 894 GiB · </span><span class="storage-percent">14.1%</span></span></div><div class="kvline"><span class="dim">/data</span><span><span class="dim">2.1 / 7.0 TiB · </span><span class="storage-percent">30.0%</span></span></div></fieldset>
               <fieldset class="docker-panel"><legend> DOCKER </legend><div class="docker-list" aria-label="Mock Docker container states"></div></fieldset>
             </div>
           </div>
           <fieldset class="model-panel"><legend> vLLM </legend><div class="neon-service-layout"><aside class="neon-model-list" aria-label="Choose a vLLM model"><div class="rail-title">MODELS / 3</div><div class="service-buttons"></div></aside><div class="neon-model-detail" aria-live="polite"></div></div></fieldset>
           <div class="neon-service-tabs" role="tablist" aria-label="Service navigation (planned)"><button type="button" role="tab" aria-selected="true">vLLM</button><button type="button" role="tab" aria-selected="false" disabled data-tooltip="Planned">WebUI</button></div>
         </main>
-        <footer class="keybar"><span><b>↑↓</b> Select model</span><span><b>Enter</b> Details</span><span><b>p</b> Pause</span><span><b>q</b> Quit</span><span class="right dim">Keymap concept / Click a model to preview</span></footer>
+        <footer class="keybar"><span><b>↑↓</b> Select model</span><span><b>t</b> Theme</span><span><b>q</b> Quit</span></footer>
       </div>
     </section>
     <section data-variant="Amber Relay" aria-label="Amber Relay model control" hidden>
@@ -101,6 +101,7 @@
 #joi-designs .neon .host-meter { grid-template-columns:repeat(20,minmax(0,1fr)); width:min(100%,180px); margin-top:4px; color:var(--secondary); }
 #joi-designs .neon .storage-panel { padding-top:3px; padding-bottom:6px; }
 #joi-designs .neon .storage-panel .kvline { padding:1px 0; }
+#joi-designs .neon .storage-panel .storage-percent { color:#fff; }
 #joi-designs .neon .docker-panel { padding-top:5px; padding-bottom:4px; }
 #joi-designs .docker-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:baseline; gap:8px; padding:2px 0; }
 #joi-designs .docker-name { overflow-wrap:anywhere; }
@@ -129,6 +130,7 @@
 #joi-designs .futureline { display:flex; flex-wrap:wrap; gap:6px 18px; padding:12px 0; color:var(--dim); font-size:11px; }
 #joi-designs .keybar { margin-top:8px; padding-top:9px; border-top:1px solid var(--line); display:flex; flex-wrap:wrap; gap:7px 18px; font-size:11px; }
 #joi-designs .keybar b { color:var(--accent); }
+#joi-designs .neon .keybar { color:var(--accent); }
 #joi-designs .amber-status { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 14px; border-block:1px solid var(--line); padding:10px 0; }
 #joi-designs .amber-status b { color:var(--accent); }
 #joi-designs .amber-status .warn b { color:var(--warning); }
@@ -296,15 +298,15 @@
   ];
   const models = [
     {id:'chat', short:'Flash-Next', name:'qwen3.8-flash-next', full:'Qwen3.8-Flash-Next-NVFP4', type:'CHAT', port:8000, devices:[0,1,2,3], run:3, wait:7, capacity:3, kv:'87%', throughput:'128.4', unit:'tok/s', req:'0.42', ttft:'1.24s', queue:'2.80s', prompt:'1,850', history:'▁▂▂▃▂▃▄▃▄▅▅▆▄▆▅▇▆▆▅▆▇▅▆▆'},
-    {id:'embed', short:'Embedding', name:'qwen3-embedding-4b', full:'Qwen3-Embedding-4B', type:'EMBEDDING', port:8001, devices:[4], run:1, wait:0, capacity:2, kv:'—', throughput:'3.2', unit:'req/s', req:'3.20', ttft:'—', queue:'0.02s', prompt:'—', history:'▂▁▃▁▂▄▂▅▃▂▁▃▂▃▁▃▂▄▂▃▂▁▃▂'},
-    {id:'rank', short:'Reranker', name:'qwen3-reranker-0.6b', full:'Qwen3-Reranker-0.6B', type:'RERANK', port:8002, devices:[4], run:2, wait:1, capacity:2, kv:'—', throughput:'5.6', unit:'req/s', req:'5.60', ttft:'—', queue:'0.18s', prompt:'—', history:'▁▂▁▃▂▄▃▅▄▃▂▄▃▂▄▅▃▄▃▅▄▃▄▃'}
+    {id:'embed', short:'Embedding', name:'qwen3-embedding-4b', full:'Qwen3-Embedding-4B', type:'EMBEDDING', port:8001, devices:[4], run:1, wait:0, capacity:2, kv:'—', throughput:'3.2', unit:'req/s', req:'3.20', ttft:'—', latency:'0.12s', queue:'0.02s', prompt:'—', history:'▂▁▃▁▂▄▂▅▃▂▁▃▂▃▁▃▂▄▂▃▂▁▃▂'},
+    {id:'rank', short:'Reranker', name:'qwen3-reranker-0.6b', full:'Qwen3-Reranker-0.6B', type:'RERANK', port:8002, devices:[4], run:2, wait:1, capacity:2, kv:'—', throughput:'5.6', unit:'req/s', req:'5.60', ttft:'—', latency:'0.36s', queue:'0.18s', prompt:'—', history:'▁▂▁▃▂▄▃▅▄▃▂▄▃▂▄▅▃▄▃▅▄▃▄▃'}
   ];
   const containers = [
-    {name:'flash-next-vllm',status:'RUNNING'},
-    {name:'qwen3-embedding-vllm',status:'RUNNING'},
-    {name:'qwen3-reranker-vllm',status:'RUNNING'},
-    {name:'litellm',status:'RUNNING'},
-    {name:'open-webui',status:'RESTARTING'}
+    {name:'flash-next-vllm',status:'Running'},
+    {name:'qwen3-embedding-vllm',status:'Running'},
+    {name:'qwen3-reranker-vllm',status:'Running'},
+    {name:'litellm',status:'Running'},
+    {name:'open-webui',status:'Restarting'}
   ];
   const state = { neonModel:'chat', amberModel:'chat', gpuId:4, health:'fresh', theme:'moonlight' };
   function bar(percent,n=16) { const used=Math.round(Math.max(0,Math.min(100,percent))*n/100); return Array.from({length:n},(_,i)=>`<span class="gpu-segment${i<used?' filled':''}"></span>`).join(''); }
@@ -324,18 +326,18 @@
   function renderNeon() {
     const m=models.find(m=>m.id===state.neonModel);
     neon.querySelectorAll('.host-meter').forEach(meter=>{meter.innerHTML=bar(Number(meter.dataset.percent),20);});
-    neon.querySelector('.docker-list').innerHTML=containers.slice(0,5).map(container=>`<div class="docker-row"><span class="docker-name">${container.name}</span><span class="docker-status ${container.status==='RUNNING'?'running':''}">${container.status}</span></div>`).join('');
+    neon.querySelector('.docker-list').innerHTML=containers.slice(0,5).map(container=>`<div class="docker-row"><span class="docker-name">${container.name}</span><span class="docker-status ${container.status==='Running'?'running':''}">${container.status}</span></div>`).join('');
     neon.querySelector('.gpu-stack').innerHTML=gpu.slice(0,4).map(g=>gpuRow(g,m.devices)).join('');
     neon.querySelector('.gpu-aux').innerHTML=gpuRow(gpu[4],m.devices);
     neon.querySelector('.service-buttons').innerHTML=models.map(item=>`<button type="button" class="service-button cursor-interaction" data-model="${item.id}" aria-pressed="${item.id===m.id}"><span class="name">${item.id===m.id?'› ':''}${item.short}</span><span class="type">${item.type} / :${item.port}</span><span class="counts"><span>${item.run} running</span><span class="dim"><span class="${item.wait>0?'warn':''}">${item.wait}</span> waiting</span></span></button>`).join('');
     const metrics=m.id==='chat'?
       [['DECODE / tok/s',m.throughput],['PREFILL / tok/s',m.prompt],['TTFT / s',m.ttft.replace('s','')],['KV CACHE / %',m.kv.replace('%','')]]:
-      [['RATE / req/s',m.throughput],['QUEUE AVG / s',m.queue.replace('s','')],['TTFT / s','—'],['KV CACHE / %','—']];
+      [['RATE / req/s',m.throughput],['QUEUE AVG / s',m.queue.replace('s','')],['AVG LATENCY / s',m.latency.replace('s','')],['KV CACHE / %','N/A']];
     neon.querySelector('.neon-model-detail').innerHTML=`
       <div class="neon-detail-heading"><h2>${m.name}</h2><span class="tiny ${m.wait?'warn':'dim'}">${m.wait?'QUEUED':'READY'}</span></div>
       <div class="neon-detail-route">↳ :${m.port} · ${m.id==='chat'?'TP4 + EP · NVFP4 · 256K':'TP1 · BF16 · 4K'}</div>
       <div class="neon-queues">
-        <div class="neon-queue"><span class="queue-label">RUNNING</span><strong>${m.run}<small> / ${m.capacity}</small></strong><span class="queue-caption">${m.id==='chat'?`Total ${m.run+m.wait} / 15`:`Concurrency limit: ${m.capacity} sequences`}</span></div>
+        <div class="neon-queue"><span class="queue-label">RUNNING</span><strong>${m.run}<small> / ${m.capacity}</small></strong><span class="queue-caption">${m.id==='chat'?`Total ${m.run+m.wait} / 15`:`Total ${m.run+m.wait}`}</span></div>
         <div class="neon-queue"><span class="queue-label">WAITING</span><strong class="${m.wait>0?'warn':''}">${m.wait}</strong><span class="queue-caption">${m.id==='chat'?`Avg queue ${m.queue}`:'Unit: requests'}</span></div>
       </div>
       <div class="neon-metrics">${metrics.map(([label,value])=>`<div><span class="metric-label">${label}</span><span class="metric-value">${value}</span></div>`).join('')}</div>
