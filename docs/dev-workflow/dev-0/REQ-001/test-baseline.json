@@ -1,0 +1,76 @@
+{
+  "stage": "R2",
+  "req_id": "REQ-001",
+  "result": "design_baseline_not_business_pass",
+  "executed_at": "2026-10-28T14:51:58.627778+08:00",
+  "working_directory": "D:\\Documents\\joi-observer",
+  "environment": {
+    "os": "Windows",
+    "python": "3.12.10",
+    "pytest": "8.4.2"
+  },
+  "command": "python -m pytest -q --tb=short --junitxml=.pytest_cache/r2-baseline.xml",
+  "pytest_exit_code": 1,
+  "collected": 167,
+  "passed": 2,
+  "failed": 165,
+  "errors": 0,
+  "skipped": 0,
+  "junit_elapsed_seconds": 3.217,
+  "failure_types": {
+    "NotImplementedError": 162,
+    "AssertionError": 3
+  },
+  "module_results": {
+    "tests.test_cli": {
+      "passed": 0,
+      "failed": 17
+    },
+    "tests.test_config": {
+      "passed": 1,
+      "failed": 69
+    },
+    "tests.test_error_log": {
+      "passed": 1,
+      "failed": 21
+    },
+    "tests.test_monitor": {
+      "passed": 0,
+      "failed": 14
+    },
+    "tests.test_state": {
+      "passed": 0,
+      "failed": 16
+    },
+    "tests.test_tui": {
+      "passed": 0,
+      "failed": 28
+    }
+  },
+  "passing_cases": [
+    "tests.test_config::test_configuration_snapshot_is_immutable",
+    "tests.test_error_log::test_constructor_has_no_file_system_side_effects"
+  ],
+  "assertions_caused_by_stubs": [
+    {
+      "test": "tests.test_tui::test_terminal_restored_on_partial_entry_or_draw_exception[enter]",
+      "classification": "Expected RuntimeError text did not match the NotImplementedError stub message."
+    },
+    {
+      "test": "tests.test_tui::test_terminal_restored_on_partial_entry_or_draw_exception[render]",
+      "classification": "Expected RuntimeError text did not match the NotImplementedError stub message."
+    },
+    {
+      "test": "tests.test_tui::test_real_runtime_stops_source_and_restores_after_ui_exception",
+      "classification": "Expected RuntimeError text did not match the NotImplementedError stub message."
+    }
+  ],
+  "all_failed_cases_contain_not_implemented_error": true,
+  "junit_sha256": "caa73ce8c1d3676de7215146d65b9e90749d5e6af313007521439a7e5d934f1f",
+  "notes": [
+    "All 167 cases loaded and reached declared public interfaces.",
+    "No server connections, driver probes, or real terminal operations were performed.",
+    "PyYAML and packaging dependencies are not installed; parsing and wheel installation remain unverified.",
+    "The two passing cases cover immutable configuration declarations and side-effect-free logger construction only."
+  ]
+}

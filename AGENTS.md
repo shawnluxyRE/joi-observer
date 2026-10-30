@@ -35,8 +35,8 @@
 - project_root：D:\Documents\joi-observer
 - work_id：dev-0
 - work_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0
-- req_id：
-- req_dir：
+- req_id：REQ-001
+- req_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0\REQ-001
 - design_dir：D:\Documents\joi-observer\docs\design
 - requirements_path：D:\Documents\joi-observer\docs\dev-workflow\dev-0\requirements.md
 
@@ -46,8 +46,9 @@
 - Ubuntu Terminal TUI：深色、等宽、紧凑分区，全英文；以当前 Neon Grid 总览为准。
 - 配色：背景 `#080E18`，正文 `#D4DDEB`，次要信息 `#8A9DB5`；冰蓝 `#7DDFFF` 为主色，浅紫 `#C6A7FF` 为辅色；仅 `QUEUED` 和大于 0 的等待数量用琥珀 `#FFA45B`，`WAITING` 标签与 0 使用普通文字色，不加感叹号。
 - 顶部：`Joi::Observer`（`Joi` 使用主题辅色，`::` 灰色，`Observer` 使用主题主色），主机信息右侧显示时间；右上角按钮切换 Moonlight（冰蓝 / 浅紫）与 Hologram（`#7B9FFF` / `#E570D0`），两种主题共用琥珀强调规则。
-- 上半区：左侧 GPU 列表，右侧依次为 Host Resources、Storage、Docker。GPU 分段条占可用宽度约一半，百分比在条末端，使用主题主色，显存灰色；CPU / RAM 条使用主题辅色，未填充段与 GPU 同灰色，RAM 已用量灰色、总量白色。Docker 最多显示 5 个容器的名称和状态，高度贴合内容，不留多余空行；剩余空间分配给 Storage。
-- 下半区：紫色 `vLLM` 标题；左侧模型列表，选中项冰蓝；右侧运行、排队、吞吐、延迟、KV Cache 与柱状历史图。路由信息浅紫，文案用 `Total`、`Avg queue`。
+- 页面纵向分为上下两半：下半区的服务窗口、底部服务切换位及最下方键位提示合计固定占全页高度的一半；顶部品牌、主机信息及上半区硬件等使用剩余高度。奇数页高时下半区向下取整，多出的 1 行留给上半区。
+- 上半区：左侧 GPU 列表，右侧依次为 Host Resources、Storage、Docker。GPU 分段条占可用宽度约一半，百分比在条末端，使用主题主色，显存灰色；CPU / RAM 条使用主题辅色，未填充段与 GPU 同灰色，RAM 已用量灰色、总量白色。Storage 固定 3 行内容，标题和边框另计，仅采集和显示配置前 3 个挂载点，其余忽略不报错。Docker 配置数量不限、全部采集；面板填充右侧扣除 Host Resources、Storage 及间距后的剩余高度，按配置顺序只显示内容区可容纳的容器，剩余不显示、不作任何提示，不因容器数提高最小终端高度。窗口放大后可显示更多条目；不增加滚动、分页或更多标记，不侵占下半区，内容少时允许留白。
+- 下半区：服务窗口与底部切换位、键位提示共同使用半页高度；紫色 `vLLM` 标题；左侧模型列表，选中项冰蓝；右侧运行、排队、吞吐、延迟、KV Cache 与柱状历史图。路由信息浅紫，文案用 `Total`、`Avg queue`。
 - 底部仅保留 `vLLM` / `WebUI` 服务切换位（暂不实现切换）；最下方英文键位提示使用冰蓝。设计预览中的模拟标记不属于正式 UI。
 
 # Rules
@@ -56,3 +57,5 @@
 - 不清楚服务器内部的部署情况时，可查看 `D:\Documents\llm_server\Ubuntu_Server_03_显卡驱动.md` 和 `D:\Documents\llm_server\Ubuntu_Server_04_服务部署.md`
 
 # Tests
+
+- 必要时可以使用WSL的Ubuntu系统，目录可用`~/projects/tmp`。

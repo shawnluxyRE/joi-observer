@@ -1,0 +1,87 @@
+version = 1
+revision = 5
+requires-python = ">=3.12"
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "colorama-0.4.6-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "iniconfig-2.3.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "joi-observer"
+version = "0.1.0.dev0"
+source = { editable = "." }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<9" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
+]
+provides-extras = ["test"]
+
+[[package]]
+name = "packaging"
+version = "26.3"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "packaging-26.3-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "pluggy-1.6.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pygments"
+version = "2.21.0"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "pygments-2.21.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pytest"
+version = "8.4.2"
+source = { registry = ".pytest_cache/offline_wheels" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+wheels = [
+    { path = "pytest-8.4.2-py3-none-any.whl" },
+]
+
+[[package]]
+name = "pyyaml"
+version = "6.0.3"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "pyyaml-6.0.3-cp312-cp312-win_amd64.whl" },
+    { path = "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]

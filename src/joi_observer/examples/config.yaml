@@ -1,0 +1,39 @@
+# Joi::Observer example — copy to your own config.yaml and review before use.
+# This file is never loaded automatically as a monitoring configuration.
+# Values below are unverified deployment references, not discovered live state.
+# Source: D:/Documents/llm_server/Ubuntu_Server_03_显卡驱动.md
+#   sections 8.2 and 9.3: served-model-name and published loopback ports.
+# Source: D:/Documents/llm_server/Ubuntu_Server_04_服务部署.md
+#   section 3.3: confirms model routing; do NOT use the LiteLLM gateway address.
+
+sample_interval: 1.0       # Seconds; finite number from 0.1 through 60.
+collection_timeout: 3.0    # Seconds; a slow object never overlaps itself.
+mount_points: ["/", "/data"]  # Only the first three items are monitored; later items are ignored.
+
+# Add actual Docker names or full IDs; all configured items are monitored.
+# Only the first items that fit in the Docker panel are displayed; others stay hidden.
+# Compose project/service names are not automatically container names.
+# Example entry: {id: chat-container, name: flash-next-vllm}
+containers: []
+
+models:
+  - id: chat
+    type: chat
+    name: qwen3.8-flash-next
+    base_url: http://127.0.0.1:8000
+    gpu_ids: []             # Unknown until you explicitly verify the mapping.
+  - id: embedding
+    type: embedding
+    name: qwen3-embedding-4b
+    base_url: http://127.0.0.1:8001
+    gpu_ids: []
+  - id: reranker
+    type: reranker
+    name: qwen3-reranker-0.6b
+    base_url: http://127.0.0.1:8002
+    gpu_ids: []
+
+logging:
+  directory: ~/.joi-observer
+  max_bytes: 10000000       # Decimal 10 MB; minimum 1024 bytes.
+  backup_count: 3          # Positive integer; oldest backup is discarded.

@@ -1,0 +1,17 @@
+{
+  "stage": "R2",
+  "requirement_revision": "v1.9",
+  "revision": "log-time-local",
+  "executed_at": "2026-10-28T16:18:45.756134+08:00",
+  "command": "python -m pytest tests/test_error_log.py -q --tb=no -o addopts= --junitxml=.pytest_cache/r2-log-time.xml",
+  "tests": 22,
+  "passed": 1,
+  "failed": 21,
+  "errors": 0,
+  "skipped": 0,
+  "pytest_exit_code": 1,
+  "failure_types": {
+    "NotImplementedError": 21
+  },
+  "note": "Log time assertions now expect server local YYYY-MM-DD HH:MM:SS with no timezone. All behavior failures still occur at unimplemented ErrorLog.prepare, before the new formatting assertions are reached."
+}
