@@ -35,8 +35,8 @@
 - project_root：D:\Documents\joi-observer
 - work_id：dev-0
 - work_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0
-- req_id：REQ-003
-- req_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0\REQ-003
+- req_id：REQ-002
+- req_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0\REQ-002
 - design_dir：D:\Documents\joi-observer\docs\design
 - requirements_path：D:\Documents\joi-observer\docs\dev-workflow\dev-0\requirements.md
 

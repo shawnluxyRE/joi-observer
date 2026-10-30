@@ -1,15 +1,15 @@
 # Monitor 与内存状态设计
 
-- 关联需求：dev-0 / REQ-001，AC-101～AC-104、AC-108、AC-110～AC-112；为后续采集与展示提供共享边界。
-- 修订：v1.6，2026-10-30；补充 REQ-003 单容器结果与调度接入，依据 requirements.md v1.12。
+- 关联需求：dev-0 / REQ-001、REQ-002、REQ-003；AC-101～AC-104、AC-108、AC-110～AC-112、AC-201～AC-207、AC-301～AC-304。
+- 修订：v1.6，2026-10-30；依据 requirements.md v1.12，汇合 REQ-002 动态发现与硬件身份，以及 REQ-003 单容器结果与调度接入。
 - 相关代码：`src/joi_observer/collectors/base.py`、`monitor.py`、`data/models.py`、`data/state.py`。
 - 关联模块：[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
 ## 范围与结构
 
-REQ-001 设计应用运行的公共基础；当前分支已同步 v1.12 的配置/布局规则，本轮 WSL 基线测试通过。具体硬件、Docker、vLLM IO 属于REQ-002～REQ-004，复用同一调度、配置和失败处理；REQ-005～REQ-006完成模型联动与视觉细节。未来Web只读同一状态，不建立第二套采样。
+REQ-001 的 v1.12 公共运行基础已实现并验收。REQ-002 硬件采集与 GPU 动态发现、已有的 REQ-003 Docker 容器采集共用同一调度器、内存状态与错误日志；vLLM 采集仍待 REQ-004。REQ-002 提供基于当前选择的显式 GPU 关联高亮，REQ-005～REQ-006 完成导航与完整主题。未来 Web 只读同一状态，不建立第二套采样。
 
-采用 Python 3.12+ 的 src 布局。将原规划的包内 `config.yaml` 改为 `config.py` 与 `examples/config.yaml`，区分解析代码、随包示例和用户配置。新增 `cli.py`、`error_log.py`、`tui/layout.py`；此时不建立无内容的 `web/`、具体采集器或主题文件。
+采用 Python 3.12+ 的 src 布局。将原规划的包内 `config.yaml` 改为 `config.py` 与 `examples/config.yaml`，区分解析代码、随包示例和用户配置。新增 `cli.py`、`error_log.py`、`tui/layout.py`；硬件和 Docker 采集器位于 `collectors/`；不建立无内容的 `web/` 或主题文件。
 
 安装与开发环境统一使用 uv：日常以 `uv tool install` 安装后直接调用命令，项目开发使用 `uv run`，两者均无需每次手动激活环境。命令、PATH 和安装验收详见[应用外壳设计](application-shell.md#uv-安装与开发运行)；此约定不改变采集和状态接口。
 
@@ -81,9 +81,9 @@ classDiagram
 
 ## 对象身份与依赖边界
 
-`ObjectKey(collector, object_id)` 联合唯一。来源命名空间使用 `host`、`gpu`、`storage`、`docker`、`vllm`；主机固定 `local`，GPU 使用可靠设备标识，Docker/模型使用配置 `id`，挂载点可用配置序号标识 `mount-0`、`mount-1`（路径作为展示字段）。重启可以重新建状态，故挂载点序号无需跨配置修改持久化。名称不是主键，同名不同服务不合并。
+`ObjectKey(collector, object_id)`联合唯一。REQ-002使用`host/cpu`、`host/ram`、`gpu/<完整UUID>`、`gpu_inventory/local`、`storage/mount-0..2`；主机原`host/local`占位由R4替换。inventory是发现状态，不计入GPU槽；挂载路径从配置展示，不作128字符受限的key。Docker/模型使用配置id。重启重建状态，挂载序号无需跨配置持久化。名称不是主键，同名不同服务不合并。
 
-单对象 `Collector` 无 UI 引用、不写状态、不记日志。独立调度粒度必须至少隔离单 GPU、挂载点、容器和模型。REQ-002 的 GPU 发现/批量读取可以共享底层读取，不能让单卡字段失败误报所有卡；发现失败必须有 GPU 面板状态位，不能伪造设备。设备发现和字段表的具体契约由 REQ-002 补充，组合根通过 `register` 纳入对象。
+单对象`Collector`无UI引用、不写状态、不记日志。CPU、RAM、单GPU、挂载点、容器和模型独立调度。REQ-002采用独立Discovery端口，组合根在首次poll/run前调用`Monitor.register_discovery`，由Monitor注册inventory和新发现对象；发现器不能直接写State。失败只影响inventory，旧卡继续独立查询；新UUID追加、消失保槽。完整接口、结果原子校验、工厂与关闭规则见[硬件设计](hardware.md#gpu-发现调度与资源生命周期)。
 
 配置层只纳入前3个挂载点，但保留全部容器及其顺序。Monitor/MonitorState不得接收按屏幕容量截断的容器列表；Docker只在生成Frame时取可见前缀。隐藏容器持续采集、保留当前状态及历史，真实失败照常写日志；单纯隐藏不属于失败。窗口缩放只改变可见行数，不增减来源或重置状态，重新可见时立即显示现有快照。
 
@@ -124,9 +124,9 @@ Monitor 是唯一状态写入者，提交成功后发一次轻量通知。日志
 | Monitor→ErrorLog | 同上及 `error_log.py` | 61次失败仍提交61次；日志限频由真实日志模块测试另行验证，不 mock 被测调度结果 |
 | Monitor/State→Frame | `tests/test_integration.py` | 十个容器持续采集，显示容量4→6→3时仅变可见前缀；隐藏对象失败仍记日志，重新可见读取当前STALE状态 |
 
-入口为 `python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py`。节奏测试注入单调时钟；超时使用本机事件循环，采集端口使用离线样本，不连接服务。已有实现继续保留，当前这些测试通过；REQ-003 的新采集骨架失败与公共代码回归分开记录。历史结果见 REQ-001 交接，本轮结果见 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
+公共入口为 `python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py`；REQ-002 增加 `tests/test_hardware_monitor.py` 等硬件用例，REQ-003 增加 `tests/test_docker_integration.py`。节奏测试注入单调时钟，超时使用本机事件循环，采集端口使用离线样本，不连接服务。`register_discovery` 和 Docker 采集已实现；历史阶段结果见各需求交接单，Docker 设计记录见 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)；涉及共同运行期的变更需重新执行联合回归，不能沿用独立实现的测试结果。
 
-本轮已在本地 WSL 复验当前尺寸边界及既有终端测试，不依赖 v1.9 的历史记录证明当前行为。真实GPU、Docker、vLLM采集器仍待后续需求接入，权限/输出未实机验证。
+集成应保持 REQ-001 的 v1.12 配置/布局行为，并验证动态发现、全部来源的关闭和运行期接线。真实 GPU、Docker 的权限、命令输出与清理时限仍需用户现场验证；vLLM 尚未接入。
 
 ## 修订说明
 
@@ -137,4 +137,4 @@ v1.4 按用户反馈精简为单张类图，删除连线标签、非关键成员
 
 v1.5 对应需求v1.12：限定有效挂载来源为前三项，容器来源与状态完整保留，Docker可见容量只作用于Frame；补充隐藏对象采集/日志/缩放的离线联合测试。核心类图和公开方法签名不变。
 
-v1.6 对应 REQ-003：补齐 Docker 的 state 字段和组合根接入引用；保留 Monitor/MonitorState 现有实现、生命周期和错误目录。
+v1.6 对应 REQ-002 与 REQ-003：明确 UUID、inventory、CPU/RAM 独立身份及挂载序号，实现 DiscoveryResult/Discovery 与 Monitor.register_discovery；补齐 Docker 的 state 字段和组合根接入，硬件与容器共用 Monitor/MonitorState 的生命周期和错误目录。动态发现细节由 hardware.md 维护，容器规则由 docker.md 维护。

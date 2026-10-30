@@ -16,6 +16,7 @@ import subprocess
 import pytest
 
 from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from joi_observer.collectors import hardware
 from joi_observer.collectors.docker import CommandOutput, DockerCollector
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig
 from joi_observer.data.state import MonitorState
@@ -37,6 +38,48 @@ def forbid_real_processes_and_connections(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_shell", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def offline_hardware_io(monkeypatch):
+    """Merged production assembly also samples hardware; replace only raw IO.
+
+    Keep real hardware parsing and scheduling active so strict error-log
+    assertions still detect any unexpected failure across the shared runtime.
+    """
+
+    class RawHardwareIO:
+        def __init__(self, *, timeout=3.0):
+            self.cpu_reads = 0
+
+        async def read_text(self, path):
+            await asyncio.sleep(0)
+            if path == "/proc/stat":
+                self.cpu_reads += 1
+                ticks = 100 * self.cpu_reads
+                return f"cpu {ticks} 0 0 {ticks} 0 0 0 0\n"
+            if path == "/proc/meminfo":
+                return "MemTotal: 16777216 kB\nMemAvailable: 12582912 kB\n"
+            if path == "/proc/self/mountinfo":
+                return ("10 1 8:1 / / rw - ext4 /dev/root rw\n"
+                        "11 10 8:2 / /data rw - ext4 /dev/data rw\n")
+            raise AssertionError(f"Unexpected hardware file request: {path}")
+
+        async def statvfs(self, path):
+            await asyncio.sleep(0)
+            assert path in ("/", "/data")
+            return hardware.FileSystemStat(4096, 100 * 2**18, 75 * 2**18)
+
+        async def run(self, argv):
+            await asyncio.sleep(0)
+            assert argv == ("nvidia-smi", "--query-gpu=index,uuid",
+                            "--format=csv,noheader,nounits")
+            return hardware.CommandOutput(0, "")
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(hardware, "LocalHardwareIO", RawHardwareIO)
 
 
 class RawCommand:

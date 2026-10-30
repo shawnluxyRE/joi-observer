@@ -22,8 +22,13 @@ from joi_observer.error_log import Failure
 
 
 def _number(value: object, *, positive: bool = False) -> bool:
-    return (type(value) in (int, float) and math.isfinite(value)
-            and (value > 0 if positive else value >= 0))
+    # Times are finite floating-point seconds, unlike integer metric counters.
+    # A huge integer must be rejected as an invalid time, not leak OverflowError.
+    try:
+        return (type(value) in (int, float) and math.isfinite(value)
+                and (value > 0 if positive else value >= 0))
+    except OverflowError:
+        return False
 
 
 def _text(value: object, *, allow_empty: bool = True) -> bool:
@@ -54,7 +59,9 @@ def _validate_metrics(metrics: tuple[Metric, ...], *, template: bool = False) ->
             raise ValueError("Invalid or duplicate metric.")
         value = metric.value
         if (value is not None and type(value) not in (int, float, str)
-                or type(value) in (int, float) and not math.isfinite(value)
+                # Python integers are always finite and retain their exact value.
+                # math.isfinite(int) would unnecessarily convert them to float.
+                or type(value) is float and not math.isfinite(value)
                 or isinstance(value, str) and not _text(value)
                 or (template or not metric.applicable) and value is not None):
             raise ValueError("Invalid metric value.")
