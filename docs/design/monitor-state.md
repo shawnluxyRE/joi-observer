@@ -1,13 +1,13 @@
 # Monitor 与内存状态设计
 
 - 关联需求：dev-0 / REQ-001，AC-101～AC-104、AC-108、AC-110～AC-112；为后续采集与展示提供共享边界。
-- 修订：v1.5，2026-10-29；依据 requirements.md v1.12，明确完整采集状态与显示容量分离。
+- 修订：v1.6，2026-10-30；补充 REQ-003 单容器结果与调度接入，依据 requirements.md v1.12。
 - 相关代码：`src/joi_observer/collectors/base.py`、`monitor.py`、`data/models.py`、`data/state.py`。
 - 关联模块：[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
 ## 范围与结构
 
-REQ-001 设计应用运行的公共基础；v1.9的公共运行基础已经R4实现并经R5验收。本次按v1.12修订设计、接口注释及黑盒预期，配置/布局实现待后续同步。具体硬件、Docker、vLLM IO仍属于REQ-002～REQ-004，复用同一调度、配置和失败处理；REQ-005～REQ-006完成模型联动与视觉细节。未来Web只读同一状态，不建立第二套采样。
+REQ-001 设计应用运行的公共基础；当前分支已同步 v1.12 的配置/布局规则，本轮 WSL 基线测试通过。具体硬件、Docker、vLLM IO 属于REQ-002～REQ-004，复用同一调度、配置和失败处理；REQ-005～REQ-006完成模型联动与视觉细节。未来Web只读同一状态，不建立第二套采样。
 
 采用 Python 3.12+ 的 src 布局。将原规划的包内 `config.yaml` 改为 `config.py` 与 `examples/config.yaml`，区分解析代码、随包示例和用户配置。新增 `cli.py`、`error_log.py`、`tui/layout.py`；此时不建立无内容的 `web/`、具体采集器或主题文件。
 
@@ -89,6 +89,8 @@ classDiagram
 
 `CollectionResult` 是已解析的语义结果，不携带原始 HTTP 响应或异常；正常停止的容器、0、无延迟观测和已知不支持指标都是成功。只有实际采集失败带 `Failure`。日志原因分类详见错误日志模块。硬件百分比、vLLM 计数器和窗口均值不在公共调度器计算，D-001 的 vLLM 0.31.0 指标核对留给 REQ-004。
 
+REQ-003 具体使用 `ObjectKey("docker", config.id)` 和唯一 `Metric("state", None/规范状态)`。每个 DockerCollector 独占本机命令端口，失败返回空 metrics 与既有 Failure，取消原样传播；无需修改本模块算法。全部采集器由组合根注册并交给 Monitor，隐藏项同样更新状态与日志。详见 [Docker 设计](docker.md)，真实采集入口到 Frame/Log 的联合测试为 `tests/test_docker_integration.py`。
+
 ## 采样节奏、超时与关闭
 
 每个来源具有独立任务、下次到期槽和超时。启动时立即采样，之后按 `start + n × sample_interval` 发起，默认 1 秒；超时默认 3 秒。来源仍在运行时跳过该槽，无排队、补采或重叠。例：在 0 秒发起的请求到 2.2 秒才结束，1、2 秒的槽跳过，下一次最早 3 秒发起；其他来源仍在 0、1、2、3 秒正常采集。
@@ -122,9 +124,9 @@ Monitor 是唯一状态写入者，提交成功后发一次轻量通知。日志
 | Monitor→ErrorLog | 同上及 `error_log.py` | 61次失败仍提交61次；日志限频由真实日志模块测试另行验证，不 mock 被测调度结果 |
 | Monitor/State→Frame | `tests/test_integration.py` | 十个容器持续采集，显示容量4→6→3时仅变可见前缀；隐藏对象失败仍记日志，重新可见读取当前STALE状态 |
 
-入口为 `python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py`。节奏测试注入单调时钟；超时使用本机事件循环，采集端口使用离线样本，不连接服务。已有实现继续保留；本次新契约失败应区分为旧实现尚未同步，不能再归为NotImplementedError骨架基线。实际运行结果见REQ-001交接单。
+入口为 `python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py`。节奏测试注入单调时钟；超时使用本机事件循环，采集端口使用离线样本，不连接服务。已有实现继续保留，当前这些测试通过；REQ-003 的新采集骨架失败与公共代码回归分开记录。历史结果见 REQ-001 交接，本轮结果见 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
 
-R4需同步本次配置/布局变化，并在本地Ubuntu/WSL复验新尺寸边界与终端恢复。既有curses及运行期链路的v1.9验收记录保留，不能替代v1.12验证。真实GPU、Docker、vLLM采集器仍待后续需求接入，权限/输出未实机验证。
+本轮已在本地 WSL 复验当前尺寸边界及既有终端测试，不依赖 v1.9 的历史记录证明当前行为。真实GPU、Docker、vLLM采集器仍待后续需求接入，权限/输出未实机验证。
 
 ## 修订说明
 
@@ -134,3 +136,5 @@ v1.3 采纳用户对类图的修正：移除按数据流绘制的箭头，用可
 v1.4 按用户反馈精简为单张类图，删除连线标签、非关键成员及细节类的展开，保留核心对象关联与参数/返回类型依赖。完整接口注释和代码结构保持不变。
 
 v1.5 对应需求v1.12：限定有效挂载来源为前三项，容器来源与状态完整保留，Docker可见容量只作用于Frame；补充隐藏对象采集/日志/缩放的离线联合测试。核心类图和公开方法签名不变。
+
+v1.6 对应 REQ-003：补齐 Docker 的 state 字段和组合根接入引用；保留 Monitor/MonitorState 现有实现、生命周期和错误目录。

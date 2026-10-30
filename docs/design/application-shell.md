@@ -1,13 +1,15 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114；共享布局约束关联 AC-207/301/304/605/607/608。
-- 修订：v1.2，2026-10-29；更新半页分区、Storage 固定内容和 Docker 可见容量契约。
+- 修订：v1.3，2026-10-30；补充 REQ-003 的命令端口注入和生产装配边界。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 
 ## 职责与边界
 
-本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。现有 R4/R5 已完成此前契约的实现与验证；本次 R2 仅修订目标设计、接口注释及黑盒测试，保留执行代码，新的布局逻辑交由 R4 同步。REQ-002～004 提供具体采集器，REQ-005/006 完成模型导航、主题与详细面板，但它们必须复用本模块的生命周期与容量约束。
+本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。当前分支已有半页分区、Storage 固定内容及 Docker 可见前缀实现，本轮基线测试通过。REQ-003 仅新增设计与依赖注入声明，真实 Docker 组装仍待 R4；REQ-002～004 提供具体采集器，REQ-005/006 完成模型导航、主题与详细面板，均复用本模块的生命周期与容量约束。
+
+REQ-003 为 `ApplicationRuntime` 增加可选 `docker_command_factory`，只替换外部命令 IO。R4 在默认组装中调用 `build_docker_collectors`，以全部采集器 spec 替换 Docker 静态模板、把全部来源接入唯一 Monitor；不按可见行数裁剪，不另建 State 或日志实例。构造与 prepare_log 不执行命令；注入 RuntimeComponents 时不调用该工厂。当前仍保留旧组装，避免 R2 未实现入口破坏既有启动；新增生产黑盒测试明确要求真正采样，详见 [Docker 设计](docker.md) 与 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
 
 目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，保证 Windows 能导入骨架并运行不依赖终端的测试。源码无需安装 Windows curses 兼容包；真实终端验收需在本地 WSL Ubuntu 或以后获得许可的目标环境进行，不连接任何服务器。
 
