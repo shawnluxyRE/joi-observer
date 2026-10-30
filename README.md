@@ -8,11 +8,17 @@
 
 ## 当前阶段
 
-REQ-001 的公共运行基础已实现：严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏外壳及终端恢复。生产外壳可启动并显示配置对象的未知值和空态；具体硬件、Docker、vLLM 采集器尚未接入，完整模型导航与双主题也属于后续 REQ-002～REQ-006，因此当前不会展示真实监控数据。
+REQ-001 的公共运行基础和 REQ-002 的本机硬件链路已实现：严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端，以及 NVIDIA GPU、CPU、RAM 和前三挂载点的真实采集与显示。Docker/vLLM 仍为未知值占位；模型方向键导航和完整双主题属于后续 REQ-003～REQ-006。
 
-需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。此前 R5 通过结论对应 v1.9，本轮增量的验证和交接结果另见 R4 交接单。
+需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。REQ-001 已通过 v1.12 的 R5 验收；本轮 REQ-002 的实现和验证见 R4 交接，尚待 R5 审查。
 
-设计入口：[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。实现范围与实际验证结果见 [REQ-001 R4 交接](docs/dev-workflow/dev-0/REQ-001/handoff-r4.md)。
+设计入口：[本机硬件](docs/design/hardware.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。本轮实现范围与实际验证结果见 [REQ-002 R4 交接](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md)。
+
+硬件采集在运行工具的 Ubuntu 主机本地执行。GPU 需要已安装并可查询的 `nvidia-smi`，按完整 UUID 保持设备身份；新卡追加，暂时消失的卡保留原位置并显示 STALE。发现器失败不阻断已知卡和 Host 采样；成功无卡显示 `No NVIDIA GPUs`。不会安装驱动或修改硬件。当前按配置的首个模型计算显式 GPU 关联色，索引只使用新鲜且唯一的采样值，未知映射不猜测；方向键联动待 REQ-005。
+
+CPU 使用 `/proc/stat` 的整机累计 tick 差分，首次及失败恢复后的第一轮显示 `—`。RAM 使用 `MemTotal - MemAvailable`，不以 MemFree 或 GPU 显存替代。Storage 精确验证挂载点，并在容量读取前后核对挂载身份；未挂载不回退到父文件系统，也不以第四项补位。容量使用 `f_frsize × f_blocks` 与 `f_frsize × (f_blocks - f_bfree)`，包含保留块；界面统一显示 GiB/TiB。GPU 显存按驱动 MiB 换算，功率是驱动最近测得的板卡功率，可能为一秒平均。失败只显示固定位置的 STALE，原因仅写 ERROR 日志。
+
+文件及 statvfs 读取放在可终止的包内 worker 中，NVIDIA 查询使用固定 argv 的本地子进程；两路输出各限 1 MiB。每个采集器与发现器独占 IO，超时/取消会终止并回收本端口进程。所有采集均不建立网络连接。目标服务器的驱动、权限、挂载及无卡输出尚未现场验证，本地离线测试不能替代部署验收。
 
 ## 安装与启动约定
 

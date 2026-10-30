@@ -13,6 +13,7 @@ import sys
 from typing import Protocol, TextIO
 
 from joi_observer import __version__
+from joi_observer.collectors.hardware import build_hardware_sources
 from joi_observer.config import AppConfig, ConfigError, example_config_path, load_config, resolve_config_path
 from joi_observer.data.models import Metric, ObjectKey, ObjectSpec, StateSnapshot
 from joi_observer.data.state import MonitorState
@@ -175,13 +176,17 @@ class ApplicationRuntime:
         await self._wait_with_budget({self._close_task})
 
     def _components(self) -> RuntimeComponents:
+        """组装共享状态、真实硬件来源与统一生命周期。
+
+        build_hardware_sources(config)提供host/cpu、host/ram、storage/mount-N
+        和独立GPU发现器，代替host/local占位；全部静态spec加入同一MonitorState，
+        将静态来源交Monitor后调用register_discovery。导入/构造阶段不执行硬件IO，
+        实际采集由Monitor.run发起。保留Docker/vLLM占位及已注入components路径。
+        """
         if self.components is None:
-            # Static unknown templates are presentation slots, not collectors.
-            # REQ-002--004 will supply the actual sources using the same state.
-            specs = [ObjectSpec(ObjectKey("host", "local"),
-                                (Metric("CPU", None, "%"), Metric("RAM", None, "GiB")))]
-            # Mounts have no collector identity yet (REQ-002); the layout uses
-            # config directly for their unknown slots, including long paths.
+            hardware = build_hardware_sources(self.config)
+            specs = [collector.spec for collector in hardware.collectors]
+            # Docker/vLLM remain presentation slots until REQ-003/004.
             specs.extend(ObjectSpec(ObjectKey("docker", item.id), (Metric("state", None),))
                          for item in self.config.containers)
             specs.extend(ObjectSpec(ObjectKey("vllm", item.id),
@@ -189,8 +194,9 @@ class ApplicationRuntime:
                          for item in self.config.models)
             state = MonitorState(tuple(specs))
             log = ErrorLog(self.config.logging)
-            monitor = Monitor((), state, log, interval=self.config.sample_interval,
+            monitor = Monitor(hardware.collectors, state, log, interval=self.config.sample_interval,
                               timeout=self.config.collection_timeout)
+            monitor.register_discovery(hardware.discovery)
             app = ObserverApp(self.config, _ReadOnlyState(state), CursesTerminal(),
                               host=HostInfo(platform.node(), f"{platform.system()} {platform.release()}"),
                               wall_clock=lambda: datetime.now().astimezone())

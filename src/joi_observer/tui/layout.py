@@ -95,9 +95,13 @@ def format_metric(metric: Metric) -> str:
         return "—"
     if isinstance(metric.value, str):
         return _single_line(metric.value)
-    if isinstance(metric.value, bool) or not math.isfinite(metric.value):
+    if (type(metric.value) not in (int, float)
+            or type(metric.value) is float and not math.isfinite(metric.value)):
         raise ValueError("Metric must contain a finite number")
-    value = format(Decimal(str(metric.value)), "f")
+    # Decimal(int) is exact and avoids both a float conversion and Python's
+    # safety limit on int-to-decimal-string conversion for very large integers.
+    number = Decimal(metric.value) if type(metric.value) is int else Decimal(str(metric.value))
+    value = format(number, "f")
     if "." in value:
         value = value.rstrip("0").rstrip(".")
     if metric.value == 0:
@@ -167,7 +171,9 @@ def compose_frame(
     'Enlarge terminal to at least {columns}x{rows}' 和 'q Quit'（极小终端可
     裁切可见文字，但 q 事件仍有效）。恢复尺寸自动返回常规 frame。
     所有 TextCell 均须落在 size 范围内；长名称截断，不增加行数。
-    业务面板详细排版/色彩由 REQ-002～006 在本接口上继续设计。
+    REQ-002硬件内容由widgets.hardware_cells在同一组regions中绘制，采用UUID槽、
+    inventory面板状态、host/cpu及host/ram字段名和storage/mount-N身份；旧通用
+    快照保持只读兼容。其他业务面板由REQ-003～006继续设计。
     """
     if any(type(value) is not int or value < 0 for value in (size.columns, size.rows)):
         raise ValueError("Terminal dimensions must be nonnegative integers")
@@ -242,41 +248,11 @@ def compose_frame(
         region_put(region, row, region.column + region.width - 7,
                    "STALE" if obj and obj.stale else "     ", "text", 5)
 
-    def metrics(obj) -> str:
-        if obj is None or not obj.metrics:
-            return "—"
-        return "  ".join(f"{metric.name}: {format_metric(metric)}" for metric in obj.metrics)
+    # A local import keeps the public Region/TextCell types available to widgets
+    # without a module import cycle. Hardware content is drawn exactly once.
+    from joi_observer.tui.widgets import hardware_cells
 
-    gpu = by_region["gpu"]
-    if not gpu_slots:
-        region_put(gpu, gpu.row + 1, gpu.column + 2, "No GPU data", "muted", gpu.width - 4)
-    for index, object_id in enumerate(gpu_slots):
-        row = gpu.row + 1 + 3 * index
-        obj = objects.get(("gpu", object_id))
-        region_put(gpu, row, gpu.column + 2, f"GPU {object_id}", "primary", gpu.width - 11)
-        status(row, gpu, obj)
-        region_put(gpu, row + 1, gpu.column + 2, metrics(obj), "muted", gpu.width - 4)
-
-    host_region = by_region["host"]
-    host_objects = [obj for obj in snapshot.objects if obj.key.collector == "host"]
-    host_obj = next((obj for obj in host_objects if obj.stale), host_objects[0] if host_objects else None)
-    status(host_region.row, host_region, host_obj)
-    host_metrics = tuple(metric for obj in host_objects for metric in obj.metrics)
-    for index, label in enumerate(("CPU", "RAM")):
-        metric = host_metrics[index] if index < len(host_metrics) else None
-        value = f"{metric.name}: {format_metric(metric)}" if metric else f"{label}: —"
-        region_put(host_region, host_region.row + 1 + index, host_region.column + 2,
-                   value, "text", host_region.width - 4)
-
-    storage = by_region["storage"]
-    if not config.mount_points:
-        region_put(storage, storage.row + 2, storage.column + 2,
-                   "No mount points configured", "muted", storage.width - 4)
-    for index, mount in enumerate(config.mount_points[:3]):
-        obj = objects.get(("storage", mount))
-        row = storage.row + 2 + index
-        region_put(storage, row, storage.column + 2, f"{mount}  {metrics(obj)}", "text", storage.width - 11)
-        status(row, storage, obj)
+    cells.extend(hardware_cells(snapshot, config, regions, gpu_slots=gpu_slots, view=view))
 
     docker = by_region["docker"]
     docker_capacity = max(0, docker.height - 3)

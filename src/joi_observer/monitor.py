@@ -9,8 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from joi_observer.collectors.base import Collector
-from joi_observer.data.models import CollectionResult, ObjectKey
+from joi_observer.collectors.base import Collector, Discovery, DiscoveryResult
+from joi_observer.data.models import CollectionResult, ObjectKey, ObjectSpec
 from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorKind, ErrorLog, Failure
 
@@ -29,10 +29,11 @@ class _CollectorSlot:
     时清空。该结构不暴露给采集器或展示层，不自行采集、更新状态或记日志。
     """
 
-    collector: Collector
+    collector: Collector | Discovery
+    discovery: bool = False
     origin: float | None = None
     next_due: float | None = None
-    task: asyncio.Task[CollectionResult] | None = None
+    task: asyncio.Task[CollectionResult | DiscoveryResult] | None = None
     completed_at: float | None = None
     completed_wall_at: datetime | None = None
 
@@ -79,10 +80,16 @@ class Monitor:
         self._stopped: bool = False
         self._polling = False
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._started = False
+        self._specs: dict[ObjectKey, ObjectSpec] = {}
+        self._owners: dict[ObjectKey, ObjectKey] = {}
+        self._resources: dict[int, Collector | Discovery] = {}
+        self._retiring: set[asyncio.Task[None]] = set()
         for value in (interval, timeout):
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError("Sampling interval and timeout must be finite positive numbers.")
         registered = {item.key for item in state.snapshot().objects}
+        self._registered_keys = registered
         for collector in collectors:
             key = collector.spec.key
             if key in self._slots:
@@ -90,6 +97,34 @@ class Monitor:
             if key not in registered:
                 raise ValueError("Collector object is not registered in state.")
             self._slots[key] = _CollectorSlot(collector)
+            self._specs[key] = collector.spec
+            self._resources[id(collector)] = collector
+
+    def register_discovery(self, discovery: Discovery) -> None:
+        """在首次poll/run前注册发现器并建立inventory模板。
+
+        无IO、不调用discover或工厂；重复key（含普通来源key）抛ValueError；
+        调度启动后/停止后调用抛RuntimeError。首次poll立即发现，之后沿用各来源
+        独立固定周期、超时及不重叠规则。成功声明需整体校验：重复key、已有模板
+        变化、跨发现器/静态来源冲突或工厂输出不匹配时仅inventory记录unexpected，
+        不部分注册或改动旧卡；已创建但未采用的来源须关闭。预期发现失败仅提交
+        inventory，旧卡继续采集。新声明通过State.register纳入并立即首次采集，
+        之后独立定时；重复发现不重置相位、历史或状态，不重复调用工厂。
+        成功空列表不删除旧卡，旧卡靠独立UUID查询失败保槽。
+        stop覆盖所有动态来源和发现任务，迟到发现不得创建来源或提交状态。
+        """
+        if self._started or self._running or self._stopped:
+            raise RuntimeError("Cannot register discovery after scheduling has started.")
+        spec = discovery.spec
+        # Validate without changing live state, including duplicate inventory keys.
+        MonitorState((spec,))
+        if spec.key in self._registered_keys:
+            raise ValueError("Duplicate discovery key.")
+        self._state.register(spec)
+        self._registered_keys.add(spec.key)
+        self._specs[spec.key] = spec
+        self._slots[spec.key] = _CollectorSlot(discovery, discovery=True)
+        self._resources[id(discovery)] = discovery
 
     async def poll(self) -> None:
         """一次非阻塞调度迭代，供 run 和确定性测试共用；不等待任何采集完成。
@@ -121,25 +156,110 @@ class Monitor:
             due = slot.origin + (count + 1) * self._interval
         return due
 
-    async def _collect(self, slot: _CollectorSlot) -> CollectionResult:
+    @staticmethod
+    def _unexpected(key: ObjectKey) -> CollectionResult:
+        return CollectionResult(key, failure=Failure(
+            ErrorKind.UNEXPECTED, "collector.unexpected", "Unexpected collector failure."))
+
+    async def _collect(self, slot: _CollectorSlot) -> CollectionResult | DiscoveryResult:
         key = slot.collector.spec.key
         try:
             try:
                 async with asyncio.timeout(self._timeout):
-                    result = await slot.collector.collect()
-                if not isinstance(result, CollectionResult) or result.key != key:
+                    if slot.discovery:
+                        result = await slot.collector.discover()
+                    else:
+                        result = await slot.collector.collect()
+                inventory = result.inventory if isinstance(result, DiscoveryResult) else result
+                if (slot.discovery != isinstance(result, DiscoveryResult)
+                        or not isinstance(inventory, CollectionResult) or inventory.key != key):
                     raise ValueError("Unexpected collection identity.")
                 return result
             except TimeoutError:
-                return CollectionResult(key, failure=Failure(
+                result = CollectionResult(key, failure=Failure(
                     ErrorKind.TIMEOUT, "collection.timeout", "Collection timed out."))
             except Exception:
-                return CollectionResult(key, failure=Failure(
-                    ErrorKind.UNEXPECTED, "collector.unexpected", "Unexpected collector failure."))
+                result = self._unexpected(key)
+            return DiscoveryResult(result) if slot.discovery else result
         finally:
             slot.completed_at = self._clock()
             slot.completed_wall_at = (self._wall_clock() if self._wall_clock is not None
                                       else datetime.now().astimezone())
+
+    async def _close_source(self, source: Collector | Discovery) -> None:
+        """Isolate cleanup failures without changing collection status or logging."""
+        try:
+            await source.close()
+        except Exception:
+            pass
+
+    def _retire(self, sources: list[Collector]) -> None:
+        """Release rejected factory results without delaying the scheduler."""
+        seen: set[int] = set()
+        for source in sources:
+            identity = id(source)
+            if (identity in seen or identity in self._resources
+                    or not callable(getattr(source, "close", None))):
+                continue
+            seen.add(identity)
+            task = asyncio.create_task(self._close_source(source))
+            self._retiring.add(task)
+            task.add_done_callback(self._retiring.discard)
+            task.add_done_callback(self._consume)
+
+    def _adopt_discovery(self, slot: _CollectorSlot, result: DiscoveryResult) -> CollectionResult:
+        """Validate a complete round before touching live objects or scheduling children.
+
+        The temporary state applies the same public specification/result validation
+        as live state. All factories are synchronous and IO-free, so validation,
+        registration and first dispatch form one uninterrupted scheduler operation.
+        """
+        key = slot.collector.spec.key
+        created: list[Collector] = []
+        try:
+            if not isinstance(result.specs, tuple):
+                raise ValueError("Discovery declarations must be immutable.")
+            if result.inventory.failure is not None and result.specs:
+                raise ValueError("Failed discovery cannot declare children.")
+            validation = MonitorState((self._specs[key], *result.specs))
+            validation.accept(result.inventory, sampled_at=0)
+            new_specs = []
+            for spec in result.specs:
+                if spec.key in self._registered_keys:
+                    if self._owners.get(spec.key) != key or self._specs[spec.key] != spec:
+                        raise ValueError("Conflicting discovery declaration.")
+                else:
+                    new_specs.append(spec)
+            identities: set[int] = set()
+            for spec in new_specs:
+                child = slot.collector.create_collector(spec)
+                created.append(child)
+                if (getattr(child, "spec", None) != spec
+                        or not callable(getattr(child, "collect", None))
+                        or not callable(getattr(child, "close", None))
+                        or id(child) in identities or id(child) in self._resources):
+                    raise ValueError("Invalid discovery factory result.")
+                identities.add(id(child))
+        except Exception:
+            self._retire(created)
+            return self._unexpected(key)
+        for spec, child in zip(new_specs, created):
+            self._state.register(spec)
+            self._registered_keys.add(spec.key)
+            self._specs[spec.key] = spec
+            self._owners[spec.key] = key
+            self._resources[id(child)] = child
+            child_slot = _CollectorSlot(child)
+            self._slots[spec.key] = child_slot
+            self._dispatch(child_slot, self._clock())
+        return result.inventory
+
+    def _dispatch(self, slot: _CollectorSlot, now: float) -> None:
+        if slot.origin is None:
+            slot.origin = now
+        slot.next_due = self._after(slot, now)
+        slot.completed_at = slot.completed_wall_at = None
+        slot.task = asyncio.create_task(self._collect(slot))
 
     async def _iterate(self) -> None:
         if self._stopped:
@@ -147,9 +267,12 @@ class Monitor:
         if self._polling:
             raise RuntimeError("Concurrent Monitor.poll calls are not allowed.")
         self._polling = True
+        self._started = True
         try:
             now = self._clock()
-            for key, slot in self._slots.items():
+            # Discovery may append slots during harvest; new slots are dispatched
+            # immediately and participate in subsequent iterations normally.
+            for key, slot in tuple(self._slots.items()):
                 if slot.origin is None:
                     slot.origin = slot.next_due = now
                 assert slot.next_due is not None
@@ -163,6 +286,8 @@ class Monitor:
                             slot.next_due = self._after(slot, slot.completed_at)
                         if not task.cancelled():
                             result = task.result()
+                            if slot.discovery:
+                                result = self._adopt_discovery(slot, result)
                             self._state.accept(result, sampled_at=slot.completed_at)
                             if result.failure is None:
                                 self._error_log.recovered(key.collector, key.object_id)
@@ -179,8 +304,7 @@ class Monitor:
                 if slot.next_due <= now:
                     slot.next_due = self._after(slot, now)
                     if slot.task is None:
-                        slot.completed_at = slot.completed_wall_at = None
-                        slot.task = asyncio.create_task(self._collect(slot))
+                        self._dispatch(slot, now)
             await asyncio.sleep(0)
         finally:
             self._polling = False
@@ -197,6 +321,7 @@ class Monitor:
         if self._stopped:
             raise RuntimeError("Monitor has stopped.")
         self._running = True
+        self._started = True
         try:
             while not stop.is_set() and not self._stopped:
                 await self._iterate()
@@ -232,7 +357,9 @@ class Monitor:
 
     async def _cleanup(self, active: list[asyncio.Task]) -> None:
         tasks = set(active)
-        tasks.update(asyncio.create_task(collector.close()) for collector in self._collectors)
+        tasks.update(self._retiring)
+        tasks.update(asyncio.create_task(self._close_source(source))
+                     for source in self._resources.values())
         try:
             if tasks:
                 done, pending = await asyncio.wait(tasks, timeout=1.0)
