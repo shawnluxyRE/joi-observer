@@ -1,13 +1,15 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114；共享布局约束关联 AC-207/301/304/605/607/608。
-- 修订：v1.3，2026-10-30；沿用已验收半页布局，补充REQ-002硬件接线。
+- 修订：v1.3，2026-10-30；汇合 REQ-002 硬件接线与 REQ-003 Docker 命令端口注入，沿用已验收半页布局。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 
 ## 职责与边界
 
-本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001的v1.12公共基础已由R4实现并经R5验收。本轮R2保留执行代码，为REQ-002声明硬件组装和绘制接线，业务实现交由R4。REQ-002～004提供具体采集器，REQ-005/006完成模型导航与完整主题，均复用本模块的生命周期和容量约束。
+本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并验收；REQ-002 的硬件来源、GPU 发现器与已有的 REQ-003 Docker 容器来源共同接入运行期，复用同一 Monitor、MonitorState 和 ErrorLog。REQ-004 的 vLLM 采集以及 REQ-005/006 的模型导航与完整主题仍属后续需求。
+
+REQ-003 为 `ApplicationRuntime` 增加可选 `docker_command_factory`，只替换外部命令 IO。默认组装调用 `build_docker_collectors`，以全部采集器 spec 替换 Docker 静态模板，将全部来源与硬件来源一起交给唯一 Monitor；不按可见行数裁剪，不另建 State 或日志实例。构造与 prepare_log 不执行命令；注入 RuntimeComponents 时不调用该工厂。生产组装的离线测试验证实际采样与生命周期，详见 [Docker 设计](docker.md)、[REQ-003 R2 设计交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md) 与 [REQ-003 R4 交接](../dev-workflow/dev-0/REQ-003/handoff-r4.md)。
 
 目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，保证 Windows 能导入骨架并运行不依赖终端的测试。源码无需安装 Windows curses 兼容包；真实终端验收需在本地 WSL Ubuntu 或以后获得许可的目标环境进行，不连接任何服务器。
 
@@ -79,7 +81,7 @@ AC-114 的本地安装验证使用预先准备好的 uv、Python 和离线依赖
 
 `ApplicationRuntime` 是唯一组合根。先构建初始只读快照，让 UI 可显示 `—`，再并发执行 `Monitor.run(stop_event)` 与 `ObserverApp.run()`。一个会话只创建一个 MonitorState、一个 Monitor 和一个 ErrorLog；界面不拥有采集器或写状态接口。
 
-REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位，保留Docker/vLLM占位与注入RuntimeComponents路径。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
+REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位，Docker 来源通过 build_docker_collectors 一并接入，保留 vLLM 占位与注入 RuntimeComponents 路径。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
 
 绘制接线：compose_frame沿用本模块全部Region和required_size，硬件内部内容委托`widgets.hardware_cells`替换旧通用占位；不增加区域或改行数。ObserverApp的gpu_slots仍只收集collector=gpu的UUID，gpu_inventory不计数；硬件控件根据ViewSelection计算关联色，不负责方向键导航。具体字段、挂载序号、STALE和颜色角色见[硬件设计](hardware.md)。
 
@@ -158,7 +160,7 @@ Docker 填充右侧剩余高度，只显示配置前 `docker_capacity` 项；全
 | `ApplicationRuntime` / `RuntimeComponents` | `tests/test_tui.py`联合真实Monitor/State/UI：慢采集仍绘制和q退出、键盘异常使采集取消/关闭、终端恢复先于日志关闭；采样时序另见调度测试 | AC-102/103/104 |
 | uv 工具安装与命令入口 | 新 shell、未激活环境、不同工作目录、命令/示例资源定位及离线 TUI 启停；已有 R4/R5 历史证据，布局边界变更后须重新验证 | AC-114 |
 
-离线命令：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。配置解析与屏幕生成没有被替换；运行期/终端替身只隔离操作系统、驱动和终端。上述REQ-001回归应保持通过；REQ-002增加`test_hardware_view.py`验证硬件公开入口及compose_frame目标行为，其骨架/尚未接线失败单独记录在REQ-002交接中，不使用skip/xfail掩盖。
+离线命令：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。配置解析与屏幕生成没有被替换；运行期/终端替身只隔离操作系统、驱动和终端。上述 REQ-001 回归应保持通过；REQ-002 增加 `test_hardware_view.py` 验证硬件公开入口及 compose_frame 行为，REQ-003 增加 `test_docker_integration.py` 验证容器采集到显示与日志的接线。涉及共同运行期的变更需联合运行两组用例。
 
 现有 PTY 输入和终端恢复测试保留。R4 必须按新最小尺寸重跑边界与缩放，并记录奇偶半页、Storage/Docker 区域和可见条目；还需结合后续需求做整体视觉验收。历史 `verify_pty.py` / `verify_uv_install.py` 以 5 容器抬高到 120×38，已不符合新规则：无 GPU 的生产外壳新最小为 120×36，5 GPU 场景为 120×37。旧 JSON 验证资料保留为历史，不改写成新通过；新增证据应标注需求 v1.12 和源码版本。`tests/test_terminal_pty.py` 的 Esc/方向键时限测试只针对终端适配器，不因布局改写。该计划不授权连接服务器。
 
@@ -168,4 +170,4 @@ v1.1 按用户要求将安装/开发工具明确为 uv：正式使用 `uv tool i
 
 v1.2 依据需求 v1.12 废止固定 16 行服务区和按容器数增高的旧公式，定义全页上下各半、独立服务切换行、Storage 固定 3 内容行与 Docker 仅显示可容纳前缀。接口签名保留，Frame 增加 `service_switch` 区域。同步目标注释及黑盒断言，保留 R4/R5 既有执行代码与历史证据，供 R4 实现新契约。
 
-v1.3 衔接REQ-002：保留已实现的v1.12几何与运行期，明确硬件来源/发现器、共享State、纯控件和序号身份接线；新增入口仍待R4实现，R2不修改既有执行流程。
+v1.3 衔接 REQ-002 与 REQ-003：保留已实现的 v1.12 几何与运行期，将硬件来源、GPU 发现器和全部 Docker 来源接入共享 State 与 Monitor；保留纯控件、序号身份和命令端口注入边界。

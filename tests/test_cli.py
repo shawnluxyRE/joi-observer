@@ -230,7 +230,8 @@ def test_restart_passes_original_three_mounts_and_complete_containers_to_runtime
     assert deps.stderr.getvalue() == ""
 
 
-def test_real_runtime_keeps_all_loaded_container_slots_with_only_three_mounts(tmp_path, monkeypatch):
+def test_real_runtime_keeps_all_loaded_container_slots_with_only_three_mounts(
+        tmp_path, monkeypatch, pending_docker_command_factory):
     """Production assembly retains all objects even when the terminal is small."""
     from joi_observer.cli import ApplicationRuntime
     from joi_observer.tui.layout import TerminalSize
@@ -265,7 +266,7 @@ def test_real_runtime_keeps_all_loaded_container_slots_with_only_three_mounts(tm
     runtimes = []
 
     def factory(config):
-        runtime = ApplicationRuntime(config)
+        runtime = ApplicationRuntime(config, docker_command_factory=pending_docker_command_factory)
         runtimes.append(runtime)
         return runtime
 

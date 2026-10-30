@@ -1,15 +1,15 @@
 # Monitor 与内存状态设计
 
-- 关联需求：dev-0 / REQ-001、REQ-002；AC-101～AC-104、AC-108、AC-110～AC-112、AC-201～AC-207。
-- 修订：v1.6，2026-10-30；依据 requirements.md v1.12，补充REQ-002动态发现与硬件身份。
+- 关联需求：dev-0 / REQ-001、REQ-002、REQ-003；AC-101～AC-104、AC-108、AC-110～AC-112、AC-201～AC-207、AC-301～AC-304。
+- 修订：v1.6，2026-10-30；依据 requirements.md v1.12，汇合 REQ-002 动态发现与硬件身份，以及 REQ-003 单容器结果与调度接入。
 - 相关代码：`src/joi_observer/collectors/base.py`、`monitor.py`、`data/models.py`、`data/state.py`。
 - 关联模块：[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
 ## 范围与结构
 
-REQ-001的v1.12公共运行基础已由R4实现并经R5验收。本次R2设计REQ-002，保留已有实现，新增动态发现入口及契约测试；新业务由R4实现。硬件、Docker、vLLM IO分别属于REQ-002～REQ-004，复用同一调度、配置和失败处理；REQ-002提供按当前选择计算的GPU关联高亮，REQ-005～REQ-006完成导航与完整主题。未来Web只读同一状态，不建立第二套采样。
+REQ-001 的 v1.12 公共运行基础已实现并验收。REQ-002 硬件采集与 GPU 动态发现、已有的 REQ-003 Docker 容器采集共用同一调度器、内存状态与错误日志；vLLM 采集仍待 REQ-004。REQ-002 提供基于当前选择的显式 GPU 关联高亮，REQ-005～REQ-006 完成导航与完整主题。未来 Web 只读同一状态，不建立第二套采样。
 
-采用 Python 3.12+ 的 src 布局。将原规划的包内 `config.yaml` 改为 `config.py` 与 `examples/config.yaml`，区分解析代码、随包示例和用户配置。新增 `cli.py`、`error_log.py`、`tui/layout.py`；此时不建立无内容的 `web/`、具体采集器或主题文件。
+采用 Python 3.12+ 的 src 布局。将原规划的包内 `config.yaml` 改为 `config.py` 与 `examples/config.yaml`，区分解析代码、随包示例和用户配置。新增 `cli.py`、`error_log.py`、`tui/layout.py`；硬件和 Docker 采集器位于 `collectors/`；不建立无内容的 `web/` 或主题文件。
 
 安装与开发环境统一使用 uv：日常以 `uv tool install` 安装后直接调用命令，项目开发使用 `uv run`，两者均无需每次手动激活环境。命令、PATH 和安装验收详见[应用外壳设计](application-shell.md#uv-安装与开发运行)；此约定不改变采集和状态接口。
 
@@ -89,6 +89,8 @@ classDiagram
 
 `CollectionResult` 是已解析的语义结果，不携带原始 HTTP 响应或异常；正常停止的容器、0、无延迟观测和已知不支持指标都是成功。只有实际采集失败带 `Failure`。日志原因分类详见错误日志模块。硬件百分比、vLLM 计数器和窗口均值不在公共调度器计算，D-001 的 vLLM 0.31.0 指标核对留给 REQ-004。
 
+REQ-003 具体使用 `ObjectKey("docker", config.id)` 和唯一 `Metric("state", None/规范状态)`。每个 DockerCollector 独占本机命令端口，失败返回空 metrics 与既有 Failure，取消原样传播；无需修改本模块算法。全部采集器由组合根注册并交给 Monitor，隐藏项同样更新状态与日志。详见 [Docker 设计](docker.md)，真实采集入口到 Frame/Log 的联合测试为 `tests/test_docker_integration.py`。
+
 ## 采样节奏、超时与关闭
 
 每个来源具有独立任务、下次到期槽和超时。启动时立即采样，之后按 `start + n × sample_interval` 发起，默认 1 秒；超时默认 3 秒。来源仍在运行时跳过该槽，无排队、补采或重叠。例：在 0 秒发起的请求到 2.2 秒才结束，1、2 秒的槽跳过，下一次最早 3 秒发起；其他来源仍在 0、1、2、3 秒正常采集。
@@ -122,9 +124,9 @@ Monitor 是唯一状态写入者，提交成功后发一次轻量通知。日志
 | Monitor→ErrorLog | 同上及 `error_log.py` | 61次失败仍提交61次；日志限频由真实日志模块测试另行验证，不 mock 被测调度结果 |
 | Monitor/State→Frame | `tests/test_integration.py` | 十个容器持续采集，显示容量4→6→3时仅变可见前缀；隐藏对象失败仍记日志，重新可见读取当前STALE状态 |
 
-原有入口为`python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py`；REQ-002新增`tests/test_hardware_monitor.py`。节奏注入单调时钟，超时用本机事件循环，全部来源为离线端口。REQ-001已有实现回归应通过；新增register_discovery仍是NotImplementedError骨架，不混同旧功能回归。实际结果见各需求交接单。
+公共入口为 `python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py`；REQ-002 增加 `tests/test_hardware_monitor.py` 等硬件用例，REQ-003 增加 `tests/test_docker_integration.py`。节奏测试注入单调时钟，超时使用本机事件循环，采集端口使用离线样本，不连接服务。`register_discovery` 和 Docker 采集已实现；历史阶段结果见各需求交接单，Docker 设计记录见 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)；涉及共同运行期的变更需重新执行联合回归，不能沿用独立实现的测试结果。
 
-REQ-001的v1.12配置/布局已完成验收；R4接入REQ-002时应保持其公共行为，并扩展动态调度、全部资源关闭和运行期接线验证。真实GPU、Docker、vLLM权限/输出仍未实机验证。
+集成应保持 REQ-001 的 v1.12 配置/布局行为，并验证动态发现、全部来源的关闭和运行期接线。真实 GPU、Docker 的权限、命令输出与清理时限仍需用户现场验证；vLLM 尚未接入。
 
 ## 修订说明
 
@@ -135,4 +137,4 @@ v1.4 按用户反馈精简为单张类图，删除连线标签、非关键成员
 
 v1.5 对应需求v1.12：限定有效挂载来源为前三项，容器来源与状态完整保留，Docker可见容量只作用于Frame；补充隐藏对象采集/日志/缩放的离线联合测试。核心类图和公开方法签名不变。
 
-v1.6 对应REQ-002：明确UUID、inventory、CPU/RAM独立身份及挂载序号；增加DiscoveryResult/Discovery和Monitor.register_discovery骨架，原State算法与既有调度实现保持不变。动态发现细节由共享hardware.md维护。
+v1.6 对应 REQ-002 与 REQ-003：明确 UUID、inventory、CPU/RAM 独立身份及挂载序号，实现 DiscoveryResult/Discovery 与 Monitor.register_discovery；补齐 Docker 的 state 字段和组合根接入，硬件与容器共用 Monitor/MonitorState 的生命周期和错误目录。动态发现细节由 hardware.md 维护，容器规则由 docker.md 维护。

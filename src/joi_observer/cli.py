@@ -10,9 +10,10 @@ from pathlib import Path
 import platform
 import signal
 import sys
-from typing import Protocol, TextIO
+from typing import TYPE_CHECKING, Protocol, TextIO
 
 from joi_observer import __version__
+from joi_observer.collectors.docker import build_docker_collectors
 from joi_observer.collectors.hardware import build_hardware_sources
 from joi_observer.config import AppConfig, ConfigError, example_config_path, load_config, resolve_config_path
 from joi_observer.data.models import Metric, ObjectKey, ObjectSpec, StateSnapshot
@@ -21,6 +22,9 @@ from joi_observer.error_log import ErrorLog
 from joi_observer.monitor import Monitor
 from joi_observer.tui.app import CursesTerminal, ObserverApp
 from joi_observer.tui.layout import HostInfo
+
+if TYPE_CHECKING:
+    from joi_observer.collectors.docker import DockerCommandPort
 
 
 class RuntimePort(Protocol):
@@ -90,14 +94,21 @@ class CliDependencies:
 class ApplicationRuntime:
     """生产组合根，负责创建本次会话唯一的State、Monitor、ErrorLog与UI。
 
-    构造只保存config，无I/O。prepare_log准备日志；run中按配置装配采集器，
-    具体硬件/Docker/vLLM适配分别由REQ-002/003/004提供，不创建伪造数据。
+    构造只保存config，无I/O。prepare_log或run首次按配置装配组件，前者只准备
+    日志，后者才启动采样；硬件/Docker/vLLM适配分别由REQ-002/003/004提供。
     UI只接收SnapshotReader。所有正常监控数据保存在内存，不写数据库/文件。
+
+    REQ-003：docker_command_factory 是外部命令端口的离线替换点；默认 None
+    使用本机 LocalDockerCommand，每个配置项独占一个端口。只有实际装配且
+    containers 非空时才调用工厂，不按终端容量截断。注入 components 时不调用
+    此工厂。构造/prepare_log 不执行命令；close 由 Monitor 逐项释放采集器。
     """
 
-    def __init__(self, config: AppConfig, *, components: RuntimeComponents | None = None) -> None:
+    def __init__(self, config: AppConfig, *, components: RuntimeComponents | None = None,
+                 docker_command_factory: "Callable[[], DockerCommandPort] | None" = None) -> None:
         self.config = config
         self.components = components
+        self._docker_command_factory = docker_command_factory
         self._stop_event: asyncio.Event | None = None
         self._tasks: list[asyncio.Task] = []
         self._deadline: float | None = None
@@ -176,25 +187,30 @@ class ApplicationRuntime:
         await self._wait_with_budget({self._close_task})
 
     def _components(self) -> RuntimeComponents:
-        """组装共享状态、真实硬件来源与统一生命周期。
+        """组装共享状态、真实硬件与Docker来源及统一生命周期。
 
         build_hardware_sources(config)提供host/cpu、host/ram、storage/mount-N
         和独立GPU发现器，代替host/local占位；全部静态spec加入同一MonitorState，
-        将静态来源交Monitor后调用register_discovery。导入/构造阶段不执行硬件IO，
-        实际采集由Monitor.run发起。保留Docker/vLLM占位及已注入components路径。
+        与全部配置的Docker来源一起交Monitor后调用register_discovery。
+        导入/构造阶段不执行采集IO，实际采集由Monitor.run发起。
+        保留vLLM占位及已注入components路径。
         """
         if self.components is None:
             hardware = build_hardware_sources(self.config)
-            specs = [collector.spec for collector in hardware.collectors]
-            # Docker/vLLM remain presentation slots until REQ-003/004.
-            specs.extend(ObjectSpec(ObjectKey("docker", item.id), (Metric("state", None),))
-                         for item in self.config.containers)
+            # Create every configured Docker source, independent of the frame's
+            # visible capacity, and share the hardware monitor and state.
+            docker = build_docker_collectors(
+                self.config.containers, timeout=self.config.collection_timeout,
+                command_factory=self._docker_command_factory,
+            )
+            collectors = (*hardware.collectors, *docker)
+            specs = [collector.spec for collector in collectors]
             specs.extend(ObjectSpec(ObjectKey("vllm", item.id),
                                     (Metric("RUNNING", None), Metric("WAITING", None)))
                          for item in self.config.models)
             state = MonitorState(tuple(specs))
             log = ErrorLog(self.config.logging)
-            monitor = Monitor(hardware.collectors, state, log, interval=self.config.sample_interval,
+            monitor = Monitor(collectors, state, log, interval=self.config.sample_interval,
                               timeout=self.config.collection_timeout)
             monitor.register_discovery(hardware.discovery)
             app = ObserverApp(self.config, _ReadOnlyState(state), CursesTerminal(),

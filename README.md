@@ -8,11 +8,11 @@
 
 ## 当前阶段
 
-REQ-001 的公共运行基础和 REQ-002 的本机硬件链路已实现：严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端，以及 NVIDIA GPU、CPU、RAM 和前三挂载点的真实采集与显示。Docker/vLLM 仍为未知值占位；模型方向键导航和完整双主题属于后续 REQ-003～REQ-006。
+REQ-002 本机硬件监控已接入，并兼容基线中已有的 REQ-003 Docker 容器监控。REQ-001 的公共运行基础已实现：严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端及终端恢复。硬件与显式配置的本机 Docker 容器共用同一个 Monitor 和 MonitorState；vLLM 仍为未知值占位，模型方向键导航和完整双主题属于后续 REQ-004～REQ-006。
 
-需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。REQ-001 已通过 v1.12 的 R5 验收；本轮 REQ-002 的实现和验证见 R4 交接，尚待 R5 审查。
+需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。REQ-001 已通过 v1.12 的 R5 验收；REQ-002 与 REQ-003 的独立验证记录见各自交接文档。2026-10-30，当前分支在本地 WSL Ubuntu 24.04 / Python 3.12 完整离线回归为 847 passed，包含硬件与 Docker 共用运行期、GPU 动态新增和全部来源退出清理的联合测试。
 
-设计入口：[本机硬件](docs/design/hardware.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。本轮实现范围与实际验证结果见 [REQ-002 R4 交接](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md)。
+设计入口：[本机硬件](docs/design/hardware.md)、[Docker](docs/design/docker.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。各需求的历史实现范围与验证结果见 [REQ-001 R4 交接](docs/dev-workflow/dev-0/REQ-001/handoff-r4.md)、[REQ-002 R4 交接](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md) 和 [REQ-003 R4 交接](docs/dev-workflow/dev-0/REQ-003/handoff-r4.md)。
 
 硬件采集在运行工具的 Ubuntu 主机本地执行。GPU 需要已安装并可查询的 `nvidia-smi`，按完整 UUID 保持设备身份；新卡追加，暂时消失的卡保留原位置并显示 STALE。发现器失败不阻断已知卡和 Host 采样；成功无卡显示 `No NVIDIA GPUs`。不会安装驱动或修改硬件。当前按配置的首个模型计算显式 GPU 关联色，索引只使用新鲜且唯一的采样值，未知映射不猜测；方向键联动待 REQ-005。
 
@@ -63,7 +63,27 @@ WSL 中的 uv 位于 `/home/shawn/.local/bin/uv`，实测版本为 0.13.6。使�
 
 默认每秒采样、每对象超时 3 秒，约 60 秒历史只保存在内存。默认错误日志为 `~/.joi-observer/error.log`，10,000,000 字节轮转、3 份备份，仅记录采集失败 ERROR；`time` 使用服务器本地 `YYYY-MM-DD HH:MM:SS`，不附带时区信息。相同对象相同错误连续发生最多每 60 秒记录一次。日志不可写时启动前提示一次并继续监控。
 
-布局按全页高度平分：下半区包含服务窗口、服务切换及键位提示，奇数高度时多出的一行留给上半区。无 GPU 或不超过 4 个 GPU 槽时最低为 120×36；5 GPU 场景最低为 120×37，GPU 更多时按设计公式增高，容器数量不提高最低高度。Storage 固定 3 行内容，只纳入原配置前三个挂载点，前项失败不以尾项补位；整个 YAML 仍执行安全校验。Docker 全部配置项参与后续采集接入，只显示区域可容纳的前若干项，隐藏不丢失状态或改变采样。页高 44/48/42 行时分别显示前 4/6/3 个容器，36 行时容量可为零；溢出不提示、不滚动、不占用下半区，内容不足时保留空白。低于基础尺寸时显示英文放大提示，`q` 仍可退出。具体分配见[终端设计](docs/design/application-shell.md)。
+布局按全页高度平分：下半区包含服务窗口、服务切换及键位提示，奇数高度时多出的一行留给上半区。无 GPU 或不超过 4 个 GPU 槽时最低为 120×36；5 GPU 场景最低为 120×37，GPU 更多时按设计公式增高，容器数量不提高最低高度。Storage 固定 3 行内容，只纳入原配置前三个挂载点，前项失败不以尾项补位；整个 YAML 仍执行安全校验。Docker 全部配置项持续采集，只显示区域可容纳的前若干项，隐藏不丢失状态或改变采样。页高 44/48/42 行时分别显示前 4/6/3 个容器，36 行时容量可为零；溢出不提示、不滚动、不占用下半区，内容不足时保留空白。低于基础尺寸时显示英文放大提示，`q` 仍可退出。具体分配见[终端设计](docs/design/application-shell.md)。
+
+## Docker 容器配置与边界
+
+在现有 YAML 的 `containers` 中填写稳定的应用内 `id`，以及实际容器名称或完整的 64 位小写十六进制 ID：
+
+```yaml
+containers:
+  - id: webui
+    name: actual-webui-container
+  - id: inference
+    name: actual-inference-container
+```
+
+`name` 精确匹配，不使用 Compose 项目名推断、名称子串或短 ID 前缀，也不自动去掉前导 `/`。按名称监控会在后续采样中跟随同名重建的容器；按完整 ID 监控不会自动改绑。不同 `id` 可以指向同一目标，仍独立采样。
+
+采集使用本机 `docker` CLI 的只读 `container inspect`，固定访问 `unix:///var/run/docker.sock`。运行用户需要已安装 Docker CLI 且具备该 socket 的读取权限；工具不会执行 sudo 或调整权限。命令不使用 shell，子进程移除 `DOCKER_*` 环境变量，不跟随远端 context，也不自动发现 rootless socket。
+
+状态包括 Created、Running、Paused、Restarting、Removing、Exited、Dead。Running 仅表示容器生命周期，不代表应用健康；Exited/Dead 属于成功采集，不产生错误日志。对象不存在、权限不足、命令不可用、超时或响应异常时原位显示 STALE，原因仅写 ERROR 日志，后续成功采样自动恢复。每个容器独立执行、超时和清理；stdout/stderr 各限制为 65,536 字节，原始输出不进入快照或日志。
+
+当前验证使用离线命令样本及本地进程替身，真实 Docker CLI/模板兼容性、socket 权限、错误文案与部署中的清理时限尚未实机验证。
 
 ## 离线开发验证
 
