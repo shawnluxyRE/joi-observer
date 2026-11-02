@@ -1,6 +1,6 @@
 """REQ-003 离线链路：真实 Docker 解析/采集、Monitor、State、Frame 与日志。
 
-只替换命令进程、时钟和终端边界；不注入 CollectionResult 或采集业务结果。
+只替换命令进程、硬件原始 IO、时钟和终端边界；不注入采集业务结果。
 所有外部进程/连接入口在本模块测试期间关闭，不能误用本机 Docker。
 """
 
@@ -16,13 +16,14 @@ import subprocess
 import pytest
 
 from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from joi_observer.collectors import hardware
 from joi_observer.collectors.docker import CommandOutput, DockerCollector
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig
 from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorLog
 from joi_observer.monitor import Monitor
 from joi_observer.tui.app import ObserverApp
-from joi_observer.tui.layout import HostInfo, TerminalSize, compose_frame
+from joi_observer.tui.layout import HostInfo, TerminalSize, TextCell, compose_frame
 
 
 NOW = datetime(2026, 10, 30, 10, 0, tzinfo=timezone.utc)
@@ -37,6 +38,48 @@ def forbid_real_processes_and_connections(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_shell", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def offline_hardware_io(monkeypatch):
+    """Keep this module's real combined runtime behind raw, healthy hardware IO."""
+    class RawHardwareIO:
+        def __init__(self, *, timeout=3.0):
+            self.timeout = timeout
+            self.cpu_reads = 0
+            self.closed = False
+
+        async def read_text(self, path):
+            await asyncio.sleep(0)
+            if path == "/proc/stat":
+                self.cpu_reads += 1
+                busy = 100 + 25 * self.cpu_reads
+                idle = 100 + 75 * self.cpu_reads
+                return f"cpu {busy} 0 0 {idle} 0 0 0 0\n"
+            if path == "/proc/meminfo":
+                return "MemTotal: 16777216 kB\nMemAvailable: 12582912 kB\n"
+            if path == "/proc/self/mountinfo":
+                return ("10 1 8:1 / / rw - ext4 /dev/root rw\n"
+                        "11 10 8:2 / /data rw - ext4 /dev/data rw\n")
+            raise AssertionError(f"Unexpected hardware file: {path}")
+
+        async def statvfs(self, path):
+            await asyncio.sleep(0)
+            assert path in ("/", "/data")
+            return {
+                "/": hardware.FileSystemStat(4096, 26214400, 19660800),
+                "/data": hardware.FileSystemStat(4096, 52428800, 39321600),
+            }[path]
+
+        async def run(self, argv):
+            await asyncio.sleep(0)
+            assert argv == ("nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits")
+            return hardware.CommandOutput(0, "")
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(hardware, "LocalHardwareIO", RawHardwareIO)
 
 
 class RawCommand:
@@ -100,8 +143,45 @@ def visible_names(frame, config):
 
 
 def row_status(frame, name):
-    row = next(cell.row for cell in frame.cells if cell.text == name)
-    return [cell.text for cell in frame.cells if cell.row == row and cell.text != name]
+    docker = next(region for region in frame.regions if region.name == "docker")
+    cells = [cell for cell in frame.cells
+             if docker.row <= cell.row < docker.row + docker.height
+             and docker.column <= cell.column < docker.column + docker.width]
+    row = next(cell.row for cell in cells if cell.text == name)
+    return [cell.text for cell in cells if cell.row == row and cell.text != name]
+
+
+@pytest.mark.parametrize("same_row", [False, True], ids=["different-row", "same-row"])
+def test_docker_row_status_ignores_same_named_stale_gpu_cells(tmp_path, same_row):
+    """Both the name lookup and its status cells must stay inside Docker."""
+    config = configuration(tmp_path, count=1)
+
+    async def collected_snapshot():
+        collector = DockerCollector(config.containers[0], command=RawCommand())
+        state = MonitorState((collector.spec,), clock=lambda: 1)
+        try:
+            state.accept(await collector.collect(), sampled_at=1)
+            return state.snapshot()
+        finally:
+            await collector.close()
+
+    frame = compose_frame(asyncio.run(collected_snapshot()), config, TerminalSize(120, 44),
+                          HostInfo("offline-host", "Ubuntu"), NOW)
+    name = config.containers[0].name
+    gpu = next(region for region in frame.regions if region.name == "gpu")
+    docker = next(region for region in frame.regions if region.name == "docker")
+    row = docker.row + 2 if same_row else gpu.row + 1
+    assert gpu.row <= row < gpu.row + gpu.height
+    # Put the left-hand namesake first to expose a global first-match lookup;
+    # its STALE cell must also be excluded when the two panels share this row.
+    frame = replace(frame, cells=(
+        TextCell(row, gpu.column + 2, name),
+        TextCell(row, gpu.column + gpu.width - 7, "STALE"),
+        *frame.cells,
+    ))
+    status = row_status(frame, name)
+    assert "Running" in status
+    assert "STALE" not in status
 
 
 def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_change(tmp_path, capsys):

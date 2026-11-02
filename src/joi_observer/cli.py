@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Protocol, TextIO
 
 from joi_observer import __version__
 from joi_observer.collectors.docker import build_docker_collectors
+from joi_observer.collectors.hardware import build_hardware_sources
 from joi_observer.config import AppConfig, ConfigError, example_config_path, load_config, resolve_config_path
 from joi_observer.data.models import Metric, ObjectKey, ObjectSpec, StateSnapshot
 from joi_observer.data.state import MonitorState
@@ -186,19 +187,22 @@ class ApplicationRuntime:
         await self._wait_with_budget({self._close_task})
 
     def _components(self) -> RuntimeComponents:
+        """组装共享状态、硬件与 Docker 来源及统一生命周期。
+
+        两类工厂只组装来源；全部 spec 加入同一 MonitorState，采集器交给
+        同一 Monitor 并注册 GPU 发现器。组装不执行采集 IO，实际采集由
+        Monitor.run 发起。仅 vLLM 保留占位，已注入 components 时直接复用。
+        """
         if self.components is None:
-            # Create every configured Docker source, independent of the frame's
-            # visible capacity. Other source types retain their unknown slots
-            # until REQ-002/004 supply collectors using this same state.
-            collectors = build_docker_collectors(
-                self.config.containers, timeout=self.config.collection_timeout,
+            hardware = build_hardware_sources(self.config)
+            docker_collectors = build_docker_collectors(
+                self.config.containers,
+                timeout=self.config.collection_timeout,
                 command_factory=self._docker_command_factory,
             )
-            specs = [ObjectSpec(ObjectKey("host", "local"),
-                                (Metric("CPU", None, "%"), Metric("RAM", None, "GiB")))]
-            # Mounts have no collector identity yet (REQ-002); the layout uses
-            # config directly for their unknown slots, including long paths.
-            specs.extend(collector.spec for collector in collectors)
+            collectors = hardware.collectors + docker_collectors
+            specs = [collector.spec for collector in collectors]
+            # vLLM remains a presentation slot until REQ-004.
             specs.extend(ObjectSpec(ObjectKey("vllm", item.id),
                                     (Metric("RUNNING", None), Metric("WAITING", None)))
                          for item in self.config.models)
@@ -206,6 +210,7 @@ class ApplicationRuntime:
             log = ErrorLog(self.config.logging)
             monitor = Monitor(collectors, state, log, interval=self.config.sample_interval,
                               timeout=self.config.collection_timeout)
+            monitor.register_discovery(hardware.discovery)
             app = ObserverApp(self.config, _ReadOnlyState(state), CursesTerminal(),
                               host=HostInfo(platform.node(), f"{platform.system()} {platform.release()}"),
                               wall_clock=lambda: datetime.now().astimezone())

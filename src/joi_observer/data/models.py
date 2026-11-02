@@ -16,7 +16,9 @@ from joi_observer.error_log import Failure
 class ObjectKey:
     """稳定的监控身份；collector 为来源命名空间，object_id 为对象标识。
 
-    约定来源为 host/gpu/storage/docker/vllm；同名模型按配置 id 区分。
+    约定来源为 host/gpu/gpu_inventory/storage/docker/vllm；同名模型按配置 id 区分。
+    REQ-002用host/cpu、host/ram、gpu/<完整UUID>、gpu_inventory/local和
+    storage/mount-0..2；inventory不是GPU设备，不能计入GPU槽数。
     字符串非空，不得含凭据、控制字符或原始 URL。collector 最多32个ASCII字符，
     满足[a-z][a-z0-9_.-]*；object_id 最多128个Unicode字符；大小写敏感，联合唯一。
     """

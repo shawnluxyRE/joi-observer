@@ -55,6 +55,34 @@ def test_duplicate_initial_identity_is_rejected():
         MonitorState((SPEC, SPEC))
 
 
+@pytest.mark.parametrize("value", [10**309, -(10**309), 10**5000 + 7],
+                         ids=["positive", "negative", "beyond_string_limit"])
+def test_exact_integer_metrics_survive_state_failure_and_recovery(value):
+    state = MonitorState((SPEC,), clock=lambda: 3)
+    state.accept(CollectionResult(KEY, (Metric("a", value), Metric("b", 0))), sampled_at=1)
+    initial = state.snapshot()
+    assert initial.objects[0].metrics[0].value == value
+    state.accept(CollectionResult(KEY, failure=FAILURE), sampled_at=2)
+    failed = state.snapshot().objects[0]
+    assert failed.stale and failed.metrics[0].value == value
+    assert failed.history[-1].metrics is None
+    state.accept(CollectionResult(KEY, (Metric("a", value + 1), Metric("b", 0))), sampled_at=3)
+    recovered = state.snapshot().objects[0]
+    assert not recovered.stale and recovered.metrics[0].value == value + 1
+    assert recovered.history[-1].metrics[0].value == value + 1
+    assert initial.objects[0].metrics[0].value == value
+
+
+def test_unrepresentable_time_parameters_are_value_errors_and_do_not_mutate_state():
+    with pytest.raises(ValueError):
+        MonitorState((SPEC,), history_seconds=10**309)
+    state = MonitorState((SPEC,), clock=lambda: 1)
+    before = state.snapshot()
+    with pytest.raises(ValueError):
+        state.accept(CollectionResult(KEY, (Metric("a", 1), Metric("b", 2))), sampled_at=10**309)
+    assert state.snapshot() == before
+
+
 class Source:
     spec = ObjectSpec(KEY, (Metric("a", None),))
 

@@ -58,4 +58,5 @@
 
 # Tests
 
-- 必要时可以使用WSL的Ubuntu系统，目录可用`~/projects/tmp`。
+- 产品目标为 Ubuntu Server 24.04 amd64；必需验证在本地 Ubuntu 或 WSL Ubuntu 执行。Windows 工作区通过 WSL 运行测试，目录可用 `~/projects/tmp`。
+- 不要求维护原生 Windows 专用测试或执行 Windows 全量回归；通用非终端离线测试继续保留。

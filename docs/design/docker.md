@@ -123,7 +123,7 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 `build_docker_collectors(containers, timeout=..., command_factory=...)` 按完整配置顺序创建独立采集器，空配置返回空 tuple 且不创建端口。默认工厂创建 LocalDockerCommand；工厂、采集器构造与 prepare_log 都不执行命令。
 
-R4 在 `ApplicationRuntime._components()` 调用该工厂：用其全部 spec 替换现有 Docker 静态模板，并把全部采集器交给同一个 Monitor；保留 host/vLLM 槽位、唯一 State/Log 和只读 reader。传入 RuntimeComponents 时沿用注入组件，不创建额外采集器。新增 `docker_command_factory` 只隔离外部命令，不能替换采集结果或另建一套状态。
+R4 在 `ApplicationRuntime._components()` 调用该工厂：用其全部 spec 替换现有 Docker 静态模板，并把全部采集器交给同一个 Monitor；硬件与 Docker 共用唯一 State/Log 和只读 reader，仅 vLLM 保留占位。传入 RuntimeComponents 时沿用注入组件，不创建额外采集器。新增 `docker_command_factory` 只隔离外部命令，不能替换采集结果或另建一套状态。
 
 `compose_frame` 已按内容容量显示配置前缀，每项一行，失败不补位。未配置时仅在有内容行的区域显示 `No containers configured`；容量为 0 时不绘制条目或空态。配置 10 项、容量 4→6→3 时仅改变可见项，不影响采集、对象顺序、最小终端尺寸或下半区高度。隐藏项真实失败仍按既有 ERROR 规则记录；单纯隐藏不记错。无需新增滚动、分页、更多提示或展示类。
 
