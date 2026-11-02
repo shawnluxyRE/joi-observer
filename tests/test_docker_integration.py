@@ -37,20 +37,7 @@ def forbid_real_processes_and_connections(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
     monkeypatch.setattr(asyncio, "create_subprocess_shell", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
-    original_run = asyncio.run
-
-    def guarded_run(main, **kwargs):
-        # Windows creates its loop wakeup socket before running the coroutine.
-        # Guard the business coroutine and runner cleanup, then restore the
-        # connection entry point before another event loop is constructed.
-        with monkeypatch.context() as connections:
-            async def guarded():
-                connections.setattr(socket.socket, "connect", forbidden)
-                return await main
-
-            return original_run(guarded(), **kwargs)
-
-    monkeypatch.setattr(asyncio, "run", guarded_run)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
 
 
 @pytest.fixture(autouse=True)

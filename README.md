@@ -87,7 +87,7 @@ containers:
 
 ## 离线开发验证
 
-在已有 Python 3.12+、PyYAML 和 pytest 的本地环境中运行，不必安装本包或访问服务：
+产品目标为 Ubuntu Server 24.04 amd64；必需验证在已有 Python 3.12+、PyYAML 和 pytest 的本地 Ubuntu 或 WSL Ubuntu 环境中运行。Windows 工作区通过 WSL 执行以下命令，不必安装本包或访问服务；不要求维护原生 Windows 专用测试或执行 Windows 全量回归，历史验证记录保留：
 
 ```text
 python -m compileall -q src tests

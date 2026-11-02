@@ -13,9 +13,10 @@ from joi_observer.collectors.hardware import LocalHardwareIO
 from test_local_hardware_io import INVENTORY, LINUX, assert_reaped, executable, wait_marker
 
 
+@LINUX
 @pytest.mark.parametrize("finish", ["normal", "cancel", "close"])
 def test_owned_output_pipes_work_on_native_event_loop(tmp_path, monkeypatch, capsys, finish):
-    """Exercise actual POSIX/Windows pipes, including Proactor overlapped handles."""
+    """Exercise real Linux output pipes, cancellation and direct-child reaping."""
     marker = tmp_path / "native-pid"
     worker = tmp_path / "native-worker.py"
     worker.write_text("import os, sys, time\nfrom pathlib import Path\n"
@@ -29,23 +30,8 @@ def test_owned_output_pipes_work_on_native_event_loop(tmp_path, monkeypatch, cap
     async def scenario():
         port = LocalHardwareIO()
         operation = asyncio.create_task(port.read_text("/proc/stat"))
-        handle = None
         try:
             pid = await wait_marker(marker)
-            if os.name == "nt":
-                import ctypes
-                from ctypes import wintypes
-
-                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-                kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-                kernel.OpenProcess.restype = wintypes.HANDLE
-                kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-                kernel.WaitForSingleObject.restype = wintypes.DWORD
-                kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-                kernel.CloseHandle.restype = wintypes.BOOL
-                handle = kernel.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE only
-                if finish != "normal":
-                    assert handle
             started = time.monotonic()
             if finish == "normal":
                 assert await operation == "captured output"
@@ -57,15 +43,10 @@ def test_owned_output_pipes_work_on_native_event_loop(tmp_path, monkeypatch, cap
                 with pytest.raises(asyncio.CancelledError):
                     await operation
                 assert time.monotonic() - started < 0.25
-            if os.name == "nt":
-                assert not handle or kernel.WaitForSingleObject(handle, 0) == 0
-            else:
-                assert_reaped(pid)
+            assert_reaped(pid)
         finally:
             await port.close()
             await asyncio.gather(operation, return_exceptions=True)
-            if handle:
-                kernel.CloseHandle(handle)
 
     asyncio.run(scenario())
     assert capsys.readouterr() == ("", "")
@@ -250,8 +231,11 @@ def test_exited_parent_with_inherited_pipes_does_not_prevent_timeout_cleanup(tmp
         # An orphaned descendant belongs to init's reaper, but must be dead;
         # the directly-created process above must already have been reaped.
         status = Path(f"/proc/{child}/status")
-        if status.exists():
-            assert "State:\tZ" in status.read_text()
+        try:
+            if status.exists():
+                assert "State:\tZ" in status.read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            pass  # The process can be reaped between the existence check and read.
         await port.close()
 
     asyncio.run(scenario())

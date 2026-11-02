@@ -82,7 +82,7 @@ def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp
         async def reject_async_network(*args, **kwargs):
             reject_network(*args, **kwargs)
 
-        # 在事件循环创建后安装边界，避免误拦截Windows事件循环自身的本地唤醒机制。
+        # 在事件循环创建后安装采集边界，保持测试初始化与被测采样隔离。
         monkeypatch.setattr(socket, "create_connection", reject_network)
         monkeypatch.setattr(socket, "getaddrinfo", reject_network)
         monkeypatch.setattr(socket.socket, "connect", reject_network)
@@ -291,7 +291,7 @@ def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_
             forbidden_calls.append(args)
             raise AssertionError("Joint runtime test must not start real processes or connections")
 
-        # Install guards after the Windows event loop has created its wakeup pair.
+        # Install IO guards inside the active test event loop.
         for name in ("create_subprocess_exec", "create_subprocess_shell", "open_connection"):
             monkeypatch.setattr(asyncio, name, forbidden)
         monkeypatch.setattr(subprocess, "Popen", forbidden)

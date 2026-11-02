@@ -11,7 +11,7 @@
 
 ApplicationRuntime 通过 build_hardware_sources 和 build_docker_collectors 组装两类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 仅替换 Docker 外部命令 IO；全部配置容器参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源或调用 Docker 工厂。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
 
-目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，保证 Windows 能导入骨架并运行不依赖终端的测试。源码无需安装 Windows curses 兼容包；真实终端验收需在本地 WSL Ubuntu 或以后获得许可的目标环境进行，不连接任何服务器。
+目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，使模块导入、配置加载及非终端离线测试不依赖终端初始化。必需验证在本地 Ubuntu 或 WSL Ubuntu 执行，Windows 工作区通过 WSL 运行测试，不要求维护原生 Windows 专用测试或执行 Windows 全量回归。源码无需安装 Windows curses 兼容包；真实终端验收在本地 Ubuntu 或 WSL Ubuntu 完成，不连接任何服务器。
 
 ```mermaid
 flowchart LR

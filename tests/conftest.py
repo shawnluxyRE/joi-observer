@@ -17,19 +17,7 @@ def no_live_docker_io(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
     monkeypatch.setattr(asyncio, "create_subprocess_shell", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
-    original_run = asyncio.run
-
-    def guarded_run(main, **kwargs):
-        # Let Windows initialize the event loop's private wakeup socket first.
-        # The guard then covers the business coroutine and all runner cleanup.
-        with monkeypatch.context() as connections:
-            async def guarded():
-                connections.setattr(socket.socket, "connect", forbidden)
-                return await main
-
-            return original_run(guarded(), **kwargs)
-
-    monkeypatch.setattr(asyncio, "run", guarded_run)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
 
 
 @pytest.fixture
