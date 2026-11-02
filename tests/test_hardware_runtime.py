@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
+import subprocess
 
 from joi_observer import cli
-from joi_observer.collectors import hardware
-from joi_observer.config import AppConfig, LogConfig
+from joi_observer.collectors import docker, hardware
+from joi_observer.config import AppConfig, ContainerConfig, LogConfig
 from joi_observer.tui.layout import TerminalSize
 
 
@@ -274,3 +276,209 @@ def test_production_runtime_isolates_hardware_failures_and_recovers_empty_invent
         assert terminal.restored
 
     asyncio.run(scenario())
+
+
+def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_on_q(
+        tmp_path, monkeypatch, capsys):
+    """Both real collector chains share one runtime; only raw IO and terminal are replaced."""
+    async def scenario():
+        terminal = RecordingTerminal()
+        hardware_ports, docker_ports, forbidden_calls = [], [], []
+        phase = {"cpu_failure": False, "docker_failure": False, "shutdown_pending": False}
+        cpu_pending, docker_pending = asyncio.Event(), asyncio.Event()
+
+        def forbidden(*args, **kwargs):
+            forbidden_calls.append(args)
+            raise AssertionError("Joint runtime test must not start real processes or connections")
+
+        # Install guards after the Windows event loop has created its wakeup pair.
+        for name in ("create_subprocess_exec", "create_subprocess_shell", "open_connection"):
+            monkeypatch.setattr(asyncio, name, forbidden)
+        monkeypatch.setattr(subprocess, "Popen", forbidden)
+        for name in ("create_connection", "getaddrinfo"):
+            monkeypatch.setattr(socket, name, forbidden)
+        for name in ("connect", "connect_ex"):
+            monkeypatch.setattr(socket.socket, name, forbidden)
+
+        class RawHardwareIO:
+            def __init__(self, *, timeout=3.0):
+                self.timeout = timeout
+                self.calls = []
+                self.cpu_reads = 0
+                self.cancelled = False
+                self.close_calls = 0
+                self.closed_after_restore = False
+                hardware_ports.append(self)
+
+            async def read_text(self, path):
+                self.calls.append(("read", path))
+                if path == "/proc/stat":
+                    self.cpu_reads += 1
+                    if phase["shutdown_pending"]:
+                        cpu_pending.set()
+                        try:
+                            await asyncio.Future()
+                        except asyncio.CancelledError:
+                            self.cancelled = True
+                            raise
+                    if phase["cpu_failure"]:
+                        raise PermissionError("PRIVATE_HARDWARE_FAILURE")
+                    ticks = 100 + 50 * self.cpu_reads
+                    return f"cpu {ticks} 0 0 {ticks} 0 0 0 0\n"
+                if path == "/proc/meminfo":
+                    return "MemTotal: 16777216 kB\nMemAvailable: 12582912 kB\n"
+                if path == "/proc/self/mountinfo":
+                    return MOUNTINFO
+                raise AssertionError(path)
+
+            async def statvfs(self, path):
+                self.calls.append(("statvfs", path))
+                assert path == "/"
+                return hardware.FileSystemStat(4096, 100 * 2**18, 75 * 2**18)
+
+            async def run(self, argv):
+                self.calls.append(("run", argv))
+                inventory = ("nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader,nounits")
+                if argv == inventory:
+                    return hardware.CommandOutput(0, f"0, {GPU_UUIDS[0]}\n")
+                assert argv == (
+                    "nvidia-smi",
+                    "--query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw",
+                    "--format=csv,noheader,nounits", f"--id={GPU_UUIDS[0]}",
+                )
+                return hardware.CommandOutput(0, f"0, {GPU_UUIDS[0]}, Joint GPU, 25, 8192, 16384, 60, 100\n")
+
+            async def close(self):
+                self.close_calls += 1
+                self.closed_after_restore = terminal.restored
+
+        class RawDockerCommand:
+            def __init__(self):
+                self.calls = []
+                self.cancelled = False
+                self.close_calls = 0
+                self.closed_after_restore = False
+                docker_ports.append(self)
+
+            async def run(self, argv, *, timeout):
+                self.calls.append((argv, timeout))
+                assert argv[:-1] == (
+                    "docker", "--host", docker.LOCAL_DOCKER_HOST, "container", "inspect",
+                    "--format", docker.DOCKER_INSPECT_TEMPLATE, "--",
+                )
+                target = argv[-1]
+                assert target in ("joint-container", "hidden-container")
+                if target == "joint-container":
+                    if phase["shutdown_pending"]:
+                        docker_pending.set()
+                        try:
+                            await asyncio.Future()
+                        except asyncio.CancelledError:
+                            self.cancelled = True
+                            raise
+                    if phase["docker_failure"]:
+                        return docker.CommandOutput(1, stderr=b"No such container: PRIVATE_DOCKER_FAILURE")
+                payload = {"Id": "a" * 64, "Name": "/" + target, "State": {"Status": "running"}}
+                return docker.CommandOutput(0, json.dumps(payload).encode("utf-8"))
+
+            async def close(self):
+                self.close_calls += 1
+                self.closed_after_restore = terminal.restored
+
+        monkeypatch.setattr(cli, "CursesTerminal", lambda: terminal)
+        monkeypatch.setattr(hardware, "LocalHardwareIO", RawHardwareIO)
+        config = AppConfig(
+            sample_interval=0.1, collection_timeout=3.0, mount_points=("/",),
+            # Reusing 'cpu' proves collector namespaces isolate state and errors.
+            containers=(ContainerConfig("cpu", "joint-container"), ContainerConfig("other", "hidden-container")),
+            logging=LogConfig(directory=tmp_path / "logs"),
+        )
+        runtime = cli.ApplicationRuntime(config, docker_command_factory=RawDockerCommand)
+        task = None
+
+        def objects():
+            return {(item.key.collector, item.key.object_id): item
+                    for item in runtime.components.app.reader.snapshot().objects}
+
+        async def until(predicate):
+            deadline = asyncio.get_running_loop().time() + 2
+            while not predicate():
+                if task.done():
+                    await task
+                    raise AssertionError("Joint runtime stopped before the expected state")
+                assert asyncio.get_running_loop().time() < deadline, "Joint runtime did not reach the expected state"
+                await asyncio.sleep(0.005)
+
+        expected = {("host", "cpu"), ("host", "ram"), ("storage", "mount-0"),
+                    ("gpu_inventory", "local"), ("gpu", GPU_UUIDS[0]), ("docker", "cpu"), ("docker", "other")}
+        try:
+            assert runtime.prepare_log()
+            components = runtime.components
+            assert len(hardware_ports) == 4 and len(docker_ports) == 2
+            assert all(not port.calls for port in hardware_ports + docker_ports)
+            task = asyncio.create_task(runtime.run())
+            await until(lambda: set(objects()) == expected
+                        and all(len(item.history) >= 2 for item in objects().values()))
+            await until(lambda: terminal.frames and "Joint GPU" in region_text(terminal.frames[-1], "gpu")
+                        and "50%" in region_text(terminal.frames[-1], "host")
+                        and "25.0 GiB" in region_text(terminal.frames[-1], "storage")
+                        and "Running" in region_text(terminal.frames[-1], "docker"))
+            initial = terminal.frames[-1]
+            assert "hidden-container" not in region_text(initial, "docker")
+            assert all(not item.stale for item in objects().values())
+            assert len(hardware_ports) == 5  # Four static/discovery ports plus the discovered GPU.
+            assert all(len(port.calls) >= 2 for port in hardware_ports + docker_ports)
+
+            docker_samples = {key: item.sampled_at for key, item in objects().items() if key[0] == "docker"}
+            phase["cpu_failure"] = True
+            await until(lambda: objects()[("host", "cpu")].stale
+                        and all(objects()[key].sampled_at > at for key, at in docker_samples.items()))
+            await until(lambda: "STALE" in region_text(terminal.frames[-1], "host"))
+            hardware_failed = terminal.frames[-1]
+            assert {key for key, item in objects().items() if item.stale} == {("host", "cpu")}
+            assert "STALE" not in region_text(hardware_failed, "docker")
+            assert "Running" in region_text(hardware_failed, "docker")
+
+            phase["cpu_failure"], phase["docker_failure"] = False, True
+            await until(lambda: objects()[("docker", "cpu")].stale
+                        and not objects()[("host", "cpu")].stale
+                        and objects()[("host", "cpu")].metrics[0].value == 50)
+            await until(lambda: "STALE" in region_text(terminal.frames[-1], "docker")
+                        and "STALE" not in region_text(terminal.frames[-1], "host"))
+            docker_failed = terminal.frames[-1]
+            assert {key for key, item in objects().items() if item.stale} == {("docker", "cpu")}
+            assert objects()[("docker", "cpu")].metrics[0].value == "Running"
+            assert objects()[("docker", "cpu")].history[-1].metrics is None
+            assert initial.regions == hardware_failed.regions == docker_failed.regions
+            assert set(objects()) == expected and runtime.components is components
+
+            phase["docker_failure"] = False
+            await until(lambda: not objects()[("docker", "cpu")].stale)
+            phase["shutdown_pending"] = True
+            await until(lambda: cpu_pending.is_set() and docker_pending.is_set())
+            before_quit = {key: objects()[key].sampled_at for key in (("host", "cpu"), ("docker", "cpu"))}
+            terminal.keys.put_nowait("q")
+            await asyncio.wait_for(task, 1.1)
+            assert all(objects()[key].sampled_at == at and not objects()[key].stale
+                       for key, at in before_quit.items())
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await runtime.close()
+
+        assert terminal.entered and terminal.restored
+        assert sum(port.cancelled for port in hardware_ports) == 1
+        assert sum(port.cancelled for port in docker_ports) == 1
+        assert all(port.close_calls == 1 and port.closed_after_restore for port in hardware_ports + docker_ports)
+        assert all(port.timeout == config.collection_timeout for port in hardware_ports)
+        assert all(timeout == config.collection_timeout for port in docker_ports for _, timeout in port.calls)
+        records = [json.loads(line) for line in (config.logging.directory / "error.log").read_text().splitlines()]
+        assert [(entry["collector"], entry["object_id"], entry["kind"]) for entry in records] == [
+            ("host", "cpu", "permission"), ("docker", "cpu", "not_found")]
+        assert all("PRIVATE" not in cell.text for frame in terminal.frames for cell in frame.cells)
+        assert all("PRIVATE" not in json.dumps(entry) for entry in records)
+        assert forbidden_calls == []
+
+    asyncio.run(scenario())
+    assert capsys.readouterr() == ("", "")

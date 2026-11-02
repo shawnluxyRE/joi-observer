@@ -10,7 +10,7 @@
 
 运行在被监控 Ubuntu 主机上，只读采集 NVIDIA GPU、整机 CPU/RAM 和配置前三个挂载点。采用已有 `Collector → Monitor → MonitorState → TUI`；不增加数据库、采样日志、网络流量、磁盘 IO、逐进程指标或服务控制。
 
-REQ-002 负责硬件数据与按当前 `ViewSelection` 计算的 GPU 关联高亮。方向键修改选择由 REQ-005 完成，完整主题颜色映射由 REQ-006 完成；本需求提供对应语义颜色角色，不提前实现上述交互。Docker/vLLM 仍保留既有占位，不因接入硬件启动后续需求的采集。
+REQ-002 负责硬件数据与按当前 `ViewSelection` 计算的 GPU 关联高亮。方向键修改选择由 REQ-005 完成，完整主题颜色映射由 REQ-006 完成；本需求提供对应语义颜色角色，不提前实现上述交互。Docker 采集由 REQ-003 负责，vLLM 保留占位。
 
 保留 REQ-001 已实现的配置、状态、调度、日志和半页布局；R2 仅增加待实现入口、值类型、注释、设计与测试。原有运行路径不会提前调用新骨架。
 
@@ -152,7 +152,7 @@ stop须取消发现任务及所有静态/动态来源，关闭每个已创建资
 
 不新增运行依赖或更改uv锁文件；R4若发现本地worker成本不适合0.1秒最小采样，可在维持隔离/取消契约的前提下使用有界常驻worker，仍不能让慢挂载阻塞其他来源。真实底层资源回收须在本地Ubuntu验证，R2不声称现有骨架已满足。
 
-`build_hardware_sources(config)` 无IO地组装CPU、RAM、前三挂载及发现器。R4在 `ApplicationRuntime._components` 移除host/local占位、把静态spec加入同一State，交静态来源给Monitor后注册发现器。导入、`--help`、缺配置、构造阶段不能执行硬件查询。Docker/vLLM占位和RuntimeComponents注入通道保留。
+`build_hardware_sources(config)` 无IO地组装CPU、RAM、前三挂载及发现器。R4在 `ApplicationRuntime._components` 移除host/local占位、把静态spec加入同一State，交静态来源给Monitor后注册发现器。导入、`--help`、缺配置、构造阶段不能执行硬件查询。仅保留 vLLM 占位及 RuntimeComponents 注入通道。
 
 ## 硬件显示与模型关联
 

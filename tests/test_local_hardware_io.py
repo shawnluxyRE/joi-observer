@@ -32,9 +32,14 @@ def assert_reaped(pid):
 
 async def wait_marker(marker):
     async with asyncio.timeout(2):
-        while not marker.exists():
+        while True:
+            try:
+                content = marker.read_text()
+            except FileNotFoundError:
+                content = ""
+            if content:
+                return int(content)
             await asyncio.sleep(0.005)
-    return int(marker.read_text())
 
 
 def test_local_io_rejects_non_readonly_inputs_without_starting_process(monkeypatch):

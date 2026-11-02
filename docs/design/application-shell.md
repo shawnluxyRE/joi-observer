@@ -1,13 +1,15 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114；共享布局约束关联 AC-207/301/304/605/607/608。
-- 修订：v1.3，2026-10-30；沿用已验收半页布局，补充REQ-002硬件接线。
+- 修订：v1.3，2026-10-30；沿用已验收半页布局，整合 REQ-002 硬件接线与 REQ-003 命令端口注入、生产装配边界。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 
 ## 职责与边界
 
-本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001的v1.12公共基础已由R4实现并经R5验收。本轮R2保留执行代码，为REQ-002声明硬件组装和绘制接线，业务实现交由R4。REQ-002～004提供具体采集器，REQ-005/006完成模型导航与完整主题，均复用本模块的生命周期和容量约束。
+本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005/006 完成模型导航和完整主题，均复用本模块的生命周期与容量约束。
+
+ApplicationRuntime 通过 build_hardware_sources 和 build_docker_collectors 组装两类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 仅替换 Docker 外部命令 IO；全部配置容器参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源或调用 Docker 工厂。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
 
 目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，保证 Windows 能导入骨架并运行不依赖终端的测试。源码无需安装 Windows curses 兼容包；真实终端验收需在本地 WSL Ubuntu 或以后获得许可的目标环境进行，不连接任何服务器。
 
@@ -79,7 +81,7 @@ AC-114 的本地安装验证使用预先准备好的 uv、Python 和离线依赖
 
 `ApplicationRuntime` 是唯一组合根。先构建初始只读快照，让 UI 可显示 `—`，再并发执行 `Monitor.run(stop_event)` 与 `ObserverApp.run()`。一个会话只创建一个 MonitorState、一个 Monitor 和一个 ErrorLog；界面不拥有采集器或写状态接口。
 
-REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位，保留Docker/vLLM占位与注入RuntimeComponents路径。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
+REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位，仅保留vLLM占位与注入RuntimeComponents路径。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
 
 绘制接线：compose_frame沿用本模块全部Region和required_size，硬件内部内容委托`widgets.hardware_cells`替换旧通用占位；不增加区域或改行数。ObserverApp的gpu_slots仍只收集collector=gpu的UUID，gpu_inventory不计数；硬件控件根据ViewSelection计算关联色，不负责方向键导航。具体字段、挂载序号、STALE和颜色角色见[硬件设计](hardware.md)。
 

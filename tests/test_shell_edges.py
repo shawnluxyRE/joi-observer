@@ -211,7 +211,8 @@ def test_monitor_and_log_share_one_shutdown_budget():
     asyncio.run(scenario())
 
 
-def test_production_unknown_slots_accept_long_mount_and_display_names(tmp_path, monkeypatch):
+def test_production_unknown_slots_accept_long_mount_and_display_names(
+        tmp_path, monkeypatch, pending_docker_command_factory):
     class QuittingTerminal(Terminal):
         async def read_key(self, timeout):
             return "q"
@@ -227,7 +228,7 @@ def test_production_unknown_slots_accept_long_mount_and_display_names(tmp_path, 
     config = load_config(path)
     terminal = QuittingTerminal()
     monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
-    runtime = ApplicationRuntime(config)
+    runtime = ApplicationRuntime(config, docker_command_factory=pending_docker_command_factory)
     assert runtime.prepare_log()
 
     async def scenario():
