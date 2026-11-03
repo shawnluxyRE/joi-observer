@@ -10,7 +10,7 @@ import threading
 import pytest
 
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig, load_config
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.data.models import CollectionResult, MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorKind, ErrorLog, Failure, FileLogIO
 from joi_observer.monitor import Monitor
@@ -25,7 +25,7 @@ PERMISSION = Failure(ErrorKind.PERMISSION, "access.denied", "PRIVATE permission 
 
 class OfflineSource:
     def __init__(self, object_id, *, collector="vllm", failure=None, blocked=False):
-        self.spec = ObjectSpec(ObjectKey(collector, object_id), (Metric("RUNNING", None),))
+        self.spec = ObjectSpec(ObjectKey(collector, object_id), (Metric("running", None),))
         self.failure = failure
         self.calls = 0
         self.value = None
@@ -45,7 +45,7 @@ class OfflineSource:
         if self.failure is not None:
             return CollectionResult(self.spec.key, failure=self.failure)
         value = self.calls if self.value is None else self.value
-        return CollectionResult(self.spec.key, (Metric("RUNNING", value),))
+        return MetricCollectionResult(self.spec.key, (Metric("running", value),))
 
     async def close(self):
         self.closed = True

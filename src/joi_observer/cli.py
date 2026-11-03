@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING, Protocol, TextIO
 from joi_observer import __version__
 from joi_observer.collectors.docker import build_docker_collectors
 from joi_observer.collectors.hardware import build_hardware_sources
+from joi_observer.collectors.vllm import build_vllm_collectors
 from joi_observer.config import AppConfig, ConfigError, example_config_path, load_config, resolve_config_path
-from joi_observer.data.models import Metric, ObjectKey, ObjectSpec, StateSnapshot
+from joi_observer.data.models import StateSnapshot
 from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorLog
 from joi_observer.monitor import Monitor
@@ -25,6 +26,7 @@ from joi_observer.tui.layout import HostInfo
 
 if TYPE_CHECKING:
     from joi_observer.collectors.docker import DockerCommandPort
+    from joi_observer.collectors.vllm import HttpPort
 
 
 class RuntimePort(Protocol):
@@ -102,13 +104,19 @@ class ApplicationRuntime:
     使用本机 LocalDockerCommand，每个配置项独占一个端口。只有实际装配且
     containers 非空时才调用工厂，不按终端容量截断。注入 components 时不调用
     此工厂。构造/prepare_log 不执行命令；close 由 Monitor 逐项释放采集器。
+
+    vllm_http_factory为每个模型创建独立只读HTTP端口的注入点，None使用
+    AsyncHttpClient；只组装、不在构造或prepare_log访问服务。运行时将全部
+    VllmSpec与采集器接入同一State/Monitor，所有端口由Monitor统一关闭。
     """
 
     def __init__(self, config: AppConfig, *, components: RuntimeComponents | None = None,
-                 docker_command_factory: "Callable[[], DockerCommandPort] | None" = None) -> None:
+                 docker_command_factory: "Callable[[], DockerCommandPort] | None" = None,
+                 vllm_http_factory: "Callable[[], HttpPort] | None" = None) -> None:
         self.config = config
         self.components = components
         self._docker_command_factory = docker_command_factory
+        self._vllm_http_factory = vllm_http_factory
         self._stop_event: asyncio.Event | None = None
         self._tasks: list[asyncio.Task] = []
         self._deadline: float | None = None
@@ -187,11 +195,11 @@ class ApplicationRuntime:
         await self._wait_with_budget({self._close_task})
 
     def _components(self) -> RuntimeComponents:
-        """组装共享状态、硬件与 Docker 来源及统一生命周期。
+        """组装共享状态、硬件、Docker及vLLM来源与统一生命周期。
 
-        两类工厂只组装来源；全部 spec 加入同一 MonitorState，采集器交给
+        三类工厂只组装来源；全部 spec 加入同一 MonitorState，采集器交给
         同一 Monitor 并注册 GPU 发现器。组装不执行采集 IO，实际采集由
-        Monitor.run 发起。仅 vLLM 保留占位，已注入 components 时直接复用。
+        Monitor.run 发起。已注入 components 时直接复用。
         """
         if self.components is None:
             hardware = build_hardware_sources(self.config)
@@ -200,12 +208,12 @@ class ApplicationRuntime:
                 timeout=self.config.collection_timeout,
                 command_factory=self._docker_command_factory,
             )
-            collectors = hardware.collectors + docker_collectors
+            vllm_collectors = build_vllm_collectors(
+                self.config,
+                http_factory=self._vllm_http_factory,
+            )
+            collectors = hardware.collectors + docker_collectors + vllm_collectors
             specs = [collector.spec for collector in collectors]
-            # vLLM remains a presentation slot until REQ-004.
-            specs.extend(ObjectSpec(ObjectKey("vllm", item.id),
-                                    (Metric("RUNNING", None), Metric("WAITING", None)))
-                         for item in self.config.models)
             state = MonitorState(tuple(specs))
             log = ErrorLog(self.config.logging)
             monitor = Monitor(collectors, state, log, interval=self.config.sample_interval,

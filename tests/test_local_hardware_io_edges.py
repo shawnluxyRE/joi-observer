@@ -346,7 +346,7 @@ def test_timeout_cleanup_is_bounded_when_descendant_keeps_pipes_in_new_session(t
             if finish == 'runtime':
                 from joi_observer.cli import ApplicationRuntime, RuntimeComponents
                 from joi_observer.config import AppConfig, LogConfig
-                from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+                from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSpec
                 from joi_observer.data.state import MonitorState
                 from joi_observer.error_log import ErrorLog
                 from joi_observer.monitor import Monitor
@@ -360,7 +360,7 @@ def test_timeout_cleanup_is_bounded_when_descendant_keeps_pipes_in_new_session(t
                         self.spec = ObjectSpec(ObjectKey('host', 'probe-' + str(index)), (Metric('value', None),))
                     async def collect(self):
                         await self.io.run(argv)
-                        return CollectionResult(self.spec.key, (Metric('value', 0),))
+                        return MetricCollectionResult(self.spec.key, (Metric('value', 0),))
                     async def close(self):
                         await self.io.close()
 

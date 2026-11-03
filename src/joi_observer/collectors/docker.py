@@ -1,7 +1,7 @@
 """REQ-003 的本机 Docker 生命周期采集。
 
 只查询显式配置的本机容器；不扫描、管理容器或读取其业务指标。采集器返回
-CollectionResult，由 Monitor 写状态及错误日志；本模块不依赖 TUI、不打印。
+MetricCollectionResult，由 Monitor 写状态及错误日志；本模块不依赖 TUI、不打印。
 原始命令响应只在本模块边界内存在，不进入快照、历史或日志。
 """
 
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from joi_observer.config import ContainerConfig
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 from joi_observer.error_log import ErrorKind, Failure
 
 
@@ -303,10 +303,10 @@ class LocalDockerCommand:
         self._read_tasks.clear()
 
 
-def _failure_result(config: ContainerConfig, kind: ErrorKind) -> CollectionResult:
+def _failure_result(config: ContainerConfig, kind: ErrorKind) -> MetricCollectionResult:
     """Keep response bytes and exception messages outside the result boundary."""
     code, reason = _FAILURES[kind]
-    return CollectionResult(ObjectKey("docker", config.id), failure=Failure(kind, code, reason))
+    return MetricCollectionResult(ObjectKey("docker", config.id), failure=Failure(kind, code, reason))
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -323,7 +323,7 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError("Invalid JSON constant.")
 
 
-def parse_inspect(config: ContainerConfig, output: CommandOutput) -> CollectionResult:
+def parse_inspect(config: ContainerConfig, output: CommandOutput) -> MetricCollectionResult:
     """把一次原始命令结果转成配置 id 对应的生命周期结果；无 IO。
 
     先检查任一输出是否超过 MAX_OUTPUT_BYTES，超限为 parse/response.invalid。
@@ -384,7 +384,7 @@ def parse_inspect(config: ContainerConfig, output: CommandOutput) -> CollectionR
     expected = identity if _FULL_ID.fullmatch(config.name) is not None else name[1:]
     if config.name != expected:
         return _failure_result(config, ErrorKind.NOT_FOUND)
-    return CollectionResult(ObjectKey("docker", config.id),
+    return MetricCollectionResult(ObjectKey("docker", config.id),
                             (Metric("state", _LIFECYCLE_STATES[status]),))
 
 
@@ -405,7 +405,7 @@ class DockerCollector:
         self._command = command if command is not None else LocalDockerCommand()
         self._closed = False
 
-    async def collect(self) -> CollectionResult:
+    async def collect(self) -> MetricCollectionResult:
         """读取一次当前状态，命令恰为：
 
         ("docker", "--host", LOCAL_DOCKER_HOST, "container", "inspect", "--format",

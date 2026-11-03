@@ -1,8 +1,8 @@
 # 本机硬件模块设计
 
 - 关联需求：dev-0 / REQ-002，AC-201～AC-207；共享 AC-101～AC-103、AC-108、AC-110、AC-112、AC-606～AC-608。
-- 修订：v1.0，2026-10-30；依据 [requirements.md](../dev-workflow/dev-0/requirements.md) v1.12。
-- 阶段：R2。接口和黑盒预期已经声明，具体采集、计算、动态调度及硬件绘制由 R4 实现。
+- 修订：v1.1，2026-11-02；依据 [requirements.md](../dev-workflow/dev-0/requirements.md) v1.12，同步公共采集结果分型。
+- 阶段：原硬件接口由 REQ-002 R2 定义，业务已随 REQ-002 实现；本轮只迁移结果类型，不重新实现采集、计算、动态调度或硬件绘制。
 - 代码：`collectors/hardware.py`、`collectors/base.py`、`monitor.py`、`tui/widgets.py`；组合接线在 `cli.py`、`tui/layout.py`。
 - 关联设计：[Monitor/State](monitor-state.md)、[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
@@ -12,7 +12,7 @@
 
 REQ-002 负责硬件数据与按当前 `ViewSelection` 计算的 GPU 关联高亮。方向键修改选择由 REQ-005 完成，完整主题颜色映射由 REQ-006 完成；本需求提供对应语义颜色角色，不提前实现上述交互。Docker 采集由 REQ-003 负责，vLLM 保留占位。
 
-保留 REQ-001 已实现的配置、状态、调度、日志和半页布局；R2 仅增加待实现入口、值类型、注释、设计与测试。原有运行路径不会提前调用新骨架。
+保留已合并的配置、状态、调度、日志和半页布局。当前公共 CollectionResult 仅含 key/failure，硬件各 collect 返回携带 metrics 的 MetricCollectionResult；此次只同步类型及注释、设计和测试，不改变原业务算法或调用 vLLM 未实现骨架。
 
 ## 核心结构
 
@@ -39,10 +39,25 @@ classDiagram
         +create_collector(spec) Collector
     }
     class GpuDiscovery
-    class GpuCollector
-    class CpuCollector
-    class MemoryCollector
-    class StorageCollector
+    class GpuCollector {
+        +collect() MetricCollectionResult
+    }
+    class CpuCollector {
+        +collect() MetricCollectionResult
+    }
+    class MemoryCollector {
+        +collect() MetricCollectionResult
+    }
+    class StorageCollector {
+        +collect() MetricCollectionResult
+    }
+    class CollectionResult {
+        +key ObjectKey
+        +failure Failure[0..1]
+    }
+    class MetricCollectionResult {
+        +metrics tuple
+    }
     class Monitor {
         +register_discovery(discovery) None
         +poll() None
@@ -58,6 +73,8 @@ classDiagram
     CpuCollector ..|> Collector
     MemoryCollector ..|> Collector
     StorageCollector ..|> Collector
+    CollectionResult <|-- MetricCollectionResult
+    Collector ..> CollectionResult
     GpuDiscovery --> HardwareIO
     GpuCollector --> HardwareIO
     CpuCollector --> HardwareIO
@@ -72,7 +89,7 @@ classDiagram
 
 ## 身份、字段与单位
 
-所有模板值初始为 `None`；成功结果覆盖模板，已知不支持字段显式 `None`。具体字段以代码目录为准，不让布局根据字段顺序猜含义。
+所有模板值初始为 `None`；成功的 `MetricCollectionResult(key, metrics)` 覆盖模板，已知不支持字段显式 `None`。局部失败以 `MetricCollectionResult(key, valid_metrics, failure=...)` 保留成功字段；整体失败使用 `MetricCollectionResult(key, failure=...)`。failure 只能按关键字传入。Collector 协议仍返回公共基类，Monitor 的超时/未知异常可用无载荷 `CollectionResult(key, failure=...)`；成功公共基类不合法。普通硬件 ObjectSpec 只匹配 MetricCollectionResult，不接受 VllmCollectionResult。具体字段以代码目录为准，不让布局根据字段顺序猜含义。
 
 | 对象 key | 字段与存储单位 | 身份与展示规则 |
 | --- | --- | --- |
@@ -82,7 +99,7 @@ classDiagram
 | `gpu_inventory/local` | `device_count`，整数 | 面板级发现状态，不是设备，不计入 GPU 槽与最小高度 |
 | `gpu/<完整 UUID>` | `index`、`name`；`utilization_percent`，%；`memory_used_bytes`、`memory_total_bytes`，B；`temperature_c`，°C；`power_w`，W | UUID为会话身份，可靠 index 为显示编号，name 来自采集 |
 
-新 UUID 按发现顺序追加，已有 UUID 不因枚举顺序、模型选择、失败或热移除而重排/删除。新卡可能提高基础最小高度；故障本身不能改变布局。设备数不硬编码为5。已有通用 `Metric`/`ObjectSpec`/`CollectionResult` 和 `MonitorState` 足够，不另建硬件专用可变状态。
+新 UUID 按发现顺序追加，已有 UUID 不因枚举顺序、模型选择、失败或热移除而重排/删除。新卡可能提高基础最小高度；故障本身不能改变布局。设备数不硬编码为5。使用通用 `Metric`/`ObjectSpec`/`MetricCollectionResult` 和 `MonitorState`，不另建硬件专用可变状态。GPU inventory 的展示结果也由 MetricCollectionResult 承载；DiscoveryResult 的发现声明结构不因本次分型改变。
 
 ## 数值口径
 
@@ -189,3 +206,7 @@ Storage采用序号key。为保留REQ-001已有通用快照，缺少序号对象
 本次使用本机 `nvidia-smi --help` / `--help-query-gpu`（v596.47）核对字段及index/UUID/功率语义，并读取本地Ubuntu手册 `proc_stat(5)`、`proc_meminfo(5)`、`proc_pid_mountinfo(5)`。原文保存到本需求evidence，属于已安装工具的离线材料，不代表目标服务器驱动615.71.09经过实测。部署文件仅作为已有目标环境背景，不从其GPU数量推定当前设备数。
 
 尚需R4的本地Linux适配/worker超时取消/无输出泄漏测试、实际Frame呈现和运行期接线验证；最终目标GPU驱动输出、无卡返回码、权限、挂载状态没有现场验证。所有自动化保持离线，禁止连接服务器；未来部署验收须由用户安排。此限制不阻止本设计交接R3。
+
+## 修订说明
+
+v1.1 仅同步公共结果分型：硬件具体 collect 及 inventory 状态采用 MetricCollectionResult，公共 Collector/Monitor 接口仍依赖 CollectionResult，failure 仅关键字传参。上述 REQ-002 初次 R2 验证规划保留其历史语境，后续实现与验收记录见原 REQ-002 R4/R5 交接；本次迁移不改写历史交接、不改变硬件算法，也不提前实现 vLLM accumulator 或运行期接线。

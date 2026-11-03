@@ -20,6 +20,7 @@ models:
   - id: chat
     type: chat
     name: qwen3.8-flash-next
+    # served_model_name: qwen3.8-flash-next  # Optional exact service identity; defaults to name.
     base_url: http://127.0.0.1:8000
     gpu_ids: []             # Unknown until you explicitly verify the mapping.
   - id: embedding

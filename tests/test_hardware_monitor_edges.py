@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from joi_observer.collectors.base import DiscoveryResult
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 from test_hardware_monitor import (
     OfflineCollector, OfflineDiscovery, UNAVAILABLE, entries, gpu_spec,
     objects, running_monitor, tick,
@@ -29,12 +29,12 @@ def test_invalid_discovery_protocol_never_registers_a_partial_round(tmp_path, in
                 return DiscoveryResult(result.inventory, (*result.specs, ObjectSpec(
                     ObjectKey("gpu", "GPU-bad"), (Metric("utilization_percent", 50),))))
             if invalid == "missing_inventory_field":
-                return DiscoveryResult(CollectionResult(discovery.spec.key), result.specs)
+                return DiscoveryResult(MetricCollectionResult(discovery.spec.key), result.specs)
             if invalid == "extra_inventory_field":
-                return DiscoveryResult(CollectionResult(discovery.spec.key, (
+                return DiscoveryResult(MetricCollectionResult(discovery.spec.key, (
                     Metric("device_count", 1), Metric("undeclared", 2))), result.specs)
             if invalid == "failed_inventory_with_children":
-                return DiscoveryResult(CollectionResult(
+                return DiscoveryResult(MetricCollectionResult(
                     discovery.spec.key, failure=UNAVAILABLE), result.specs)
             return result.inventory
 

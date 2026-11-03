@@ -81,6 +81,8 @@ class CursesTerminal:
     判别，用非阻塞getch读字节，再以私有有界前缀状态异步解析方向键。
     不完整序列跨read_key调用保留，但不会阻塞事件循环或无限积累。
     色彩角色细节留REQ-006；不能把全屏异常送到logging或stderr。
+    vLLM接线需增加amber角色（curses.COLOR_YELLOW），只用于QUEUED及新鲜的
+    正WAITING值；具体双主题RGB映射另行完善。
     """
 
     def __init__(self) -> None:
@@ -140,7 +142,8 @@ class CursesTerminal:
             for pair, (role, color) in enumerate((("primary", curses.COLOR_CYAN),
                                                   ("secondary", curses.COLOR_MAGENTA),
                                                   ("muted", curses.COLOR_WHITE),
-                                                  ("text", curses.COLOR_WHITE)), 1):
+                                                  ("text", curses.COLOR_WHITE),
+                                                  ("amber", curses.COLOR_YELLOW)), 1):
                 curses.init_pair(pair, color, curses.COLOR_BLACK)
                 self._styles[role] = curses.color_pair(pair)
             self._styles["muted"] |= curses.A_DIM

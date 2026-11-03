@@ -13,12 +13,14 @@ from joi_observer.data.models import (
     CollectionResult,
     HistoryPoint,
     Metric,
+    MetricCollectionResult,
     ObjectKey,
     ObjectSpec,
     ObjectSnapshot,
     StateSnapshot,
 )
 from joi_observer.error_log import Failure
+from joi_observer.data.vllm import VllmAccumulator, VllmSpec
 
 
 def _number(value: object, *, positive: bool = False) -> bool:
@@ -104,6 +106,7 @@ class _ObjectState:
     baseline_valid: bool = False
     stale: bool = False
     history: deque[HistoryPoint] = field(default_factory=deque)
+    accumulator: VllmAccumulator | None = None
 
 
 class MonitorState:
@@ -143,7 +146,13 @@ class MonitorState:
             _validate_spec(spec)
             if spec.key in self._entries:
                 raise ValueError("Duplicate monitoring object key.")
-            self._entries[spec.key] = _ObjectState(spec=spec, metrics=spec.metrics)
+            self._entries[spec.key] = self._new_entry(spec)
+
+    def _new_entry(self, spec: ObjectSpec) -> _ObjectState:
+        accumulator = (VllmAccumulator(spec, history_seconds=self._history_seconds,
+                                       max_intervals=self._max_history_points)
+                       if isinstance(spec, VllmSpec) else None)
+        return _ObjectState(spec=spec, metrics=spec.metrics, accumulator=accumulator)
 
     def register(self, spec: ObjectSpec) -> None:
         """由 Monitor 注册新发现的 GPU 等对象；保留顺序，创建 None 字段模板。
@@ -157,7 +166,7 @@ class MonitorState:
             if existing.spec != spec:
                 raise ValueError("Registered object template cannot change.")
             return
-        self._entries[spec.key] = _ObjectState(spec=spec, metrics=spec.metrics)
+        self._entries[spec.key] = self._new_entry(spec)
         self._revision += 1
 
     def accept(self, result: CollectionResult, *, sampled_at: float) -> None:
@@ -165,11 +174,19 @@ class MonitorState:
 
         key 未注册抛 KeyError；时间非有限/负数/早于或等于该对象前次提交时刻、
         未声明或重复字段、成功结果缺少声明字段抛 ValueError，失败不改变状态。
+        普通ObjectSpec接受MetricCollectionResult；公共CollectionResult仅允许
+        failure非空的整对象失败。不能从未知子类或无载荷成功中猜测数据。
         成功覆盖字段并清除 stale；失败保留缺失字段的最后值、置 stale、插入历史
         缺口，本次成功取得的字段仍可更新。初次失败保持 None。内部可保留失败详情，
         snapshot 永不暴露。保留 [sampled_at-history_seconds, sampled_at] 内的点，
         再按 max_history_points 上限裁剪。
         方法无 IO、不记日志、不通知 UI；Monitor 在提交后统一发通知。
+
+        VllmSpec的接线契约：由本State为每项持有VllmAccumulator，先验证语义
+        observation再原子提交派生字段；其成功/局部失败使用VllmCollectionResult。
+        也接受公共基类整对象失败；拒绝MetricCollectionResult。普通ObjectSpec
+        路径（包括旧vllm命名空间测试）使用指标子类，不按key名称猜测特殊处理。
+        任何failure仍记整点历史缺口；原始payload不进入快照。
         """
         if not isinstance(result, CollectionResult):
             raise ValueError("Invalid collection result.")
@@ -178,11 +195,19 @@ class MonitorState:
         if (not _number(sampled_at)
                 or entry.sampled_at is not None and sampled_at <= entry.sampled_at):
             raise ValueError("Sample time must be finite, nonnegative and increasing.")
-        _validate_metrics(result.metrics)
         if result.failure is not None and not isinstance(result.failure, Failure):
             raise ValueError("Invalid collection failure.")
+        if entry.accumulator is not None:
+            metrics = entry.accumulator.accept(result, sampled_at=sampled_at)
+        elif isinstance(result, MetricCollectionResult):
+            metrics = result.metrics
+        elif type(result) is CollectionResult and result.failure is not None:
+            metrics = ()
+        else:
+            raise ValueError("Collection result type does not match the registered object.")
+        _validate_metrics(metrics)
         declared = {metric.name for metric in entry.spec.metrics}
-        incoming = {metric.name: metric for metric in result.metrics}
+        incoming = {metric.name: metric for metric in metrics}
         if (not incoming.keys() <= declared
                 or result.failure is None and incoming.keys() != declared):
             raise ValueError("Collection fields do not match the declared template.")
@@ -211,13 +236,16 @@ class MonitorState:
 
         视图历史进一步按 clock() 的当前60秒窗口过滤，即使该对象长时间没有提交，
         旧历史也不会冒充近期有效观测。最近值仍保留，不按年龄自动生成采集错误。
+        VllmSpec以accumulator.metrics(now=同一clock时刻)只读投影过期均值，
+        不改变revision；generic快照行为保持原规则。
         """
         now = self._clock()
         oldest = now - self._history_seconds
         return StateSnapshot(tuple(
             ObjectSnapshot(
                 key=entry.spec.key,
-                metrics=entry.metrics,
+                metrics=(entry.accumulator.metrics(now=now)
+                         if entry.accumulator is not None else entry.metrics),
                 stale=entry.stale,
                 sampled_at=entry.sampled_at,
                 history=tuple(point for point in entry.history

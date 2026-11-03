@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 import math
+import time
 import unicodedata
 
 from joi_observer.config import AppConfig
@@ -140,6 +141,7 @@ def compose_frame(
     *,
     gpu_slots: tuple[str, ...] = (),
     view: ViewSelection = ViewSelection(),
+    monotonic_now: float | None = None,
 ) -> Frame:
     """从只读快照生成屏幕，不采集、不写日志、不更改选择或快照。
 
@@ -147,6 +149,10 @@ def compose_frame(
     监控样本时间冒充当前时间。gpu_slots 是本会话已见 GPU object_id 的稳定
     顺序（reader 中 collector='gpu'）；新卡追加，故障或消失不删槽。禁止
     根据模型选择过滤或重排 GPU。以下为v1.12半页布局契约。
+
+    monotonic_now仅用于vLLM历史横轴，None时生产接线使用time.monotonic()；
+    显式值须有限非负且与快照history同一时钟域，不能从墙钟now转换得到。
+    显式时钟在布局前验证；同域数值原样传给vllm_cells。
 
     H为总可绘制高度，L=H//2，U=H-L。header为row0/height2；gpu为row2/
     height(U-2)；右侧host为row2/height5，row7留白，storage为row8/height6
@@ -179,6 +185,11 @@ def compose_frame(
         raise ValueError("Terminal dimensions must be nonnegative integers")
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("Current time must include a timezone")
+    if monotonic_now is None:
+        monotonic_now = time.monotonic()
+    if (type(monotonic_now) not in (int, float)
+            or not math.isfinite(monotonic_now) or monotonic_now < 0):
+        raise ValueError("History time must be finite and nonnegative")
     minimum = required_size(gpu_count=len(gpu_slots), mount_count=len(config.mount_points),
                             container_count=len(config.containers))
     cells: list[TextCell] = []
@@ -244,10 +255,6 @@ def compose_frame(
     region_put(header, 1, size.columns - len(clock_text), clock_text, "text")
     objects = {(obj.key.collector, obj.key.object_id): obj for obj in snapshot.objects}
 
-    def status(row: int, region: Region, obj) -> None:
-        region_put(region, row, region.column + region.width - 7,
-                   "STALE" if obj and obj.stale else "     ", "text", 5)
-
     # A local import keeps the public Region/TextCell types available to widgets
     # without a module import cycle. Hardware content is drawn exactly once.
     from joi_observer.tui.widgets import hardware_cells
@@ -268,32 +275,9 @@ def compose_frame(
         region_put(docker, row, docker.column + docker.width - 16, state, "text", 14)
 
     service = by_region["service"]
-    model_id = view.model_id if view.model_id is not None else (config.models[0].id if config.models else None)
-    selected = next((i for i, model in enumerate(config.models) if model.id == model_id), 0)
-    model_capacity = service.height - 2
-    first = max(0, selected - model_capacity + 1)
-    model_width = max(30, size.columns // 3)
-    if not config.models:
-        region_put(service, service.row + 2, 2, "No models configured", "muted", model_width - 3)
-        region_put(service, service.row + 2, model_width + 2, "—", "muted")
-    for index, model in enumerate(config.models[first:first + model_capacity], first):
-        row = service.row + 1 + index - first
-        obj = objects.get(("vllm", model.id))
-        region_put(service, row, 2, model.name, "primary" if model.id == model_id else "text", model_width - 10)
-        region_put(service, row, model_width - 7, "STALE" if obj and obj.stale else "     ", "text", 5)
-    if config.models:
-        model = config.models[selected]
-        obj = objects.get(("vllm", model.id))
-        region_put(service, service.row + 1, model_width + 2,
-                   f"{model.name}  [{model.type.value}]", "secondary", service.width - model_width - 11)
-        status(service.row + 1, service, obj)
-        region_put(service, service.row + 2, model_width + 2,
-                   model.base_url, "secondary", service.width - model_width - 4)
-        metric_rows = min(9, service.height - 5)
-        visible_metrics = obj.metrics[:metric_rows] if obj else (Metric("RUNNING", None), Metric("WAITING", None))
-        for index, metric in enumerate(visible_metrics):
-            region_put(service, service.row + 4 + index, model_width + 2,
-                       f"{metric.name}: {format_metric(metric)}", "text", service.width - model_width - 4)
+    from joi_observer.tui.vllm import vllm_cells
+
+    cells.extend(vllm_cells(snapshot, config, service, view, now=monotonic_now))
     switch = by_region["service_switch"]
     region_put(switch, switch.row, 2, "vLLM  /  WebUI (disabled)", "muted")
     footer = by_region["footer"]

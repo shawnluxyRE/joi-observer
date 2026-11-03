@@ -3,26 +3,26 @@
 一个面向 Ubuntu Server 的终端监控工具，通过 TUI 实时展示服务器硬件状态与LLM服务负载。
 
 - **硬件监控**：GPU 利用率、显存、温度与功耗，以及 CPU、内存、磁盘。
-- **vLLM 监控**：各模型的运行与排队请求数、Token 吞吐、延迟和 KV Cache 使用率。
+- **vLLM 监控**：Chat、Embedding、Reranker 的运行与排队序列数，以及分类型吞吐、延迟和 Chat KV Cache 使用率。
 - **服务扩展**：后续可接入 Open WebUI 等服务。
 
 ## 当前阶段
 
-REQ-001 公共运行基础、REQ-002 本机硬件采集与显示，以及 REQ-003 显式配置的本机 Docker 容器生命周期采集均已实现。公共能力包括严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端与终端恢复。vLLM 采集、模型方向键导航和完整双主题分别属于后续 REQ-004～REQ-006。
+REQ-001 公共运行基础、REQ-002 本机硬件、REQ-003 Docker 生命周期与 REQ-004 三类型 vLLM 采集、计算及服务区显示已实现。公共能力包括严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端与终端恢复。当前详情默认显示首个配置模型，所有模型持续采集；方向键模型导航和完整双主题分别留给 REQ-005/006。REQ-004 已按 R2 确认将统一标签上限修订为 64，以兼容完整响应中的正常服务元数据，并通过 R5 完整响应复验；旧 7a4e950 测试包不包含此修复。最新结果见 [R4 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 和 [R5 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r5.md)。
 
 需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。REQ-001、REQ-002 和 REQ-003 均已通过各自范围的 R5 离线验收。
 
-设计入口：[本机硬件](docs/design/hardware.md)、[Docker](docs/design/docker.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。各需求的实现范围与验证记录见 [REQ-001](docs/dev-workflow/dev-0/REQ-001/handoff-r4.md)、[REQ-002](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md) 和 [REQ-003](docs/dev-workflow/dev-0/REQ-003/handoff-r4.md) 的 R4 交接。
+设计入口：[本机硬件](docs/design/hardware.md)、[Docker](docs/design/docker.md)、[vLLM](docs/design/vllm.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。各需求的实现范围与验证记录见 [REQ-001](docs/dev-workflow/dev-0/REQ-001/handoff-r4.md)、[REQ-002](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md)、[REQ-003](docs/dev-workflow/dev-0/REQ-003/handoff-r4.md) 和 [REQ-004](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 的 R4 交接。
 
 硬件采集在运行工具的 Ubuntu 主机本地执行。GPU 需要已安装并可查询的 `nvidia-smi`，按完整 UUID 保持设备身份；新卡追加，暂时消失的卡保留原位置并显示 STALE。发现器失败不阻断已知卡和 Host 采样；成功无卡显示 `No NVIDIA GPUs`。不会安装驱动或修改硬件。当前按配置的首个模型计算显式 GPU 关联色，索引只使用新鲜且唯一的采样值，未知映射不猜测；方向键联动待 REQ-005。
 
 CPU 使用 `/proc/stat` 的整机累计 tick 差分，首次及失败恢复后的第一轮显示 `—`。RAM 使用 `MemTotal - MemAvailable`，不以 MemFree 或 GPU 显存替代。Storage 精确验证挂载点，并在容量读取前后核对挂载身份；未挂载不回退到父文件系统，也不以第四项补位。容量使用 `f_frsize × f_blocks` 与 `f_frsize × (f_blocks - f_bfree)`，包含保留块；界面统一显示 GiB/TiB。GPU 显存按驱动 MiB 换算，功率是驱动最近测得的板卡功率，可能为一秒平均。失败只显示固定位置的 STALE，原因仅写 ERROR 日志。
 
-文件及 statvfs 读取放在可终止的包内 worker 中，NVIDIA 查询使用固定 argv 的本地子进程；两路输出各限 1 MiB。每个采集器与发现器独占 IO，超时/取消会终止并回收本端口进程。所有采集均不建立网络连接。目标服务器的驱动、权限、挂载及无卡输出尚未现场验证，本地离线测试不能替代部署验收。
+文件及 statvfs 读取放在可终止的包内 worker 中，NVIDIA 查询使用固定 argv 的本地子进程；两路输出各限 1 MiB。每个采集器与发现器独占 IO，超时/取消会终止并回收本端口进程。上述硬件采集不建立网络连接。目标服务器的驱动、权限、挂载及无卡输出尚未现场验证，本地离线测试不能替代部署验收。
 
 ## 安装与启动约定
 
-目标环境为 Ubuntu Server 24.04 amd64、Python 3.12+，使用 **uv** 管理安装与开发环境，终端后端使用标准库 curses。工程采用 src 布局，`pyproject.toml` 注册 `joi-observer` 命令。正式依赖为 PyYAML，测试依赖为 pytest。
+目标环境为 Ubuntu Server 24.04 amd64、Python 3.12+，使用 **uv** 管理安装与开发环境，终端后端使用标准库 curses。工程采用 src 布局，`pyproject.toml` 注册 `joi-observer` 命令。正式依赖为 PyYAML 与 HTTPX（`>=0.28.1,<0.29`），测试依赖为 pytest。
 
 日常使用通过 `uv tool install` 安装，uv 为工具维护独立环境。以下步骤假定 uv、Python 3.12 和离线 wheel 包已在本地准备好；使用 `--offline` 避免访问服务器：
 
@@ -57,9 +57,9 @@ uv --offline run --locked --python 3.12 --no-python-downloads --no-index \
 
 WSL 中的 uv 位于 `/home/shawn/.local/bin/uv`，实测版本为 0.13.6。使用原有 pip 缓存中的原始 wheel 包生成的 `uv.lock` 继续复用；项目环境与工具安装均采用离线依赖，最新测试结果记录在 R4 交接单。锁文件引用仓库相对目录 `.pytest_cache/offline_wheels`，该目录被 Git 忽略，换机器时须一并准备对应 wheel 包；当前二进制包覆盖 CPython 3.12 的 Linux x86_64 / Windows amd64，不能假定覆盖其他 Python 版本或平台。
 
-可用 [restore_offline_wheels.py](docs/dev-workflow/dev-0/REQ-001/evidence/restore_offline_wheels.py) 从本机现有 pip 缓存原样恢复 wheel 目录，使用 `--help` 查看缓存位置参数；它只读取本地档案并校验 SHA-256，不下载或重打包依赖。没有本地缓存时需先离线准备这些包。本轮源码、wheel、真实 PTY、文件权限及工具安装验证的具体证据统一记录在 R4 交接单。
+当前工作区的完整离线 wheel 集合包含 HTTPX 及其传递依赖，来源与 SHA-256 见 [REQ-004 离线包清单](docs/dev-workflow/dev-0/REQ-004/evidence/r4-offline-wheels.json)。这些包从本地 pip 缓存原样恢复，没有下载或重打包。证据与 wheel 目录均被 Git 忽略，克隆仓库时不会自动获得；须从已有交付材料另行准备。源码、wheel、真实 PTY 和工具安装验证记录在 R4 交接单。
 
-配置优先级：`joi-observer --config /absolute/path/config.yaml` → 当前目录 `config.yaml` → `~/.joi-observer/config.yaml`。指定配置缺失/非法时退出，不回退。随包示例位于 [examples/config.yaml](src/joi_observer/examples/config.yaml)，包含本地部署材料记载的三个模型；这些地址未验证，示例不会自动用于采集。容器列表初始为空，用户填写真实名称；GPU 关联也由用户显式配置。
+配置优先级：`joi-observer --config /absolute/path/config.yaml` → 当前目录 `config.yaml` → `~/.joi-observer/config.yaml`。指定配置缺失/非法时退出，不回退。随包示例位于 [examples/config.yaml](src/joi_observer/examples/config.yaml)，包含本地部署材料记载的三个模型；地址仅供部署参考，使用时须核对实际目标，示例不会自动用于采集。容器列表初始为空，用户填写真实名称；GPU 关联也由用户显式配置。
 
 默认每秒采样、每对象超时 3 秒，约 60 秒历史只保存在内存。默认错误日志为 `~/.joi-observer/error.log`，10,000,000 字节轮转、3 份备份，仅记录采集失败 ERROR；`time` 使用服务器本地 `YYYY-MM-DD HH:MM:SS`，不附带时区信息。相同对象相同错误连续发生最多每 60 秒记录一次。日志不可写时启动前提示一次并继续监控。
 
@@ -85,9 +85,36 @@ containers:
 
 当前验证使用离线命令样本及本地进程替身，真实 Docker CLI/模板兼容性、socket 权限、错误文案与部署中的清理时限尚未实机验证。
 
+## vLLM 配置与指标口径
+
+兼容范围固定为 vLLM **0.31.0**，三类映射已基于用户提供的采样和安装源码核对。[模块设计](docs/design/vllm.md)和[指标证据](docs/dev-workflow/dev-0/REQ-004/metric-evidence.md)记录精确映射。每个模型独立顺序读取其直接 origin 的 `/version`、`/v1/models`、`/metrics`，三次 GET 共用本轮超时，每份解压后响应最多 2 MiB。启用 HTTPS 证书验证，禁用环境代理、重定向和自动重试；不访问 LiteLLM、WebUI 或推理接口。
+
+`id` 用于独立状态身份，`name` 用于显示；可选 `served_model_name` 精确指定服务报告的模型名，省略时回退 `name`。显式值须为 1～128 个可打印字符，无首尾空白或控制字符，不能为 null。同名或同地址的不同 id 不合并。例如：
+
+```yaml
+models:
+  - id: embedding
+    type: embedding
+    name: Embedding model
+    served_model_name: qwen3-embedding-4b
+    base_url: http://127.0.0.1:8001
+    gpu_ids: []
+```
+
+- RUNNING/WAITING/Total表示vLLM内部请求或序列数量，不是HTTP请求数，也不包含LiteLLM尚未进入vLLM的队列。
+- Chat DECODE/PREFILL采用生成/输入Token累计差分；输入统计沿用来源，包含缓存等来源计入的Token，不表示纯计算吞吐。
+- Embedding/Reranker RATE为正常STOP完成的内部序列率`seq/s`，不按HTTP批大小、候选数量或top_n换算。abort/error/length/repetition不计入这个完成速率。
+- TTFT与Avg latency从来源记录的内部序列arrival_time计至相关输出处理阶段；Avg latency不包括之后整批后处理、完整HTTP发送、网关或客户端耗时，也不承诺Embedding的tokenization是否计入。Avg queue是来源记录的首次入队至首次调度时间，在结束统计时写入，不是等待中任务目前等了多久。
+- 每种延迟按最近60秒可比较区间的增量总秒数/自身增量观测数计算；直方图可能包含来源记录的非成功终止，不能共用RATE分母。首次无基线或无新观测为`—`，可比较无吞吐增量才为0。
+- Chat KV CACHE为各engine报告使用率的算术平均，不等于GPU显存占比；pooling不展示生成吞吐、TTFT和KV指标。engine不是GPU编号，不按TP或显卡数重复汇总。
+
+历史、基线及正常指标仅驻内存。模型失败原位显示 STALE，原因仅进入 ERROR 日志，其他模型继续更新；部分字段失败保留旧值，有效组独立更新，Total 不混用新旧负载数。任何失败点在历史中留空，恢复首点对断开的组重新建基线。延迟窗口只纳入完整落在最近 60 秒内的可比较区间，按各指标自身观测数加权。
+
+计数回退、引擎集合变化、process/created 标记变化或可用性变化会打断相应基线；若重启未暴露标记且新计数已赶超旧值，无法保证识别，不推断不存在的重启信号。当前验证覆盖原始样本、离线变形、多 engine 算法与真实 HTTPX 内存传输；未连接目标服务，也未执行真实网络/TLS 握手、生产负载或实机重启演练。
+
 ## 离线开发验证
 
-产品目标为 Ubuntu Server 24.04 amd64；必需验证在已有 Python 3.12+、PyYAML 和 pytest 的本地 Ubuntu 或 WSL Ubuntu 环境中运行。Windows 工作区通过 WSL 执行以下命令，不必安装本包或访问服务；不要求维护原生 Windows 专用测试或执行 Windows 全量回归，历史验证记录保留：
+产品目标为 Ubuntu Server 24.04 amd64；必需验证在已有 Python 3.12+、PyYAML、HTTPX 和 pytest 的本地 Ubuntu 或 WSL Ubuntu 环境中运行。Windows 工作区通过 WSL 执行以下命令，不必安装本包或访问服务；不要求维护原生 Windows 专用测试或执行 Windows 全量回归，历史验证记录保留：
 
 ```text
 python -m compileall -q src tests
@@ -97,11 +124,10 @@ python -m pytest -q --tb=short
 
 pytest 从 `pyproject.toml` 将 `src` 加入导入路径。黑盒和集成用例使用临时文件、内存终端与离线采集端口，实际运行配置解析、调度、状态、日志和屏幕生成。新增边界测试未修改既有黑盒预期，R2 的历史失败基线保留供追溯。
 
-本地 Ubuntu 普通用户可进一步运行真实终端与文件权限验证（仅本机 PTY/临时文件）：
+真实终端用例已包含在全量测试中，也可由本地 Ubuntu 普通用户单独运行（仅本机 PTY）：
 
 ```bash
-PYTHONPATH=src python3 docs/dev-workflow/dev-0/REQ-001/evidence/verify_pty.py
-PYTHONPATH=src python3 docs/dev-workflow/dev-0/REQ-001/evidence/verify_permissions.py
+python -m pytest -q tests/test_terminal_pty.py tests/test_hardware_pty.py tests/test_vllm_pty.py
 ```
 
 这些验证不代表目标服务器或后续具体采集器已验收，不能据此连接部署服务器。

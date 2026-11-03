@@ -1,6 +1,6 @@
 """REQ-002 本机硬件采集、发现与无 IO 组装入口。
 
-所有构造无 IO；采集入口读取 HardwareIO 原始材料并返回 CollectionResult，
+所有构造无 IO；采集入口读取 HardwareIO 原始材料并返回 MetricCollectionResult，
 不写 MonitorState、不记日志、不打印。指标目录及失败分类见 hardware.md。
 """
 
@@ -15,7 +15,7 @@ from joi_observer.collectors._local_io import LocalProcessIO
 from joi_observer.collectors import _hardware_parsing as parsing
 from joi_observer.collectors.base import Collector, DiscoveryResult
 from joi_observer.config import AppConfig
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,7 @@ class CpuCollector:
         self.spec = ObjectSpec(ObjectKey("host", "cpu"), (Metric("cpu_percent", None, "%"),))
         self._previous: tuple[int, ...] | None = None
 
-    async def collect(self) -> CollectionResult:
+    async def collect(self) -> MetricCollectionResult:
         """按类契约解析原始累计 tick；不得调用带阻塞采样间隔的 API。"""
         try:
             current = parsing.cpu_ticks(await self.io.read_text("/proc/stat"))
@@ -131,16 +131,16 @@ class CpuCollector:
                 total = sum(delta)
                 if total:
                     percent = 100 * (total - delta[3] - delta[4]) / total
-            return CollectionResult(self.spec.key, (Metric("cpu_percent", percent, "%"),))
+            return MetricCollectionResult(self.spec.key, (Metric("cpu_percent", percent, "%"),))
         except asyncio.CancelledError:
             self._previous = None
             raise
         except OSError as error:
             self._previous = None
-            return CollectionResult(self.spec.key, failure=parsing.io_failure(error))
+            return MetricCollectionResult(self.spec.key, failure=parsing.io_failure(error))
         except ValueError:
             self._previous = None
-            return CollectionResult(self.spec.key, failure=parsing.PARSE)
+            return MetricCollectionResult(self.spec.key, failure=parsing.PARSE)
         except Exception:
             self._previous = None
             raise
@@ -166,15 +166,15 @@ class MemoryCollector:
             Metric("ram_percent", None, "%"),
         ))
 
-    async def collect(self) -> CollectionResult:
+    async def collect(self) -> MetricCollectionResult:
         """同时产出同口径的 used/total/percent；RAM 故障不影响 CPU 来源。"""
         try:
             metrics = parsing.memory_metrics(await self.io.read_text("/proc/meminfo"))
-            return CollectionResult(self.spec.key, metrics)
+            return MetricCollectionResult(self.spec.key, metrics)
         except OSError as error:
-            return CollectionResult(self.spec.key, failure=parsing.io_failure(error))
+            return MetricCollectionResult(self.spec.key, failure=parsing.io_failure(error))
         except ValueError:
-            return CollectionResult(self.spec.key, failure=parsing.PARSE)
+            return MetricCollectionResult(self.spec.key, failure=parsing.PARSE)
 
     async def close(self) -> None:
         """幂等关闭本对象独占 IO。"""
@@ -204,16 +204,16 @@ class StorageCollector:
             Metric("used_percent", None, "%"),
         ))
 
-    async def collect(self) -> CollectionResult:
+    async def collect(self) -> MetricCollectionResult:
         """只采集自己的配置挂载点；前后验证均通过才发布本轮容量。"""
         try:
             before = parsing.matching_mounts(
                 await self.io.read_text("/proc/self/mountinfo"), self.mount_point,
             )
             if not before:
-                return CollectionResult(self.spec.key, failure=parsing.NOT_FOUND)
+                return MetricCollectionResult(self.spec.key, failure=parsing.NOT_FOUND)
             if len(before) != 1:
-                return CollectionResult(self.spec.key, failure=parsing.UNAVAILABLE)
+                return MetricCollectionResult(self.spec.key, failure=parsing.UNAVAILABLE)
             # Use the exact lexical path whose mount identity was validated.
             # Keep the original configuration string only for presentation.
             counts = await self.io.statvfs(parsing.normalized_mount(self.mount_point))
@@ -221,22 +221,22 @@ class StorageCollector:
                 await self.io.read_text("/proc/self/mountinfo"), self.mount_point,
             )
             if after != before:
-                return CollectionResult(self.spec.key, failure=parsing.UNAVAILABLE)
+                return MetricCollectionResult(self.spec.key, failure=parsing.UNAVAILABLE)
             if (any(type(value) is not int for value in
                     (counts.fragment_size, counts.blocks, counts.free_blocks))
                     or counts.fragment_size <= 0 or counts.blocks <= 0
                     or not 0 <= counts.free_blocks <= counts.blocks):
-                return CollectionResult(self.spec.key, failure=parsing.PARSE)
+                return MetricCollectionResult(self.spec.key, failure=parsing.PARSE)
             total = counts.fragment_size * counts.blocks
             used = counts.fragment_size * (counts.blocks - counts.free_blocks)
-            return CollectionResult(self.spec.key, (
+            return MetricCollectionResult(self.spec.key, (
                 Metric("used_bytes", used, "B"), Metric("total_bytes", total, "B"),
                 Metric("used_percent", 100 * used / total, "%"),
             ))
         except OSError as error:
-            return CollectionResult(self.spec.key, failure=parsing.io_failure(error))
+            return MetricCollectionResult(self.spec.key, failure=parsing.io_failure(error))
         except ValueError:
-            return CollectionResult(self.spec.key, failure=parsing.PARSE)
+            return MetricCollectionResult(self.spec.key, failure=parsing.PARSE)
 
     async def close(self) -> None:
         """幂等关闭独占 IO，不进行卸载或文件系统修改。"""
@@ -263,7 +263,7 @@ class GpuCollector:
         self.io = io
         self.spec = ObjectSpec(ObjectKey("gpu", uuid), GPU_METRICS)
 
-    async def collect(self) -> CollectionResult:
+    async def collect(self) -> MetricCollectionResult:
         """受控返回本卡字段/失败；不查询所有卡或触发发现、重排、模型映射。"""
         try:
             output = await self.io.run((
@@ -272,16 +272,16 @@ class GpuCollector:
                 "--format=csv,noheader,nounits", f"--id={self.uuid}",
             ))
             if output.returncode != 0:
-                return CollectionResult(self.spec.key, failure=parsing.UNAVAILABLE)
+                return MetricCollectionResult(self.spec.key, failure=parsing.UNAVAILABLE)
             rows = parsing.csv_rows(output.stdout, 8)
             if len(rows) != 1:
-                return CollectionResult(self.spec.key, failure=parsing.PARSE)
+                return MetricCollectionResult(self.spec.key, failure=parsing.PARSE)
             metrics, failure = parsing.gpu_metrics(rows[0], self.uuid)
-            return CollectionResult(self.spec.key, metrics, failure)
+            return MetricCollectionResult(self.spec.key, metrics, failure=failure)
         except OSError as error:
-            return CollectionResult(self.spec.key, failure=parsing.io_failure(error, command=True))
+            return MetricCollectionResult(self.spec.key, failure=parsing.io_failure(error, command=True))
         except ValueError:
-            return CollectionResult(self.spec.key, failure=parsing.PARSE)
+            return MetricCollectionResult(self.spec.key, failure=parsing.PARSE)
 
     async def close(self) -> None:
         """幂等关闭独占查询端口；不影响其他 GPU。"""
@@ -314,7 +314,7 @@ class GpuDiscovery:
             no_devices = (output.returncode in (0, 6)
                           and output.stdout.strip() == "No devices were found")
             if output.returncode != 0 and not no_devices:
-                return DiscoveryResult(CollectionResult(self.spec.key, failure=parsing.UNAVAILABLE))
+                return DiscoveryResult(MetricCollectionResult(self.spec.key, failure=parsing.UNAVAILABLE))
             rows = [] if no_devices else parsing.csv_rows(output.stdout, 2)
             indexes: set[int] = set()
             uuids: set[str] = set()
@@ -327,15 +327,15 @@ class GpuDiscovery:
                 indexes.add(index)
                 uuids.add(uuid)
                 specs.append(ObjectSpec(ObjectKey("gpu", uuid), GPU_METRICS))
-            return DiscoveryResult(CollectionResult(
+            return DiscoveryResult(MetricCollectionResult(
                 self.spec.key, (Metric("device_count", len(specs)),),
             ), tuple(specs))
         except OSError as error:
-            return DiscoveryResult(CollectionResult(
+            return DiscoveryResult(MetricCollectionResult(
                 self.spec.key, failure=parsing.io_failure(error, command=True),
             ))
         except ValueError:
-            return DiscoveryResult(CollectionResult(self.spec.key, failure=parsing.PARSE))
+            return DiscoveryResult(MetricCollectionResult(self.spec.key, failure=parsing.PARSE))
 
     def create_collector(self, spec: ObjectSpec) -> Collector:
         """同步无 IO，为新的 GPU UUID 创建独占 LocalHardwareIO 的 GpuCollector。

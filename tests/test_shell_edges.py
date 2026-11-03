@@ -9,7 +9,7 @@ import pytest
 
 from joi_observer.cli import ApplicationRuntime, RuntimeComponents
 from joi_observer.config import AppConfig, ContainerConfig, load_config
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSnapshot, ObjectSpec, StateSnapshot
+from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSnapshot, ObjectSpec, StateSnapshot
 from joi_observer.data.state import MonitorState
 from joi_observer.monitor import Monitor
 from joi_observer.tui.app import ObserverApp
@@ -151,7 +151,7 @@ def test_monitor_internal_error_restores_ui_then_closes_log():
         async def collect(self):
             # The collector's declared contract is violated, which is a runtime
             # programming error rather than a user-visible collection failure.
-            return CollectionResult(self.spec.key, (Metric("undeclared", 1),))
+            return MetricCollectionResult(self.spec.key, (Metric("undeclared", 1),))
 
         async def close(self):
             self.closed = True
@@ -212,7 +212,7 @@ def test_monitor_and_log_share_one_shutdown_budget():
 
 
 def test_production_unknown_slots_accept_long_mount_and_display_names(
-        tmp_path, monkeypatch, pending_docker_command_factory):
+        tmp_path, monkeypatch, pending_docker_command_factory, pending_vllm_http_factory):
     class QuittingTerminal(Terminal):
         async def read_key(self, timeout):
             return "q"
@@ -228,7 +228,8 @@ def test_production_unknown_slots_accept_long_mount_and_display_names(
     config = load_config(path)
     terminal = QuittingTerminal()
     monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
-    runtime = ApplicationRuntime(config, docker_command_factory=pending_docker_command_factory)
+    runtime = ApplicationRuntime(config, docker_command_factory=pending_docker_command_factory,
+                                 vllm_http_factory=pending_vllm_http_factory)
     assert runtime.prepare_log()
 
     async def scenario():

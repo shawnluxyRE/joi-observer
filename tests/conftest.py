@@ -7,6 +7,31 @@ import subprocess
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def no_network_connections(monkeypatch):
+    """All tests are offline, including DNS and loopback; replace raw HTTP ports."""
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Tests must not connect to servers or resolve network hosts.")
+
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+
+
+@pytest.fixture
+def pending_vllm_http_factory():
+    """Preserve first-frame tests before any vLLM sample without network IO."""
+    class PendingHttp:
+        async def get(self, url, *, timeout, max_bytes):
+            await asyncio.Future()
+
+        async def close(self):
+            pass
+
+    return PendingHttp
+
+
 @pytest.fixture
 def no_live_docker_io(monkeypatch):
     """Fail closed in Docker tests; adapter tests replace only the async OS port."""
