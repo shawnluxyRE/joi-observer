@@ -4,5 +4,8 @@ tests/fixtures/vllm/0.31.0/*-models.json -text
 tests/fixtures/vllm/0.31.0/*-version.json -text
 tests/fixtures/vllm/0.31.0/provenance.json text eol=lf
 
+# Complete raw exporter responses contain intentional HELP-line trailing spaces.
+tests/fixtures/vllm/0.31.0/*-metrics-full.prom whitespace=-blank-at-eol
+
 # Shell helpers are intended to run on Ubuntu.
 *.sh text eol=lf

@@ -1,0 +1,28 @@
+{
+  "version": "0.31.0",
+  "captured_date_utc": "2026-11-02",
+  "scope": "Previously user-supplied offline response; no server connection made for this regression.",
+  "files": [
+    {
+      "fixture": "chat-metrics-full.prom",
+      "source": "docs/dev-workflow/dev-0/REQ-004/evidence/server-9UwOpl9Q/joi-vllm-evidence.9UwOpl9Q/http/8000/metrics-1/body.prom",
+      "sha256": "81c66a2a9aa2bf5ff37198cf8c6602f16ab767337e58d58465aff90865d6ada7",
+      "bytes": 64449,
+      "transformation": "Byte-for-byte copy of the complete first metrics response; no lines filtered."
+    },
+    {
+      "fixture": "embedding-metrics-full.prom",
+      "source": "docs/dev-workflow/dev-0/REQ-004/evidence/server-9UwOpl9Q/joi-vllm-evidence.9UwOpl9Q/http/8001/metrics-1/body.prom",
+      "sha256": "555d3ebf05a93f4a43692559ea158432bdf2a0af9f40b61693b938fc91209e20",
+      "bytes": 54707,
+      "transformation": "Byte-for-byte copy of the complete first metrics response; no lines filtered."
+    },
+    {
+      "fixture": "reranker-metrics-full.prom",
+      "source": "docs/dev-workflow/dev-0/REQ-004/evidence/server-9UwOpl9Q/joi-vllm-evidence.9UwOpl9Q/http/8002/metrics-1/body.prom",
+      "sha256": "3a3ee9ba7258cd5553d93c9aca2a19e5a0b27dbd31ce78f52c97d49e1041ccf2",
+      "bytes": 54664,
+      "transformation": "Byte-for-byte copy of the complete first metrics response; no lines filtered."
+    }
+  ]
+}

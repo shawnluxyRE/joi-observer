@@ -19,6 +19,7 @@ from joi_observer.collectors.vllm import (
     AsyncHttpClient,
     HttpBodyTooLargeError,
     HttpResponse,
+    MAX_LABELS_PER_SERIES,
     MAX_LINE_BYTES,
     MAX_RESPONSE_BYTES,
     MAX_SAMPLE_LINES,
@@ -381,9 +382,63 @@ def test_sample_count_limit_applies_even_to_unrelated_families():
     assert_failure(parse(metrics=raw))
 
 
-def test_label_count_limit_applies_before_ignoring_unrelated_series():
-    labels = b",".join(f'k{index}="v"'.encode() for index in range(17))
-    assert_failure(parse(metrics=inputs()["metrics"] + b"custom_unrelated{" + labels + b"} 1\n"))
+def unrelated_series(label_count, family, *, defect=None):
+    """Synthetic independent samples; counts come from the approved contract."""
+    names = {
+        "unknown": b"custom_unrelated",
+        "info": b"vllm:cache_config_info",
+        "other-model": b"vllm:num_requests_running",
+    }
+    labels = ([b'engine="0"', b'model_name="unrelated"']
+              if family == "other-model" else [])
+    labels.extend(f'k{index}="v"'.encode() for index in range(label_count - len(labels)))
+    value = b"1"
+    if defect == "duplicate":
+        labels[-1] = labels[0]
+    elif defect == "escape":
+        labels[-1] = b'bad="PRIVATE\\q"'
+    elif defect == "number":
+        value = b"PRIVATE"
+    elif defect == "number-limit":
+        value = b"1e401"
+    return names[family] + b"{" + b",".join(labels) + b"} " + value + b"\n"
+
+
+def test_public_label_budget_matches_the_supported_profile_contract():
+    assert MAX_LABELS_PER_SERIES == 64
+
+
+@pytest.mark.parametrize("family", ["unknown", "info", "other-model"])
+@pytest.mark.parametrize("label_count", [17, 36, 64])
+def test_legal_unrelated_series_accepts_up_to_sixty_four_labels(family, label_count):
+    raw = inputs()["metrics"]
+    baseline = parse(metrics=raw)
+    assert baseline.failure is None
+    result = parse(metrics=raw + unrelated_series(label_count, family))
+    assert result.failure is None
+    assert result.observation == baseline.observation
+
+
+@pytest.mark.parametrize("family", ["unknown", "info", "other-model"])
+def test_label_count_limit_applies_before_ignoring_unrelated_series(family):
+    assert_failure(parse(metrics=inputs()["metrics"] + unrelated_series(65, family)))
+
+
+@pytest.mark.parametrize("family", ["unknown", "info", "other-model"])
+@pytest.mark.parametrize("defect", ["duplicate", "escape", "number", "number-limit"])
+def test_ignored_series_at_label_boundary_still_requires_valid_exposition(family, defect):
+    assert_failure(parse(metrics=inputs()["metrics"] + unrelated_series(64, family, defect=defect)))
+
+
+@pytest.mark.parametrize("profile,name,contains", [
+    ("embedding", "vllm:request_success_total", b'finished_reason="stop"'),
+    ("chat", "vllm:request_queue_time_seconds_bucket", b""),
+])
+def test_global_label_budget_does_not_expand_three_label_business_schemas(profile, name, contains):
+    raw = inputs(profile)["metrics"]
+    line = metric_line(raw, name, contains=contains)
+    changed = line.replace(b"}", b',extra="unwanted"}', 1)
+    assert_failure(parse(profile, metrics=raw.replace(line, changed, 1)))
 
 
 @pytest.mark.parametrize("endpoint", ["version", "models", "metrics"])

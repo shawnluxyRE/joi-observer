@@ -1,7 +1,7 @@
 # vLLM 多类型模型负载与历史设计
 
 - 关联需求：dev-0 / REQ-004，`requirements.md` v1.12，AC-401～412；依赖 REQ-001，复用 REQ-002、REQ-003 运行基础。
-- 修订：v1.2，2026-11-02。D-001 已根据用户回传的 vLLM 0.31.0 样本及安装源码完成核对；采集结果与引擎观测分别使用公共基类及具体子类。完整阶段结果以 [`handoff-r2.md`](../dev-workflow/dev-0/REQ-004/handoff-r2.md) 为准。
+- 修订：v1.3，2026-11-03。采纳 R4-DES-005 / R5-004-005，将全局标签资源契约从16修订为64，补齐完整响应兼容性边界；执行修复与验收由R4/R5完成。采集结果与引擎观测分别使用公共基类及具体子类。完整阶段结果以 [`handoff-r2.md`](../dev-workflow/dev-0/REQ-004/handoff-r2.md) 为准。
 - 范围：冻结模块职责、数据和接口契约，提供可加载的接口骨架及离线黑盒测试。业务入口留待 R4 实现，不能把导入成功或预期的 `NotImplementedError` 解释为功能已完成。
 - 关联文档：[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)、[视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
@@ -192,7 +192,11 @@ TTFT 和 Avg latency 沿用来源内部请求 `arrival_time` 到相关输出处�
 
 解析三份 UTF-8 字节，JSON 拒绝重复 key。Prometheus 指标按精确名称、model_name、engine 和允许的额外标签匹配；正确处理引号与转义，不按逗号随意拆标签。target series 在规范化标签顺序后重复、缺少身份标签或多出未定义标签属于整体结构错误，不重复累加；合法未知指标及其他模型独立 series 可忽略。
 
-每份响应最多 2 MiB；metrics 单行最多 64 KiB、样本行最多 50000、每 series 标签最多 16。数字 token 最多 128 字符，十进制指数绝对值最多 400、展开整数最多 400 位；这些限制在转换大整数前检查，避免短字符串表示极大指数消耗无界资源。数值边界与常量以 `collectors/vllm.py` 的公开契约为准。
+每份响应最多 2 MiB；metrics 单行最多 64 KiB、样本行最多 50000、每 series 标签最多 **64**。恰好64合法，65及以上为整体`parse/response.invalid`；`MAX_LABELS_PER_SERIES`的目标值统一为64。数字 token 最多 128 字符，十进制指数绝对值最多 400、展开整数最多 400 位；这些限制在转换大整数前检查，避免短字符串表示极大指数消耗无界资源。
+
+该上限是对所有family统一生效的资源边界，不是业务schema宽度。标签格式、转义、重复、数量以及数值词法和资源边界须在丢弃未知family、其他model、bucket或非STOP序列前完成对应检查；不得为`vllm:cache_config_info`添加豁免，也不得跳过未知行验证。目标业务序列仍严格要求原有2个标签（model_name、engine），bucket另加le，完成计数另加finished_reason；多余目标标签仍为整体错误。被忽略序列的合法Prometheus负数/小数/非有限拼写沿用现有规则，适用业务数值的非负/有限/整数及局部失败规则不变。
+
+修订依据：用户已保存的六份0.31.0完整响应均包含36标签的正常`vllm:cache_config_info`；最大正文64449字节、最大行1054字节、最大样本495，其他边界无需扩大。64容纳已确认的正常输出并保留有界余量，单行与总正文限制继续约束分配；这不是对未来版本任意标签数量的承诺。完整fixture与回归由R5/R4保留。R2本轮只确认契约、注释及黑盒测试；运行常量仍为16，须由R4落实64后回验，不能把本设计接受视为旧包已修复。
 
 计数使用精确十进制语义解析，允许整数值科学记数法，不先经过 float；拒绝负值、非整数、bool、NaN/Infinity。延迟总秒数及创建时间有限非负，KV 比例有限且处于合法范围；`le="+Inf"` 是 histogram 标签，不等于允许非有限业务值。bucket 不相加，也不代替 count。
 
@@ -292,6 +296,7 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 | --- | --- | --- |
 | `tests/test_state.py`、`tests/test_monitor.py` | 公共结果结构与构造、公共/指标整失败、部分失败保值及gap、空载荷成功拒绝；具体结果原样转交和无载荷超时/异常失败 | 公共状态/调度契约，支撑 AC-401、407、412 |
 | `tests/test_vllm_collector.py` | 三类型 exposition 到正确 Chat/Pooling 观测子类、无不适用原始字段、精确计数/转义/身份/版本、局部与全失败、STOP 筛选、多 engine、边界上限、三路径顺序和预算、离线 client factory/流取消/关闭 | AC-401、405、407、409～412 |
+| `tests/test_vllm_collector_edges.py`、`tests/test_vllm_full_response_integration.py` | 保留三类型完整正文与来源哈希，完整parser观测和真实Collector→Monitor→State链路回归；与统一64/65标签边界共同验证，不用摘录代替完整兼容性 | AC-401、407、409、412，R5-004-005 |
 | `tests/test_vllm_engine_samples.py` | 公共字段、Chat/Pooling专用字段分离、拒绝不适用构造参数、冻结及局部缺失时保留具体子类 | AC-401、409～411 |
 | `tests/test_vllm_window.py` | 200/2、1000/2、6/2、有效零、首次/重置/拓扑、加权均值、严格落窗、非法输入及有限计算 | AC-402～404、406、410～411 |
 | `tests/test_vllm_state.py` | 观测子类/model_type 匹配、裸基类/混合/错类型原子拒绝、非空同类 tuple、既有 Metric 模板、group 独立基线、重置/epoch、部分失败保值与整点 gap、恢复、只读过期、精确 Total、KV 均值、有界窗口 | AC-401～407、409～411 |
@@ -310,3 +315,4 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 - v1.1：按用户要求采用公共 CollectionResult 与 MetricCollectionResult、VllmCollectionResult 两个子类；failure 统一为仅关键字参数，vLLM observation 移到专用子类。v1.0 的公共结果可选 vllm 载荷方案已取代；协议/调度仍依赖基类，公共失败可跨 spec，成功或部分结果按具体类型匹配 spec。
 - v1.2：仅按用户授权修订 EngineSample 继承体系：公共字段留基类，Chat 专用字段进入 ChatEngineSample，Embedding/Reranker 共用 PoolingEngineSample。engines 使用与 model_type 匹配的同类非空 tuple，消费边界拒绝裸基类、混合和错类型；None 不再承载原始字段不适用含义。VllmSpec 默认字段、最终 Metric 模板及其他审查建议不变，业务仍为 R2 未实现骨架。
 - 测试组织整理：公共结果测试分别并入既有State、Monitor和vLLM State测试文件，合并重复场景；接口与类图语义不变。最新计数与去重映射见交接单v1.3。
+- v1.3：接受R4-DES-005 / R5-004-005的统一64标签资源契约，明确64/65闭开边界、过滤前统一校验和目标精确schema不变；补充边界黑盒用例，保留完整响应回归。当前R2不改执行常量、解析逻辑或发布包，等待R4实施及确认。

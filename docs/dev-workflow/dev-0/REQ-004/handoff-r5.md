@@ -5,12 +5,74 @@
 - work_dir：`D:\Documents\codex_worktree\dev0-req004\joi-observer\docs\dev-workflow\dev-0`
 - req_dir：`D:\Documents\codex_worktree\dev0-req004\joi-observer\docs\dev-workflow\dev-0\REQ-004`
 - 需求依据：[requirements.md](../requirements.md) v1.12，REQ-004 / AC-401～412、D-001 与共同规则。
-- 验收依据：[plan.md](plan.md) v1.0、[handoff-r2.md](handoff-r2.md) v1.3、[handoff-r4.md](handoff-r4.md) v1.2、[vllm.md](../../../design/vllm.md) v1.2、[view-contract.md](view-contract.md)、配置/状态/应用外壳设计与 AGENTS.md。
+- 验收依据：[plan.md](plan.md) v1.0、[handoff-r2.md](handoff-r2.md) v1.4、[handoff-r4.md](handoff-r4.md) v1.3、[vllm.md](../../../design/vllm.md) v1.3、[view-contract.md](view-contract.md)、配置/状态/应用外壳设计与 AGENTS.md。
 - 审查对象：分支 `codex/dev0-req004`，比较基点 `2b3643096f193fe9c13d2e78e43924bfc64953ab`；审查覆盖当前 worktree 全部已跟踪及未跟踪的 REQ-004 交付，而非只看已提交 diff。初始路径、Git 状态与逐文件 SHA-256 见 [r5-review-start.json](evidence/r5-review-start.json)。与 R4 manifest 交叉核对一致。
-- next_role：R0
-- 修订：v1.4，2026-11-03；按用户授权完成提交前全面检查与交付收尾，结论 passed；R5-004-001～004 与测试补漏 R5-TST-003 均已关闭。本轮提交目标为当前 `codex/dev0-req004` 分支，提交标识见 Git 记录；未自动联系或推进其他角色聊天。
+- next_role：R0 / 用户（服务器重测）
+- 修订：v1.7，2026-11-03；完整响应复验及测试包完成后，按用户明确的 push 指令提交并推送本轮 fix3。结论 passed，R5-004-001～005 与 R5-TST-003 均已关闭；提交前未改变已验证业务代码或测试断言，未自动推进其他角色聊天。
 
-## v1.4 提交前全面检查与收尾（2026-11-03）
+## v1.7 提交与推送收尾（2026-11-03）
+
+用户先要求准备 commit message，随后明确要求 push。检查时 fix3 尚未提交，因此使用已准备的 `<fix> Support complete vLLM 0.31.0 metrics responses` 提交本轮修复，再普通推送到 `origin/codex/dev0-req004`。提交前独立核对全部生产源码、测试和 fixture 与1395项通过的验证快照一致；将 README 的“待R5复验”收尾为已通过，并更新本交接。完整原始响应的HELP行自带尾随空格，新增仅针对 `*-metrics-full.prom` 的 `whitespace=-blank-at-eol` 属性，保留样本原始字节与SHA，不清洗或改写证据。源码/测试未再变动，不重复无变化回归；实际提交与推送结果记录于 [r5-fix3-push-result.json](evidence/r5-fix3-push-result.json)。
+
+先前 fix3 测试包是提交前构建的已验证快照，其 manifest 和 README 元数据仍准确描述当时输入；本次文档状态收尾不改变包内业务源码或既有验证结果，未重新生成或覆盖该包。
+
+## v1.6 完整响应修复复验与新测试包（2026-11-03）
+
+用户明确要求按 R5 复验，通过后重新生成测试包。R5 已读取并确认 R2 v1.4 / R4-DES-005 对统一64标签上限的批准及 R4 v1.3 实施交接。当前审查基点为 `7a4e950ac4f703fa3f68c96bf05834d57b487374` 加未提交 fix3；快照见 [r5-retest3-start.json](evidence/r5-retest3-start.json)。旧上限测试的替换由已批准契约变更解释，未将其误记为旧断言自身错误。
+
+主审及独立只读复核确认，运行逻辑仅改变 `MAX_LABELS_PER_SERIES: 16 → 64`；剔除文档字符串并归一该常量后，生产 AST 与基点一致。64合法/65失败，标签结构、重复/转义及数值检查仍先于对应过滤；目标业务schema保持2/3标签，其他字节、样本和数值上限未变，没有给 cache_config_info 添加豁免。完整fixture哈希与原始资料一致，原摘录仍保留。
+
+本轮验证全部在本地 WSL Ubuntu-24.04 / Ubuntu24.04.5 LTS x86_64、Python3.12.3、HTTPX0.28.1 执行，保留 DNS/connect 防护，未访问服务器。工作目录为 `/mnt/d/Documents/codex_worktree/dev0-req004/joi-observer`；下列 `python` 为 `/home/shawn/projects/tmp/joi-observer-dev-0-venv/bin/python`。
+
+| R5 实际检查 | 命令 / 范围 | 结果与证据 |
+| --- | --- | --- |
+| 全量复验 | `python -m pytest -q --tb=short --junitxml=docs/dev-workflow/dev-0/REQ-004/evidence/r5-retest3-pytest.xml` | **1395 passed in 27.56s，0 failed / 0 errors / 0 skipped**；[输出](evidence/r5-retest3-pytest.txt)、[JUnit](evidence/r5-retest3-pytest.xml) |
+| 六份原始完整响应回放 | `python docs/dev-workflow/dev-0/REQ-004/evidence/r5-retest3-full-responses.py`（复用经检查的只读回放脚本，另存R5结果） | 六份均无failure，与同轮摘录的业务观测一致，原始SHA未变、network_attempts为空；[报告](evidence/r5-retest3-full-responses.json)、[输出](evidence/r5-retest3-full-responses.txt) |
+| 已装程序完整响应TUI | `python docs/dev-workflow/dev-0/REQ-004/evidence/r5-retest3-install/verify_uv_install.py --uv /home/shawn/.local/bin/uv --wheel docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-install/wheels/joi_observer-0.1.0.dev0-py3-none-any.whl` | exit0，三类首模型TUI均通过；[报告](evidence/r5-retest3-install/uv-install-results.json)、[输出](evidence/r5-retest3-install/run.txt)、[脚本字节核对](evidence/r5-retest3-install/script-copy-check.json) |
+| 新归档独立安装 | 从新tar.gz解压至临时目录，执行 `bash install.sh`；使用实际安装解释器检查64上限、全部包内文件哈希、三份配置及每份配置的三类完整响应 | passed，3份配置共9次完整解析通过，临时安装已清理；[报告](evidence/r5-retest3-bundle-validation.json) |
+| 版本/测试集合/产物审计 | 独立AST、源文件/wheel/README哈希、JUnit和归档SHA核对；`git diff --check` | 通过；[审计](evidence/r5-retest3-audit.json)。审查期间R4清理其试用包并更新交接、AGENTS元数据，生产/测试/fixture和构建输入未变，不影响本次验证 |
+
+与先前1365项比较，新增31个ID，旧单个“17标签失败”被批准的新参数化边界替换1个，净增30至1395；其余原用例保留。v1.5新增的三个完整响应失败用例均转绿，Collector→Monitor→State完整正文链路通过。本轮无额外测试缺口需继续追加。
+
+R5 此次实际执行了安装验证，使用完整 metrics（Chat64449、Embedding54707、Reranker54664字节），每次三模型至少两轮采样并核对每轮响应SHA；三类详情均正常，无STALE，q返回0、termios恢复、端口关闭，network/process attempts均为空，无遗留监督进程。这里不再仅引用R4执行结果，也不再用摘录替代完整正文。源码25份py/yaml、README metadata、wheel及已装包一致。
+
+新服务器测试包：[joi-observer-server-test-fix3-20261103.tar.gz](../../../../dist/joi-observer-server-test-fix3-20261103.tar.gz)，**1,486,206字节**，SHA-256 **`efa23f279199840c6474e9a9ebda05ab5cb3ae92ebdcd8be1c5a7b4672be435f`**；[校验文件](../../../../dist/joi-observer-server-test-fix3-20261103.tar.gz.sha256)、[生成记录](evidence/r5-retest3-bundle.json)。归档内产品wheel SHA-256：`20aa98f51dbad08ede22b630f2d1c0f498e4b2ae52f6275480e3444c23870609`，与本轮实际安装验证使用的wheel相同。
+
+包内 manifest 明确记录基点7a4e950加未提交fix3源码哈希，不冒充新提交。附10个产品/运行依赖wheel、安装脚本、三份首模型顺序配置及逐文件SHA256SUMS；安装仅写包内 `.uv-tools/`、`bin/` 和 `.uv-cache/` 独立目录，不自动启动监控。日志改为 `~/.joi-observer/server-test-fix3-20261103/error.log`，与旧测试日志分开；旧包未覆盖。新配置沿用先前服务器试用配置，用户应核对挂载点、容器名及本机端口后再运行。
+
+已解决保存的0.31.0完整响应兼容性缺陷。当前服务器实时正文、真实网络/TLS、生产负载和实机多engine/重启仍需现场验证；REQ-005/006范围不变。测试包由R5在本次用户明确授权下生成，R4阶段清理试用包的安排不构成重复授权要求。
+
+## v1.5 服务器反馈与完整响应复现（历史，2026-11-03）
+
+用户在服务器试跑提交 `7a4e950ac4f703fa3f68c96bf05834d57b487374` 的离线包，回传 Chat、Embedding、Reranker 同时报 `parse/response.invalid`。R5 没有连接服务器或执行采证脚本，而是使用本地已保存的 2026-11-02 用户完整原始响应复现。
+
+根因：目标 0.31.0 正常输出的 `vllm:cache_config_info` 有 **36 个标签**，解析器在忽略未知 family 前对所有 series 使用 **16 标签**上限，导致整份合法正文被拒绝。正文仅约 54～64 KB，没有触发 2 MiB 正文或 64 KiB 单行限制。采证中的安装源码 `v1/metrics/loggers.py:1003–1025、1216` 确认该 info 从 cache config 字段生成标签，是合法输出。
+
+| 已保存的完整响应 | 出错 series 原文位置 | 离线结果 |
+| --- | --- | --- |
+| Chat，8000，metrics-1/2 | 第 588 行，36 标签，单行 1054 字节 | 两份均整体 response.invalid |
+| Embedding，8001，metrics-1/2 | 第 532 行，36 标签，单行 1034 字节 | 两份均整体 response.invalid |
+| Reranker，8002，metrics-1/2 | 第 532 行，36 标签，单行 1034 字节 | 两份均整体 response.invalid |
+
+六份完整正文均复现失败；仅在诊断进程移除该条 info 后，六份全部正常解析，原始文件和业务代码未改。[逐响应定位](evidence/r5-server-parse-diagnosis.json)、[单因素排除验证](evidence/r5-server-full-response-isolation.json)。这些证据足以解释相同的三模型失败模式，但没有读取本次服务器实时正文，不能声称排除了后续部署变化。
+
+此前 62 行摘录 fixture 没有该 info；HTTPX/运行期接合也复用了摘录，因此 1365 项通过没有证明完整 `/metrics` 兼容。完整资料此前已在本地却未纳入验收，是 R5 漏检，不应归因于用户以 root 运行或要求用户改动/重启服务来绕过。
+
+R5 新增三份逐字节完整 fixture：`tests/fixtures/vllm/0.31.0/{chat,embedding,reranker}-metrics-full.prom`，原始路径及 SHA-256 见 [full-response-provenance.json](../../../../tests/fixtures/vllm/0.31.0/full-response-provenance.json)。在 [test_vllm_collector_edges.py](../../../../tests/test_vllm_collector_edges.py) 追加 `test_complete_recorded_response_accepts_real_profile_metadata` 三项参数化用例：核对原始哈希，要求完整响应成功且业务观测与同源摘录相同。旧摘录、测试及设计均保留。
+
+在 WSL Ubuntu-24.04 / Python 3.12.3、原 worktree 实际执行：
+
+```bash
+/home/shawn/projects/tmp/joi-observer-dev-0-venv/bin/python -m pytest -q \
+  tests/test_vllm_collector.py tests/test_vllm_collector_edges.py --tb=short \
+  --junitxml=docs/dev-workflow/dev-0/REQ-004/evidence/r5-server-full-response.xml
+```
+
+结果 **158 passed / 3 failed in 2.35s**；三个新增例全部失败，已有解析例继续通过。[输出](evidence/r5-server-full-response.txt)、[JUnit](evidence/r5-server-full-response.xml)。未改实现，未重复无关全量回归；以前的全量通过不能作为本问题已解决的证据。
+
+16 标签上限同时写入设计/接口注释，并被旧测试要求“未知 family 17 标签即失败”，与真实 36 标签输出存在直接冲突。用户已选择交回 R4，R5 保留失败用例及证据，不自行修改业务/契约或重打包；当前旧测试包仍包含该缺陷。
+
+## v1.4 提交前全面检查与收尾（历史，2026-11-03）
 
 用户明确要求“再全面检查一下，如果没问题就 commit”。三组独立只读复核覆盖采集/HTTP/运行期、State/数值/视图、文档/打包/提交范围，未发现新的业务实现或测试预期阻碍。业务代码及已有 1365 个测试未改；完成两类提交收尾：
 
@@ -162,9 +224,9 @@ cd /mnt/d/Documents/codex_worktree/dev0-req004/joi-observer
 
 ## 本轮决策
 
-当前结论为 **passed**。REQ-004 / AC-401～412 在已冻结的离线验收范围内通过；第二轮遗漏 R5-004-003/004 已按根因修复并完成独立复验，全部 1365 项测试通过，当前无未关闭的验收阻碍。最新源码、wheel 及安装证据对应同一交付版本。
+当前结论为 **passed**。R2批准的统一64标签契约已正确落实，R5-004-005及三个完整响应失败用例已通过独立复验；1395项全量、六份完整正文、完整正文安装TUI及新归档安装均通过，当前无未关闭的离线验收阻碍。
 
-v1.2 曾因补例暴露原测试漏检而改为 `needs_fix`，其失败与判断保留作历史记录；本次未改变原预期来取得通过。R5-004-001/002、R5-TST-003 继续保持关闭，接收方改为 R0。R5 未修改业务或设计，结论不扩展到既定的真实服务未验证项或 REQ-005/006。
+R5-004-001～005 和 R5-TST-003 均已关闭，旧失败证据及包保留。R5未改业务/设计或测试断言，已按用户授权重新生成独立测试包；结论限于已保存profile及本地验证，仍请用户在服务器重测。
 
 ## R4 修订汇总
 
@@ -224,6 +286,16 @@ vllm:request_success_total{engine="0",model_name="qwen3-embedding-4b",finished_r
 - 预期与实际：该例意图验证很小但仍非零的可表示均值；pytest 默认 `abs=1e-12` 会使实际值 0.0 也通过。[离线检查](evidence/r5-review2-tolerance.txt)输出 `True`，说明旧断言不能证明非零性。这不是在断言当前 `weighted_latency` 对该输入计算错误。
 - R5 处理：保留原测试，仅在 262 行追加 `test_tiny_latency_with_huge_count_uses_relative_tolerance_and_stays_nonzero`，使用 `mean > 0` 和 `pytest.approx(..., rel=1e-12, abs=0.0)`。新增例通过，测试缺口已补齐；无需 R4 改业务来处理本条，R5-004-004 的独立多引擎缺陷仍待修复。
 
+### R5-004-005 [P1] 全局 16 标签上限拒绝目标 vLLM 的正常完整响应
+
+- 关联依据：AC-401/407/409/412、T-001/T-008、D-001 对三个已部署 0.31.0 模型的支持要求。
+- 位置：[collectors/vllm.py](../../../../src/joi_observer/collectors/vllm.py) 33 行 `MAX_LABELS_PER_SERIES = 16`、401–402 行全局检查；[vllm.md](../../../design/vllm.md) §6 与 parser 注释固定 16；`test_vllm_collector.py::test_label_count_limit_applies_before_ignoring_unrelated_series` 固定要求未知 family 17 标签失败。
+- 预期与实际：正常完整正文应产生与同源摘录一致的观测；实际合法 `vllm:cache_config_info` 有 36 标签，在 unknown family 过滤前整体失败。三服务两轮共六份原始正文全部复现，对核心采集构成阻断。
+- 复现：运行本轮 `test_complete_recorded_response_accepts_real_profile_metadata` 三项，使用三个完整 fixture，未替换解析器或预先计算业务结果。原始哈希与先前采证记录一致，证据见本轮章节。
+- 处理请求：协调资源边界契约，使其容纳已证明的 36 标签正常输出，同时保留明确上限；同步实现、设计/接口注释及对应的上限边界测试。具体上限或是否区分目标/忽略 family 由 R4 根据真实 profile 提案并协调必要设计修订。不能直接跳过全部未知行的格式/资源校验而重新引入 R5-004-001；正文/行长/样本数限制、精确身份与局部失败语义须保留。
+- 验证交付：完整正文 parser 和 Collector→Monitor→State 链路均需通过，并做必要全量回归。修复后刷新源码/wheel/安装证据，提供新测试包供用户重测；旧包不能继续描述为已验证服务器兼容。
+- R4 回复与 R5 复验：**已关闭（2026-11-03）**。R2 v1.4明确批准统一64、65拒绝及过滤前校验，R4 v1.3只修改执行常量并同步契约注释。R5确认没有family豁免或业务schema扩大，新的边界/错误用例和原始完整正文均通过；三项旧失败、完整Collector→Monitor→State链路、全量1395项及完整正文安装TUI已实际复验通过，新包已生成并验证。服务器当前实时行为留给用户重测，不再将摘录通过等同完整兼容。
+
 ## 下一步
 
-接收角色 **R0 / 用户**：REQ-004 本轮离线验收通过，请登记验收结果并安排后续需求。四项实现问题及测试补漏均已关闭，无等待 R4 修订或用户澄清的事项。保留本交接、最新 wheel 和 `evidence/` 实际文件；受 Git ignore 的材料不会随普通 diff 传递。下一阶段继续由用户人工推进，本轮未自动联系其他角色聊天。
+接收角色 **R0 / 用户**：记录本次R5通过结论；后续问题按现有交接流程反馈。用户已授权提交并推送本轮修复，实际提交标识以 Git 和本轮推送记录为准；未自动创建PR、合并分支或联系其他角色聊天。测试归档和证据受Git忽略，须另行携带。

@@ -5,9 +5,52 @@
 - work_dir：`D:\Documents\codex_worktree\dev0-req004\joi-observer\docs\dev-workflow\dev-0`
 - req_dir：`D:\Documents\codex_worktree\dev0-req004\joi-observer\docs\dev-workflow\dev-0\REQ-004`
 - 需求依据：[requirements.md](../requirements.md) v1.12，REQ-004 / AC-401～412。
-- 计划依据：[plan.md](plan.md) v1.0、[handoff-r2.md](handoff-r2.md) v1.3。
+- 计划依据：[plan.md](plan.md) v1.0；资源边界采用 [handoff-r2.md](handoff-r2.md) v1.4、[vllm.md](../../../design/vllm.md) v1.3，取代旧16标签约定。
 - next_role：R5
-- 修订：v1.2，2026-11-03；R5-004-003/004 已修复，待 R5 复验。R5-004-001/002 已由 R5 复验关闭。分支 `codex/dev0-req004`，基点 `2b3643096f193fe9c13d2e78e43924bfc64953ab`，未创建提交。
+- 修订：v1.3，2026-11-03；R4-DES-005 已按 R2 确认落实，R5-004-005 已修复，待 R5 复验。R5-004-001～004 与 R5-TST-003 保持关闭。分支 `codex/dev0-req004`，当前基点 `7a4e950ac4f703fa3f68c96bf05834d57b487374`；本轮未提交。
+
+## v1.3 完整响应兼容性返修（2026-11-03）
+
+接收 [handoff-r5.md](handoff-r5.md) v1.5。三类服务的六份已保存完整响应均含 36 标签的正常 `vllm:cache_config_info`，旧统一 16 标签上限将其拒绝。新增完整 fixture 已核对与原始响应字节及 SHA-256 一致。R2 v1.4 明确接受统一64后，R4已实施并完成完整响应、全量及安装验证。此问题是旧资源契约与目标 profile 的冲突，不是用户部署、权限或服务状态问题。
+
+### R2 修订请求 R4-DES-005：已确认并落实统一64上限
+
+- 关联：R5-004-005、T-001/T-008、AC-401/407/409/412、D-001。修订前实现常量、parser 接口注释、`docs/design/vllm.md` §6 与旧测试均限制16；旧“17 标签失败”测试符合旧契约，本轮由R2明确的契约修订取代，没有将其误记为测试自身错误。
+- 具体提案：统一 `MAX_LABELS_PER_SERIES = 64`；恰好 64 合法，65 为整体 `response.invalid`。保留在识别/忽略任何 family 之前的标签计数、格式/转义/重复标签和数值校验；不为某条 info 设置特例，不跳过未知行检查。目标业务指标仍只接受既定的精确 2/3 标签集合，2 MiB 正文、64 KiB 单行、50000 样本及数值限制不变。
+- 依据：六份完整正文最大标签数均为36，仅该 info 超过16；最大正文64449字节、最大行1054字节、最大样本495，均远低于其他上限。64容纳已证实的正常输出并保留有限余量；单行/正文总字节边界仍约束解析分配。统一上限比按 family 分支更简单，且继续避免 R5-004-001。
+- 实际分工：R2同步 `docs/design/vllm.md`、parser契约注释和 `tests/test_vllm_collector.py` 新64/65边界；R4将 `src/joi_observer/collectors/vllm.py` 执行常量改为64并移除临时待实施注释。保留 R5 三个完整响应回归；R4新增完整响应 Collector→Monitor→State、安装TUI验证。R5测试中提及旧16限制的历史docstring已同步为通用边界描述，断言不变。
+- 协调记录：三个 subagents 和主对话前检确认技术可行，但未擅自修改冻结资源契约。用户于2026-11-03明确选择先交R2确认，R4按指令发送提案至既有 `REQ-004-R2` 聊天（thread `01a19aec-5839-7fa2-bb24-f5f7ae74d7b0`）。R2 v1.4明确接受64后，用户回交“R2已确认”，R4才恢复实施。
+- 起始快照：[r4-fix3-start.json](evidence/r4-fix3-start.json)。独立准备完整链路回归及使用完整正文的离线安装脚本，旧证据和包保留。
+- 独立验证准备：新增 [test_vllm_full_response_integration.py](../../../../tests/test_vllm_full_response_integration.py)，完整三响应预读后经真实 Collector→Monitor→State 两轮采样，检查首次未知、二轮有效零、历史、错误日志与三个固定路径。WSL 命令 `python -m pytest -q tests/test_vllm_full_response_integration.py --tb=short --junitxml=docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-fullchain-baseline.xml` 为 **1 failed**，复现正常响应被标 STALE，无环境/导入错误；[输出](evidence/r4-fix3-fullchain-baseline.txt)、[JUnit](evidence/r4-fix3-fullchain-baseline.xml)。该例没有改旧契约或替换解析业务，保留失败供修复后验证。
+- 安装脚本 [r4-fix3-install](evidence/r4-fix3-install/preflight.json) 的HTTP替身使用完整正文并核对每份实际响应SHA-256；已完成新wheel和完整正文TUI验证，结果见下表。旧7a4e950服务器测试包仍含本问题，不作为005修复结果。
+
+### R2 v1.4 回复与 R4 确认
+
+用户已回交“R2 已确认”。R4核实并接受R2 v1.4的统一64上限、64合法/65失败、过滤前校验和目标精确schema不变的完整决定。R2已同步设计、接口注释及黑盒边界，保留执行常量16供R4实施；其188项基线为174通过/14待实现失败，没有环境错误。接收后的文件快照见 [r4-fix3-accepted-start.json](evidence/r4-fix3-accepted-start.json)。此前设计阻碍已解除，不再等待重复授权。
+
+本次仍在计划T-001/T-008范围内，不改变任务边界、依赖或交付条件，无需先调整R3计划。R2文末的后续R3核对按用户另行指令推进，本轮不自动通知R3；先按已确认设计完成实现、完整响应链路、全量与离线安装验证。
+
+### R5-004-005 修复结果与验证
+
+生产运行逻辑的唯一变化是 `MAX_LABELS_PER_SERIES: 16 → 64`；去除文档字符串后，归一该常量的新旧生产AST完全一致。未知family仍先做格式、数量和数值检查，目标业务指标的精确2/3标签schema、其他资源边界、身份、局部失败和历史语义均不变。独立subagent完成代码、R2新边界和完整链路只读复核，无新增问题。
+
+以下命令实际在 `/mnt/d/Documents/codex_worktree/dev0-req004/joi-observer` 的 WSL Ubuntu-24.04 执行，`python` 为 `/home/shawn/projects/tmp/joi-observer-dev-0-venv/bin/python`（Python3.12.3、HTTPX0.28.1）。保留DNS/connect防护，没有尝试连接服务器。
+
+| 检查 | 实际命令与结果 | 证据 |
+| --- | --- | --- |
+| R2边界及完整链路 | `python -m pytest -q tests/test_vllm_collector.py tests/test_vllm_collector_edges.py tests/test_vllm_full_response_integration.py --tb=short --junitxml=docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-collector.xml`；**188 passed in 2.48s**，R2原14个待实现失败全部转绿 | [输出](evidence/r4-fix3-collector.txt)、[JUnit](evidence/r4-fix3-collector.xml) |
+| 六份原始完整正文回放 | `python docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-full-responses.py`；六份均failure=None，观测与同轮摘录一致，原始SHA未变，network_attempts为空 | [脚本](evidence/r4-fix3-full-responses.py)、[报告](evidence/r4-fix3-full-responses.json)、[输出](evidence/r4-fix3-full-responses.txt) |
+| 最终全量 | `python -m pytest -q --tb=short --junitxml=docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-pytest-final.xml`；**1395 passed in 26.59s，0 failed / 0 errors / 0 skipped** | [输出](evidence/r4-fix3-pytest-final.txt)、[JUnit](evidence/r4-fix3-pytest-final.xml) |
+| 完整正文安装TUI | `python docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-install/verify_uv_install.py --uv /home/shawn/.local/bin/uv`；exit0，result=passed | [报告](evidence/r4-fix3-install/uv-install-results.json)、[输出](evidence/r4-fix3-install/run.txt) |
+| 交付审计 | `python docs/dev-workflow/dev-0/REQ-004/evidence/r4-fix3-audit.py`；exit0，源码/测试/fixture/wheel校验通过；Windows `git diff --check` 通过，仅既有行尾提示 | [脚本](evidence/r4-fix3-audit.py)、[报告](evidence/r4-fix3-audit.json)、[输出](evidence/r4-fix3-audit.txt) |
+
+相对先前1365项，旧单个“17标签失败”用例按R2修订被新的参数化边界替代，其余旧用例保留；总计新增31个用例ID、替代1个，净增30至1395。R2指定188项全部保留通过，不以旧测试数量不变掩盖合法契约修订。构建自动更新被忽略的egg-info元数据，审计将其与生产源码分开记录。
+
+最新 [wheel](evidence/r4-fix3-install/wheels/joi_observer-0.1.0.dev0-py3-none-any.whl) SHA-256：`20aa98f51dbad08ede22b630f2d1c0f498e4b2ae52f6275480e3444c23870609`。25份包内py/yaml与源码和已装包逐字节一致，README元数据对应本轮状态更新。新shell裸信息命令及三类首模型TUI通过；每次所有模型均使用完整metrics（64449/54707/54664字节）并核对每轮响应哈希，至少两轮采样，q返回0、termios恢复、端口关闭，无网络/外部进程尝试和遗留进程。依旧使用同进程显式离线bootstrap，无隐式hook或真实来源回退。
+
+用户于2026-11-03明确要求“R4阶段不要生成试用包，删除”。本轮服务器试用归档、展开目录及专用生成/验证材料已移入回收站，并清除交接与当前审计对它们的依赖；R4阶段不再生成试用包，该规则已写入AGENTS.md。源码修复、1395项回归证据和内部安装验证产物保留。本次仅清理交付材料与文档，未改业务或测试代码，未重复运行产品回归。
+
+本轮已解决已保存完整0.31.0响应的兼容性问题，等待R5复验。未读取用户当前实时正文，不能声称排除了后续部署变化；真实网络/TLS、生产负载与实机多engine/重启的既定限制保持。内部安装验证产物和evidence被Git忽略，交接时须另行携带，不能仅依赖diff。
 
 ## v1.2 第二轮返修（2026-11-03）
 
@@ -167,6 +210,6 @@ R5 的 **1309 个用例 ID 全部保留并通过**，其中四项缺陷复现转
 
 ## 下一步
 
-接收角色 **R5**：请复验本交接顶部 v1.2 的 **R5-004-003/004** 修复、1365 项回归及最新源码/wheel/安装证据，使用 `r4-fix2-*` 产物。R5-004-001/002 和 R5-TST-003 保持已关闭；`r4-install`、`r4-fix1-install` wheel 仅为历史版本。当前无待决设计或实现阻碍，`ready` 仅表示 R4 返修具备交接条件，不代表已通过 R5 验收。
+接收角色 **R5**：请按R2 v1.4 / vLLM设计v1.3复验本交接顶部 **R5-004-005** 的64/65资源边界、完整响应parser与Collector→Monitor→State、1395项回归、完整响应安装TUI，使用 `r4-fix3-*` 证据。R4-DES-005已确认并落实，无待决设计/实现事项；`ready`仅代表R4具备交接条件，不表示已由R5关闭005。原R5-004-001～004与R5-TST-003保持关闭，旧包只作历史引用。
 
 如发现问题，请在 `handoff-r5.md` 的“R4 修订汇总”记录可复现证据并由用户交回 R4。跨角色对话继续由用户人工推进，本轮未自动联系 R5。

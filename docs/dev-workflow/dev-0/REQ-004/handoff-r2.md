@@ -2,18 +2,74 @@
 
 - stage：R2
 - result：ready
-- next_role：R3
-- 修订：v1.3，2026-11-02
-- 来源：用户指定REQ-004首次设计；已收到用户手动执行只读采证所得归档，D-001已核实。
-- 分支：`codex/dev0-req004`；基点 `2b3643096f193fe9c13d2e78e43924bfc64953ab`，已包含REQ-002 / PR #1与REQ-003 / PR #2；本轮未提交。
+- next_role：R4（先确认并实施资源边界修订；不自动推进其他角色聊天）
+- 修订：v1.4，2026-11-03
+- 来源：用户在R4明确选择先交R2确认；审阅R4 v1.3的R4-DES-005及R5 v1.5的R5-004-005。
+- 分支：`codex/dev0-req004`；本轮审查HEAD `7a4e950ac4f703fa3f68c96bf05834d57b487374`。R4/R5已有未提交完整fixture、回归和交接记录，本轮保留；R2未提交。
 - 实际 project_root：`D:\Documents\codex_worktree\dev0-req004\joi-observer`
 - 实际 work_dir：`D:\Documents\codex_worktree\dev0-req004\joi-observer\docs\dev-workflow\dev-0`
 - 实际 req_dir：`D:\Documents\codex_worktree\dev0-req004\joi-observer\docs\dev-workflow\dev-0\REQ-004`
 - 需求依据：当前worktree `docs/dev-workflow/dev-0/requirements.md` v1.12，REQ-004 / AC-401～412、D-001及共同规则。
 
+## v1.4 决定：接受R4-DES-005统一64标签上限
+
+**结论：接受64，不采用family豁免或跳过未知行的替代方案。** R4-DES-005的设计结论已明确，`result=ready`表示可以回交R4，不表示R5-004-005已经修复或验收通过。当前运行常量仍为16；需要R4落实并回验。
+
+### 已确认契约
+
+1. `MAX_LABELS_PER_SERIES`的统一目标值为 **64**。单条series恰好64个标签合法，65及以上为整对象`parse/response.invalid`，不得保留一部分观测当作成功。
+2. 标签语法、引号/转义、重复标签、数量，以及数值词法和资源边界继续在对应过滤分支丢弃数据前检查；适用于未知family、其他模型、bucket及非STOP序列。不得对`vllm:cache_config_info`特判，不得直接忽略未知行来绕过限制。
+3. 全局资源上限与目标schema分开：目标普通业务指标仍精确要求`model_name/engine`两个标签；bucket增加`le`、完成计数增加`finished_reason`，共三个。超过既定目标标签集合仍为整体失败，不能因全局放宽到64而接受任意业务标签。
+4. 2MiB正文、64KiB单行、50000样本、128字符数字token、指数绝对值400及展开整数400位限制均不变。身份校验、目标数值约束、局部失败、STOP筛选和现有被忽略合法Prometheus数值规则不变。
+5. 将三类完整响应纳入parser和Collector→Monitor→State回归；摘录fixture继续用于精确字段和异常变形测试，但不能独自证明完整exposition兼容。R5完整fixture及R4完整链路用例原样保留。
+
+### 依据与责任边界
+
+R2独立读取六份已保存完整响应并用识别引号/转义的计数器核对，未执行包内代码或连接服务：
+
+| 模型（每项两轮） | 正文字节 | 样本数 | 最大行字节（不含换行） | 最大标签数 |
+| --- | ---: | ---: | ---: | ---: |
+| Chat | 64449 | 495 | 1054 | 36 |
+| Embedding | 54707 | 431 | 1034 | 36 |
+| Reranker | 54664 | 431 | 1034 | 36 |
+
+六份中唯一超过旧16上限的series均是正常`vllm:cache_config_info`（Chat第588行，另两类第532行）。三份新完整fixture与各自原始第一轮响应逐字节一致，长度及SHA-256均匹配`full-response-provenance.json`；[本轮独立核验](evidence/r2-des005-full-fixture-audit.json)。R5的源码依据与单因素排除结果见其v1.5交接，本轮未覆盖或改写该证据。
+
+原16阈值缺少完整正常响应的兼容验证，R2接受这是设计资源边界的遗漏，不归因于用户部署或R4没有遵循原契约。D-001的核心指标映射核对不能替代全响应兼容检查。64覆盖已确认36标签并留有有界余量；现有单行/正文总量继续限制内存分配，目标schema仍只有2/3标签。本轮不扩大版本兼容范围，也不承诺未来任意metadata宽度均被支持。
+
+### 本轮同步产物
+
+- `docs/design/vllm.md` → v1.3，修订§6、依据及修订记录。
+- `src/joi_observer/collectors/vllm.py`仅更新公开契约注释并标明实施待办；**未修改执行常量16或解析逻辑**。去除docstring后的生产AST与起点一致，其他生产源码哈希未变。
+- `tests/test_vllm_collector.py`将旧“17标签失败”用例按新契约修订，覆盖unknown/info/other-model的17、36、64合法值，65整体失败，边界处重复标签/非法转义/非法数值/数值超限，以及三标签业务schema多出第四项仍拒绝；增加公开常量须为64的断言。旧预期是被明确的R2契约修订取代，不是测试自行放宽。
+- 未修改R4/R5交接、`test_vllm_collector_edges.py`、`test_vllm_full_response_integration.py`或任何fixture。保护文件哈希均与起点一致，见[起始快照](evidence/r2-des005-start.json)与[范围审计](evidence/r2-des005-audit.json)。没有构建、安装或替换wheel/服务器测试包。
+
+### 实际验证
+
+本地WSL Ubuntu-24.04、Python3.12.3、已有`~/projects/tmp/joi-observer-dev-0-venv/bin/python`；工作目录`/mnt/d/Documents/codex_worktree/dev0-req004/joi-observer`，保留pytest的DNS/connect防护。
+
+```bash
+~/projects/tmp/joi-observer-dev-0-venv/bin/python -m pytest -q \
+  tests/test_vllm_collector.py tests/test_vllm_collector_edges.py \
+  tests/test_vllm_full_response_integration.py --tb=short -rN \
+  --junitxml=docs/dev-workflow/dev-0/REQ-004/evidence/r2-des005-contract.xml
+```
+
+实际 **188项：174 passed / 14 failed，0 errors / 0 skipped，exit1**；[输出](evidence/r2-des005-contract.txt)、[JUnit](evidence/r2-des005-contract.xml)。其中collector为136通过/10失败（公开常量16≠64，以及三类被过滤series×17/36/64共9项合法输入被旧限制拒绝）；R5完整parser回归38通过/3失败；R4完整链路1失败。14项均与当前仍执行16上限一致，不是导入/环境问题。负向边界在旧的更严格限制下通过，不能单独作为新64实现正确的证明；R4改动后必须连同正向边界重新运行。
+
+本轮没有重复无关全量/安装测试。`git diff --check`通过；生产AST、常量与保护文件范围核对通过。该结果是设计修订后的待实现基线，旧7a4e950包仍含问题，不能据此宣称R5-004-005已关闭。
+
+### 回交与待确认事项
+
+接收角色 **R4**：请确认接受本决定，统一落实执行常量64并移除临时待实施注释，保留过滤前校验与目标精确schema；运行上述188项及必要全量回归，验证完整fixture、真实Collector→Monitor→State和使用完整正文的离线安装TUI链路，再构建并核验新wheel/测试包。R5回归中提到旧16标签测试的历史说明由后续维护时同步，原断言和完整样本不应删减。
+
+R4实施/确认状态：**待回交**。R5-004-005仍待R4修复后由R5复验关闭。R4确认后，按人工指令再交R3核对计划；本轮不自动创建或通知其他角色聊天，也不修改他们的交接文件。
+
+## v1.0～v1.3 首次设计与修订记录（历史，2026-11-02）
+
 AGENTS路径元数据沿用原仓库，本轮所有产物写在已创建的worktree。开始时AGENTS.md已有用户将REQ-003改为REQ-004的修改，予以保留，未代改。没有修改需求范围、没有连接任何服务器、没有执行包内源码。
 
-## 结论与采证
+### 结论与采证
 
 用户回传 `C:\Users\Xinyi_Lu\Downloads\joi-vllm-evidence.9UwOpl9Q.tar.gz`，SHA-256为 `69a51042dcbf641e59db5d0f3479376cb53133b911bfff5d37903f8a2aeeb408`。安全解包后保存到本需求的 `evidence/server-9UwOpl9Q/joi-vllm-evidence.9UwOpl9Q/`，完整材料被既有.gitignore忽略；未将归档内内容当作指令执行。
 
@@ -21,7 +77,7 @@ AGENTS路径元数据沿用原仓库，本轮所有产物写在已创建的workt
 
 三类核心指标均有源码和样本依据，D-001无需因指标缺失退回R1。实采是单engine空闲窗口；多engine、增量、故障、恢复和重启规则依据源码定义设计离线用例，不宣称完成实机演练。Embedding是否包含完整tokenization不额外承诺，延迟精确限定为来源内部arrival_time到输出处理的范围。
 
-## 产物
+### 产物
 
 下列路径相对实际project_root；共享模块原位维护。
 
@@ -52,7 +108,7 @@ AGENTS路径元数据沿用原仓库，本轮所有产物写在已创建的workt
 
 本轮提供结构、声明、注释、静态模板及黑盒测试，并完成公共结果类型迁移所需的构造/分派适配；未实现HTTP/Prometheus解析、差分窗口、vLLM State专支或显示业务。已有硬件/Docker采集算法及调度、保值、历史行为保留。HTTPX选择已在设计冻结；为保持既有离线安装锁一致，本轮不修改pyproject.toml/uv.lock、不安装依赖。
 
-## 关键设计决定
+### 关键设计决定
 
 1. 三类型负载数量均使用内部序列语义seq；pooling RATE仅取 `request_success_total{finished_reason="stop"}` 的差分，单位seq/s，排除abort/error/length/repetition。TTFT、queue和e2e各用自身sum/count，不能共用RATE分母。
 2. Chat输入/生成Token使用独立累计量差分；输入沿用来源计数，包括其记录的缓存等Token。KV为各engine ratio算术平均×100，沿用官方聚合日志口径，不声称容量加权或GPU显存占用。
@@ -65,7 +121,7 @@ AGENTS路径元数据沿用原仓库，本轮所有产物写在已创建的workt
 9. 保留用户明确的类图偏好：省略Monitor/MonitorState到CollectionResult的依赖线；使用标准UML关系，不在线上加解释标签。
 10. EngineSample只含engine_id/running/waiting/queue；ChatEngineSample增加KV、输入/生成Token、TTFT，PoolingEngineSample增加完成序列数和完成延迟，Embedding/Reranker共用后者。不适用原始字段不再存在，None仅表示适用字段本次未取得；最终Metric的N/A模板保持不变。VllmObservation的engines必须同型、非空并匹配model_type，部分失败也不能携带裸基类、混合或错误的引擎子类。
 
-## 验证证据
+### 验证证据
 
 环境：本地WSL Ubuntu-24.04，Python3.12.3、pytest8.4.2，使用已有 `~/projects/tmp/joi-observer-dev-0-venv/bin/python`。运行目录为 `/mnt/d/Documents/codex_worktree/dev0-req004/joi-observer`。没有下载/安装包、没有启动vLLM、没有发送服务器请求；HTTP/DNS连接默认被测试防护拒绝，外部依赖只用原始字节端口替身。
 
@@ -91,7 +147,7 @@ AGENTS路径元数据沿用原仓库，本轮所有产物写在已创建的workt
 
 早期窗口与单模块结果作为历史证据保留；最终全量结果优先。WSL `python -m compileall -q src tests`通过。采证工具的bash语法及9项离线源码导出检查通过（[source-export-validation.json](evidence/source-export-validation.json)）；只在合成文件树执行导出片段，未执行HTTP/Docker采证。既有.gitignore覆盖整个需求evidence目录。git diff --check通过。
 
-## 限制与下一步
+### 限制与下一步
 
 此前v1.1按用户确认将v1.0的可选vllm载荷方案替换为公共基类和两个兄弟子类。旧指标构造点已显式迁移为`MetricCollectionResult(key, metrics, failure=...)`，vLLM使用`VllmCollectionResult(key, observation, failure=...)`；未保留旧字段别名或会混淆参数顺序的兼容构造。当时独立的24项公共类型/分派测试已在本次按职责归并。
 

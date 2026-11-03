@@ -34,3 +34,10 @@ are not additional server evidence and must not overwrite these source excerpts.
 
 The source package contains vLLM's Apache-2.0 source files for offline semantic
 review. Source code is not imported or executed by these fixtures or tests.
+
+The additional `*-metrics-full.prom` files retain the complete first response
+for each service, byte for byte. Their source paths and hashes are recorded in
+`full-response-provenance.json`. They cover real exporter metadata omitted from
+the original excerpts, including the 36-label `vllm:cache_config_info` series.
+Full-response compatibility is required alongside the focused parser fixtures;
+passing only the excerpts does not establish compatibility with `/metrics`.

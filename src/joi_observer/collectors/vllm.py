@@ -30,7 +30,7 @@ SUPPORTED_VERSION = "0.31.0"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_LINE_BYTES = 64 * 1024
 MAX_SAMPLE_LINES = 50_000
-MAX_LABELS_PER_SERIES = 16
+MAX_LABELS_PER_SERIES = 64
 MAX_NUMBER_CHARACTERS = 128
 MAX_DECIMAL_EXPONENT = 400
 MAX_INTEGER_DIGITS = 400
@@ -603,7 +603,9 @@ def parse_scrape(
     JSON拒重复key，不把原始正文/任意异常/URL放入Failure或打印。
 
     每份输入最多2MiB；metrics单行最多64KiB、样本行最多50000、单series
-    标签最多16。超限为整体response.invalid。只匹配精确指标名，规范化label
+    标签最多64（含64），65及以上为整体response.invalid。
+    所有family在过滤前仍检查标签格式、转义、重复、
+    数量和数值合法性/资源边界；未知行无特例。只匹配精确指标名，规范化label
     顺序后重复目标series、缺少model_name/engine或额外目标标签为整体结构
     失败，不将重复导出累加。合法未知指标/其他model的独立series可忽略。
     Prometheus标签须正确处理转义，不能按逗号/正则随意拆引号内容。

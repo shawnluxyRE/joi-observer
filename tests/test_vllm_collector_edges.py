@@ -1,6 +1,7 @@
 """Additional parser and port lifecycle boundaries; all input is synthetic."""
 
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -11,7 +12,7 @@ from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorKind, ErrorLog
 from joi_observer.monitor import Monitor
 from test_vllm_collector import (
-    NAMES, OfflineClient, OfflineHttp, StreamResponse, client_factory, inputs, model, value_changed,
+    FIXTURES, NAMES, OfflineClient, OfflineHttp, StreamResponse, client_factory, inputs, model, value_changed,
 )
 from test_vllm_integration import RawHttp, configs, settle
 
@@ -206,3 +207,25 @@ def test_legal_ignored_values_are_not_interpreted_as_business_counts(profile, pr
     for token in (b"-2.5", b"+3e1", b"NaN", b"+Inf", b"-Inf", b"1e399", b"0e400"):
         result = parse_scrape(model(profile), **{**data, "metrics": data["metrics"] + prefix + token + b"\n"})
         assert result == baseline, token
+
+
+@pytest.mark.parametrize("profile", ["chat", "embedding", "reranker"])
+def test_complete_recorded_response_accepts_real_profile_metadata(profile):
+    """The supported service's full response must work, not only its excerpt.
+
+    vLLM 0.31.0 emits cache_config_info with 36 legitimate labels. A global
+    parser bound must accommodate that response even though this metadata is
+    not used for business metrics. This checks compatibility independently of
+    the global label-count resource-limit boundary tests.
+    """
+    data = inputs(profile)
+    excerpt = parse_scrape(model(profile), **data)
+    assert excerpt.failure is None
+    full = (FIXTURES / f"{profile}-metrics-full.prom").read_bytes()
+    provenance = json.loads((FIXTURES / "full-response-provenance.json").read_text())
+    record = next(item for item in provenance["files"]
+                  if item["fixture"] == f"{profile}-metrics-full.prom")
+    assert hashlib.sha256(full).hexdigest() == record["sha256"]
+    result = parse_scrape(model(profile), **{**data, "metrics": full})
+    assert result.failure is None
+    assert result.observation == excerpt.observation
