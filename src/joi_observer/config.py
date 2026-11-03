@@ -103,6 +103,10 @@ class ModelConfig:
     name: str
     base_url: str
     gpu_ids: tuple[str, ...] = ()
+    # 可选精确服务身份，省略时使用name；name继续仅作展示。
+    # YAML若显式给出，须满足同name的1～128字符约束，不接受null/空字符串。
+    # 加载阶段仅校验字符串，不访问服务。
+    served_model_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -293,7 +297,7 @@ def load_config(path: Path) -> AppConfig:
     model_ids: set[str] = set()
     for i, value in enumerate(validator.sequence(data.get("models", []), "models")):
         key = f"models[{i}]"
-        item = validator.mapping(value, key, {"id", "type", "name", "base_url", "gpu_ids"}, {"id", "type", "name", "base_url"})
+        item = validator.mapping(value, key, {"id", "type", "name", "base_url", "gpu_ids", "served_model_name"}, {"id", "type", "name", "base_url"})
         identity = validator.identity(item["id"], key + ".id", model_ids)
         if not isinstance(item["type"], str) or item["type"] not in {t.value for t in ModelType}:
             validator.fail(key + ".type", "Use chat, embedding, or reranker.")
@@ -306,7 +310,9 @@ def load_config(path: Path) -> AppConfig:
             gpu_ids.append(gpu)
         models.append(ModelConfig(identity, ModelType(item["type"]),
                                   validator.name(item["name"], key + ".name"),
-                                  validator.origin(item["base_url"], key + ".base_url"), tuple(gpu_ids)))
+                                  validator.origin(item["base_url"], key + ".base_url"), tuple(gpu_ids),
+                                  validator.name(item["served_model_name"], key + ".served_model_name")
+                                  if "served_model_name" in item else None))
     log = validator.mapping(data.get("logging", {}), "logging", {"directory", "max_bytes", "backup_count"})
     directory = log.get("directory", "~/.joi-observer")
     if not isinstance(directory, str) or not directory or not directory.isprintable() or directory != directory.strip():

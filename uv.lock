@@ -3,11 +3,73 @@ revision = 5
 requires-python = ">=3.12"
 
 [[package]]
+name = "anyio"
+version = "4.15.1"
+source = { registry = ".pytest_cache/offline_wheels" }
+dependencies = [
+    { name = "idna" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
+]
+wheels = [
+    { path = "anyio-4.15.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "certifi"
+version = "2026.7.22"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "certifi-2026.7.22-py3-none-any.whl" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = ".pytest_cache/offline_wheels" }
 wheels = [
     { path = "colorama-0.4.6-py2.py3-none-any.whl" },
+]
+
+[[package]]
+name = "h11"
+version = "0.16.0"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "h11-0.16.0-py3-none-any.whl" },
+]
+
+[[package]]
+name = "httpcore"
+version = "1.0.9"
+source = { registry = ".pytest_cache/offline_wheels" }
+dependencies = [
+    { name = "certifi" },
+    { name = "h11" },
+]
+wheels = [
+    { path = "httpcore-1.0.9-py3-none-any.whl" },
+]
+
+[[package]]
+name = "httpx"
+version = "0.28.1"
+source = { registry = ".pytest_cache/offline_wheels" }
+dependencies = [
+    { name = "anyio" },
+    { name = "certifi" },
+    { name = "httpcore" },
+    { name = "idna" },
+]
+wheels = [
+    { path = "httpx-0.28.1-py3-none-any.whl" },
+]
+
+[[package]]
+name = "idna"
+version = "3.19"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "idna-3.19-py3-none-any.whl" },
 ]
 
 [[package]]
@@ -23,6 +85,7 @@ name = "joi-observer"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "pyyaml" },
 ]
 
@@ -33,6 +96,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1,<0.29" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<9" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
 ]
@@ -84,4 +148,12 @@ source = { registry = ".pytest_cache/offline_wheels" }
 wheels = [
     { path = "pyyaml-6.0.3-cp312-cp312-win_amd64.whl" },
     { path = "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl" },
+]
+
+[[package]]
+name = "typing-extensions"
+version = "4.16.0"
+source = { registry = ".pytest_cache/offline_wheels" }
+wheels = [
+    { path = "typing_extensions-4.16.0-py3-none-any.whl" },
 ]

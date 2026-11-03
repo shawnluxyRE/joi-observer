@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from joi_observer.error_log import Failure
 
@@ -56,18 +56,30 @@ class ObjectSpec:
 
 @dataclass(frozen=True)
 class CollectionResult:
-    """单对象一次采集结果，返回后不得修改。
+    """采集结果的公共身份与失败信息，不引用任何专用载荷。
 
-    成功时 failure=None，metrics 必须覆盖声明的字段；已知不支持/无观测
-    显式使用 None。失败可携带本次成功取得的字段；未返回的字段保留最后值，
-    对象标记 STALE。整对象失败返回空 metrics 和 Failure。字段级细分由后续
-    采集器契约补充，不得把成功字段置零。Failure 只交给 Monitor/日志，不能
-    进入只读快照。一次结果只属于一个 key，不借单对象失败覆盖其他对象。
+    Monitor只依赖key/failure；成功及局部失败由具体子类携带数据。
+    直接使用基类仅表示无载荷整对象失败，提交时failure必须非None；可用于
+    任意已注册对象的超时或未知采集异常。基类不提供metrics或observation。
+    failure为仅限关键字的参数，避免继承字段顺序改变载荷位置参数语义。
+    构造只声明结构，语义校验在提交边界；失败信息不进入只读快照。
     """
 
     key: ObjectKey
+    failure: Failure | None = field(default=None, kw_only=True)
+
+
+@dataclass(frozen=True)
+class MetricCollectionResult(CollectionResult):
+    """普通指标采集结果；签名为(key, metrics=(), *, failure=None)。
+
+    用于普通ObjectSpec。成功的metrics须覆盖声明字段，正常未知显式用None。
+    局部失败可只携本次有效字段，缺失字段保留最后值；空metrics配failure可
+    表示整对象失败。不能携带其他类型的观测或将失败伪装成0。
+    所有值不可变，校验及合并沿用MonitorState；本类不依赖vLLM。
+    """
+
     metrics: tuple[Metric, ...] = ()
-    failure: Failure | None = None
 
 
 @dataclass(frozen=True)

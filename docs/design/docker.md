@@ -1,15 +1,15 @@
 # Docker 容器采集模块设计
 
 - 关联需求：dev-0 / REQ-003，requirements.md v1.12，AC-301～304；依赖 REQ-001 的配置、调度、状态、日志与布局。
-- 修订：v1.0，2026-10-30，R2 首次设计。
+- 修订：v1.1，2026-11-02；在 REQ-003 已有业务基础上同步公共采集结果分型。
 - 相关代码：`src/joi_observer/collectors/docker.py`、`config.py::ContainerConfig`、`cli.py::ApplicationRuntime`。
 - 关联模块：[配置](configuration.md)、[Monitor / State](monitor-state.md)、[错误日志](error-logging.md)、[应用外壳](application-shell.md)。
 
 ## 职责与范围
 
-每个显式配置项独立读取一个本机容器的生命周期，输出现有 `CollectionResult`。全量配置参与采集，显示层自行取可见前缀。模块不依赖终端，不写状态或日志，不发现其他容器，不读取资源统计、容器日志或业务负载，不执行启停、重启或权限修改。
+每个显式配置项独立读取一个本机容器的生命周期，输出携带平面指标的 `MetricCollectionResult`，它继承只声明 key/failure 的公共 `CollectionResult`。全量配置参与采集，显示层自行取可见前缀。模块不依赖终端，不写状态或日志，不发现其他容器，不读取资源统计、容器日志或业务负载，不执行启停、重启或权限修改。
 
-REQ-001 的数量、布局与错误链路已有实现；本次新增实际采集接口和黑盒契约，业务入口保持 `NotImplementedError`。组合根仅增加命令端口注入声明，真实接入留给 R4。不能把现有静态 Docker 槽位当成已经采集成功。
+REQ-001 的数量、布局与错误链路及 REQ-003 容器采集已实现。本轮仅迁移结果类型，保留命令端口、采集算法和既有组合根，不调用 REQ-004 的未实现业务入口。原 REQ-003 R2/R4/R5 交接仍作为历史记录保留。
 
 ## 类图
 
@@ -28,7 +28,7 @@ classDiagram
     }
     class DockerCollector {
         +spec ObjectSpec
-        +collect() CollectionResult
+        +collect() MetricCollectionResult
         +close() None
     }
     class DockerCommandPort {
@@ -44,11 +44,19 @@ classDiagram
     }
     class Monitor
     class MonitorState
-    class CollectionResult
+    class CollectionResult {
+        +key ObjectKey
+        +failure Failure[0..1]
+    }
+    class MetricCollectionResult {
+        +metrics tuple
+    }
     Collector <|.. DockerCollector
+    CollectionResult <|-- MetricCollectionResult
     DockerCommandPort <|.. LocalDockerCommand
     DockerCollector *-- "1" DockerCommandPort
-    DockerCollector ..> CollectionResult
+    Collector ..> CollectionResult
+    DockerCollector ..> MetricCollectionResult
     DockerCommandPort ..> CommandOutput
     ApplicationRuntime ..> DockerCollector
     Monitor --> "0..*" Collector
@@ -88,7 +96,7 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 - Docker 接受短 ID 前缀不代表本工具接受；只有响应名称确实等于该短字符串时才算名称匹配。配置带前导 `/` 不自动归一化。
 - 名称目标每次重新查询，因此可以跟随同名重建的新 ID；完整 ID 目标不能跟随重建改绑。合法响应不匹配配置身份，按对象未找到处理。
 
-`State.Status` 仅接受下列精确小写值，成功结果只有一个 `Metric("state", value)`，无单位；初始 spec 为相同字段且值 `None`。
+`State.Status` 仅接受下列精确小写值，成功结果为 `MetricCollectionResult(key, (Metric("state", value),))`，指标无单位；初始 spec 为相同字段且值 `None`。普通 ObjectSpec 与 MetricCollectionResult 匹配，不能接收 vLLM 专用结果；Collector 协议与 Monitor/State 参数仍使用公共 CollectionResult 类型。
 
 | 原始值 | 展示值 |
 | --- | --- |
@@ -104,7 +112,7 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 ## 失败、恢复与取消
 
-所有预期失败返回原 key、空 metrics 和既有目录内的 `Failure`；固定受控 reason 不含原始 stdout/stderr/异常。保留最后有效值和历史缺口由 MonitorState 实现，TUI 复用状态栏位置显示 `STALE`。成功后正常清除 STALE，由 Monitor 通知日志模块结束故障轮次。
+所有预期失败返回 `MetricCollectionResult(key, failure=...)`，metrics 默认空 tuple，Failure 使用既有目录；failure 只接受关键字参数。Monitor 自身超时/未知异常可产生无载荷公共 `CollectionResult(key, failure=...)`，同样可用于此普通 spec；成功公共基类无效。固定受控 reason 不含原始 stdout/stderr/异常。保留最后有效值和历史缺口由 MonitorState 实现，TUI 复用状态栏位置显示 `STALE`。成功后正常清除 STALE，由 Monitor 通知日志模块结束故障轮次。
 
 | 输入或事件 | kind / code |
 | --- | --- |

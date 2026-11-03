@@ -1,0 +1,62 @@
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.79307726963e+09
+# HELP vllm:num_requests_running Number of requests in model execution batches.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{engine="0",model_name="qwen3.8-flash-next"} 0.0
+# HELP vllm:num_requests_waiting Number of requests waiting to be processed.
+# TYPE vllm:num_requests_waiting gauge
+vllm:num_requests_waiting{engine="0",model_name="qwen3.8-flash-next"} 0.0
+# HELP vllm:kv_cache_usage_perc KV-cache usage. 1 means 100 percent usage.
+# TYPE vllm:kv_cache_usage_perc gauge
+vllm:kv_cache_usage_perc{engine="0",model_name="qwen3.8-flash-next"} 0.0
+# HELP vllm:prompt_tokens_total Number of prefill tokens processed.
+# TYPE vllm:prompt_tokens_total counter
+vllm:prompt_tokens_total{engine="0",model_name="qwen3.8-flash-next"} 4.694991e+06
+# HELP vllm:prompt_tokens_created Number of prefill tokens processed.
+# TYPE vllm:prompt_tokens_created gauge
+vllm:prompt_tokens_created{engine="0",model_name="qwen3.8-flash-next"} 1.7930774707055366e+09
+# HELP vllm:generation_tokens_total Number of generation tokens processed.
+# TYPE vllm:generation_tokens_total counter
+vllm:generation_tokens_total{engine="0",model_name="qwen3.8-flash-next"} 253067.0
+# HELP vllm:generation_tokens_created Number of generation tokens processed.
+# TYPE vllm:generation_tokens_created gauge
+vllm:generation_tokens_created{engine="0",model_name="qwen3.8-flash-next"} 1.7930774707056303e+09
+# HELP vllm:request_success_total Count of successfully processed requests.
+# TYPE vllm:request_success_total counter
+vllm:request_success_total{engine="0",finished_reason="stop",model_name="qwen3.8-flash-next"} 269.0
+vllm:request_success_total{engine="0",finished_reason="length",model_name="qwen3.8-flash-next"} 0.0
+vllm:request_success_total{engine="0",finished_reason="abort",model_name="qwen3.8-flash-next"} 0.0
+vllm:request_success_total{engine="0",finished_reason="error",model_name="qwen3.8-flash-next"} 0.0
+vllm:request_success_total{engine="0",finished_reason="repetition",model_name="qwen3.8-flash-next"} 0.0
+# HELP vllm:request_success_created Count of successfully processed requests.
+# TYPE vllm:request_success_created gauge
+vllm:request_success_created{engine="0",finished_reason="stop",model_name="qwen3.8-flash-next"} 1.793077470705671e+09
+vllm:request_success_created{engine="0",finished_reason="length",model_name="qwen3.8-flash-next"} 1.793077470705684e+09
+vllm:request_success_created{engine="0",finished_reason="abort",model_name="qwen3.8-flash-next"} 1.7930774707056968e+09
+vllm:request_success_created{engine="0",finished_reason="error",model_name="qwen3.8-flash-next"} 1.793077470705708e+09
+vllm:request_success_created{engine="0",finished_reason="repetition",model_name="qwen3.8-flash-next"} 1.7930774707057211e+09
+# HELP vllm:time_to_first_token_seconds Histogram of time to first token in seconds.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{engine="0",le="+Inf",model_name="qwen3.8-flash-next"} 270.0
+vllm:time_to_first_token_seconds_count{engine="0",model_name="qwen3.8-flash-next"} 270.0
+vllm:time_to_first_token_seconds_sum{engine="0",model_name="qwen3.8-flash-next"} 75.12002778053284
+# HELP vllm:time_to_first_token_seconds_created Histogram of time to first token in seconds.
+# TYPE vllm:time_to_first_token_seconds_created gauge
+vllm:time_to_first_token_seconds_created{engine="0",model_name="qwen3.8-flash-next"} 1.7930774707061467e+09
+# HELP vllm:e2e_request_latency_seconds Histogram of e2e request latency in seconds.
+# TYPE vllm:e2e_request_latency_seconds histogram
+vllm:e2e_request_latency_seconds_bucket{engine="0",le="+Inf",model_name="qwen3.8-flash-next"} 269.0
+vllm:e2e_request_latency_seconds_count{engine="0",model_name="qwen3.8-flash-next"} 269.0
+vllm:e2e_request_latency_seconds_sum{engine="0",model_name="qwen3.8-flash-next"} 1186.1493895053864
+# HELP vllm:e2e_request_latency_seconds_created Histogram of e2e request latency in seconds.
+# TYPE vllm:e2e_request_latency_seconds_created gauge
+vllm:e2e_request_latency_seconds_created{engine="0",model_name="qwen3.8-flash-next"} 1.7930774707063246e+09
+# HELP vllm:request_queue_time_seconds Histogram of time spent in WAITING phase for request.
+# TYPE vllm:request_queue_time_seconds histogram
+vllm:request_queue_time_seconds_bucket{engine="0",le="+Inf",model_name="qwen3.8-flash-next"} 269.0
+vllm:request_queue_time_seconds_count{engine="0",model_name="qwen3.8-flash-next"} 269.0
+vllm:request_queue_time_seconds_sum{engine="0",model_name="qwen3.8-flash-next"} 0.008854439096467104
+# HELP vllm:request_queue_time_seconds_created Histogram of time spent in WAITING phase for request.
+# TYPE vllm:request_queue_time_seconds_created gauge
+vllm:request_queue_time_seconds_created{engine="0",model_name="qwen3.8-flash-next"} 1.7930774707063825e+09

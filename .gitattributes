@@ -1,0 +1,8 @@
+# Recorded fixture hashes require identical bytes on every checkout platform.
+tests/fixtures/vllm/0.31.0/*.prom -text
+tests/fixtures/vllm/0.31.0/*-models.json -text
+tests/fixtures/vllm/0.31.0/*-version.json -text
+tests/fixtures/vllm/0.31.0/provenance.json text eol=lf
+
+# Shell helpers are intended to run on Ubuntu.
+*.sh text eol=lf

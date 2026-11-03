@@ -1,7 +1,7 @@
 # Monitor 与内存状态设计
 
-- 关联需求：dev-0 / REQ-001、REQ-002、REQ-003；AC-101～AC-104、AC-108、AC-110～AC-112、AC-201～AC-207、AC-301～AC-304。
-- 修订：v1.6，2026-10-30；依据 requirements.md v1.12，整合 REQ-002 动态发现与硬件身份，以及 REQ-003 单容器结果与调度接入。
+- 关联需求：dev-0 / REQ-001～REQ-004；AC-101～AC-104、AC-108、AC-110～AC-112、AC-201～AC-207、AC-301～AC-304、AC-401～AC-412。
+- 修订：v1.7，2026-11-02；依据 requirements.md v1.12，在已有硬件/Docker 运行基础上同步公共结果基类、两种具体结果与 vLLM 状态分支契约。
 - 相关代码：`src/joi_observer/collectors/base.py`、`monitor.py`、`data/models.py`、`data/state.py`。
 - 关联模块：[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
@@ -53,8 +53,13 @@ classDiagram
     class ErrorLog
     class CollectionResult {
         +key: ObjectKey
-        +metrics: Metric[0..*]
         +failure: Failure[0..1]
+    }
+    class MetricCollectionResult {
+        +metrics: Metric[0..*]
+    }
+    class VllmCollectionResult {
+        +observation: VllmObservation[0..1]
     }
     class StateSnapshot {
         +objects: ObjectSnapshot[0..*]
@@ -70,12 +75,13 @@ classDiagram
     Monitor --> "1" MonitorState
     Monitor --> "1" ErrorLog
     Collector ..> CollectionResult
-    MonitorState ..> CollectionResult
+    CollectionResult <|-- MetricCollectionResult
+    CollectionResult <|-- VllmCollectionResult
     MonitorState ..> StateSnapshot
     StateSnapshot --> "0..*" ObjectSnapshot
 ```
 
-`MonitorState._entries`是按ObjectKey保存当前数据与历史的状态表。CollectionResult是一次采集的结果；StateSnapshot及其中的ObjectSnapshot是交给界面的只读视图。快照可以共享不可变数据，因此使用普通关联。
+`MonitorState._entries`是按ObjectKey保存当前数据与历史的状态表。CollectionResult 是仅含 key/failure 的公共结果；两个子类分别提供平面指标或 vLLM 观测。按既定图面偏好省略 Monitor/MonitorState 到 CollectionResult 的依赖线。StateSnapshot及其中的ObjectSnapshot是交给界面的只读视图；快照可以共享不可变数据，因此使用普通关联。
 
 调度记录、状态条目、指标和历史点等细节不单独展开；完整类型及方法签名保留在代码注释中。图中未列出时间参数、运行标记、时钟回调、日志内部结构和辅助操作。此处精简的是设计视图，现有接口骨架和行为契约不变。
 
@@ -87,9 +93,17 @@ classDiagram
 
 配置层只纳入前3个挂载点，但保留全部容器及其顺序。Monitor/MonitorState不得接收按屏幕容量截断的容器列表；Docker只在生成Frame时取可见前缀。隐藏容器持续采集、保留当前状态及历史，真实失败照常写日志；单纯隐藏不属于失败。窗口缩放只改变可见行数，不增减来源或重置状态，重新可见时立即显示现有快照。
 
-`CollectionResult` 是已解析的语义结果，不携带原始 HTTP 响应或异常；正常停止的容器、0、无延迟观测和已知不支持指标都是成功。只有实际采集失败带 `Failure`。日志原因分类详见错误日志模块。硬件百分比、vLLM 计数器和窗口均值不在公共调度器计算，D-001 的 vLLM 0.31.0 指标核对留给 REQ-004。
+公共结果采用以下冻结类型；三个构造器的 `failure` 都只能按关键字传入：
 
-REQ-003 具体使用 `ObjectKey("docker", config.id)` 和唯一 `Metric("state", None/规范状态)`。每个 DockerCollector 独占本机命令端口，失败返回空 metrics 与既有 Failure，取消原样传播；无需修改本模块算法。全部采集器由组合根注册并交给 Monitor，隐藏项同样更新状态与日志。详见 [Docker 设计](docker.md)，真实采集入口到 Frame/Log 的联合测试为 `tests/test_docker_integration.py`。
+| 类型与位置 | 构造签名 | 用途 |
+| --- | --- | --- |
+| `data/models.py::CollectionResult` | `CollectionResult(key, *, failure=None)` | 仅 key/failure；Monitor 可为任意对象创建无载荷公共失败，成功基类结果无效 |
+| `data/models.py::MetricCollectionResult` | `MetricCollectionResult(key, metrics=(), *, failure=None)` | 普通 ObjectSpec、硬件和 Docker 的平面指标 |
+| `data/vllm.py::VllmCollectionResult` | `VllmCollectionResult(key, observation=None, *, failure=None)` | VllmSpec 对应的模型语义观测 |
+
+Collector 协议返回 CollectionResult，Monitor/MonitorState 继续接受公共基类；具体采集器返回对应子类。公共 `data/models.py` 不引用 vLLM 类型。任何结果都不携带原始 HTTP 响应或异常；正常停止的容器、0、无延迟观测和已知不支持指标都是成功具体结果，只有实际采集失败带 Failure。硬件百分比、vLLM 计数器和窗口均值不在公共调度器计算；D-001 已由 REQ-004 核对，具体映射见 [vLLM 设计](vllm.md)。
+
+REQ-003 具体使用 `ObjectKey("docker", config.id)` 和唯一 `Metric("state", None/规范状态)`，由 MetricCollectionResult 承载。每个 DockerCollector 独占本机命令端口，失败返回 `MetricCollectionResult(key, failure=...)`，取消原样传播；此次仅迁移结果类型，不改变采集或状态算法。全部采集器由组合根注册并交给 Monitor，隐藏项同样更新状态与日志。详见 [Docker 设计](docker.md)，真实采集入口到 Frame/Log 的联合测试为 `tests/test_docker_integration.py`。
 
 ## 采样节奏、超时与关闭
 
@@ -97,15 +111,17 @@ REQ-003 具体使用 `ObjectKey("docker", config.id)` 和唯一 `Metric("state",
 
 `poll()` 是可确定性测试的非阻塞迭代，不等待采集完成；每次至少让出一次事件循环。`run()` 循环调用内部调度迭代，完成与停止通知处理延迟最多 50ms，空闲时等待而非忙循环。外部不可在 `run()` 期间并发调用 `poll()`。UI 独立运行，主题/导航/时钟刷新只读状态，不创建采集任务。正常周期内完成的数据在下一次 UI 刷新可见（UI 刷新间隔见外壳文档）。
 
-每个采集任务使用独立超时，超时转换为 `timeout/collection.timeout`，未知异常或返回错误对象 key 转为 `unexpected/collector.unexpected`，不带原始异常。超时来源置 STALE，其他来源继续；取消属于关闭而非采集失败。库同步阻塞调用不得直接放在事件循环中；实际 IO 适配器需采用可取消异步 IO、底层超时或可终止子进程，不能把无限阻塞工作简单丢进线程而声称可以取消。
+每个采集任务使用独立超时，超时转换为 `timeout/collection.timeout`，未知异常或返回错误对象 key 转为 `unexpected/collector.unexpected`，不带原始异常。Monitor 可直接创建 `CollectionResult(key, failure=...)`，无需知道具体采集器载荷类型；此公共失败对普通 ObjectSpec 和 VllmSpec 均有效。超时来源置 STALE，其他来源继续；取消属于关闭而非采集失败。库同步阻塞调用不得直接放在事件循环中；实际 IO 适配器需采用可取消异步 IO、底层超时或可终止子进程，不能把无限阻塞工作简单丢进线程而声称可以取消。
 
 采集器取消/close 应在 250ms 内清理。`Monitor.stop()` 独立调用时最多等待 1 秒，停止后不提交迟到结果；组合根退出总预算同为 1 秒，首先保证终端恢复，再协调 Monitor 取消与日志关闭，将剩余预算传给日志，不能把两者的 1 秒上限串行相加。超过协议预算的适配器属于实现缺陷，不能把这一前提当作已验证的真实环境能力。SIGINT/SIGTERM 走清理路径；SIGKILL、断电等不可恢复路径不作保证。
 
 ## 状态与历史契约
 
-`ObjectSpec` 提供首屏字段模板，初始 `None` 展示 `—`，初始不 STALE；首次失败仍为 `—`，只填预留 STALE 槽。成功值 0 正常保留；不适用字段用 `applicable=False`，视图显示 N/A。成功结果必须覆盖声明字段，未知/缺失字段需要显式 None；失败允许局部有效字段更新，遗漏字段保留最后有效值，整对象标记 STALE。
+`ObjectSpec` 提供首屏字段模板，初始 `None` 展示 `—`，初始不 STALE；首次失败仍为 `—`，只填预留 STALE 槽。普通 ObjectSpec 要求 MetricCollectionResult，成功指标必须覆盖模板，未知/已知不支持字段显式 None；VllmSpec 要求 VllmCollectionResult，再由 accumulator 生成完整显示指标。两种具体结果类型必须与 spec 匹配，不能按命名空间猜测；纯公共失败是跨 spec 的无载荷路径，公共基类 failure=None 则无效。类型或内容非法时原子拒绝，不修改状态。
 
-状态持有最近结果、上一次成功样本及单调时间、故障状态和最多 60 秒历史。失败打断可比较基线，不能跨故障插值或延续成新观测。历史失败点为 `metrics=None`，不能补 0；部分失败保守留下缺口，后续按字段细分历史可扩展。只保存原始语义值，不在本模块把 Token 计数当成速率。REQ-004 将定义所需基线和计数器重置语义。
+成功值 0 正常保留；不适用字段用 `applicable=False`，视图显示 N/A。具体失败结果允许局部有效字段更新，遗漏字段保留最后有效值，整对象标记 STALE；公共失败不更新任何业务字段。vLLM 的细分基线和原始观测约束见下文与 [vLLM 设计](vllm.md)。
+
+状态持有最近结果、上一次成功样本及单调时间、故障状态和最多 60 秒历史。失败打断可比较基线，不能跨故障插值或延续成新观测。历史失败点为 `metrics=None`，不能补 0；部分失败保守留下整点缺口。普通指标沿用现有合并路径；vLLM 原始语义观测由 State 独占的 VllmAccumulator 计算速率和窗口，公共 Monitor 不负责该计算，快照不暴露原始累计计数。
 
 每对象历史同时受时间与条数限制：保留闭区间 `[now-60, now]`，默认最多 602 点，与配置的最小 0.1 秒周期相匹配。写入时裁剪，读取时进一步过滤过期点，不修改 revision；长时间无新样本不会让过期历史继续显示。数据对象数由配置与设备决定，历史不会随运行时长无限增长。会话内 GPU 槽位只增加不因失败缩减，热移除仍保留原位置并标 STALE，真实热插拔发现规则由 REQ-002 延续。
 
@@ -120,13 +136,14 @@ Monitor 是唯一状态写入者，提交成功后发一次轻量通知。日志
 | Collector.collect/close | `collectors/base.py` | 离线可等待/失败/取消的 Source 端口，隔离所有外部 IO |
 | Monitor.poll/run/stop | `monitor.py` | `tests/test_monitor.py`：即时/自定义周期、慢源不阻塞、不重叠、超时隔离、未知异常清洗、取消关闭 |
 | MonitorState.accept/snapshot | `data/state.py` | `tests/test_state.py`：首次未知、失败保值/缺口、0/不适用、恢复、不可变视图、时间及点数上限、非法提交原子性 |
-| ObjectKey/CollectionResult/StateSnapshot | `data/models.py` | 顺序/稳定身份、注册幂等、快照不暴露故障原因 |
+| ObjectKey/CollectionResult/MetricCollectionResult/StateSnapshot | `data/models.py` | 顺序/稳定身份、公共失败、具体结果类型匹配、注册幂等、快照不暴露故障原因 |
+| VllmCollectionResult/VllmSpec/VllmAccumulator | `data/vllm.py`、`tests/test_vllm_state.py` | vLLM 类型化结果、原子拒绝、独立窗口与只读投影；业务专支留待 R4 |
 | Monitor→ErrorLog | 同上及 `error_log.py` | 61次失败仍提交61次；日志限频由真实日志模块测试另行验证，不 mock 被测调度结果 |
 | Monitor/State→Frame | `tests/test_integration.py` | 十个容器持续采集，显示容量4→6→3时仅变可见前缀；隐藏对象失败仍记日志，重新可见读取当前STALE状态 |
 
 公共验证入口为 python -m pytest tests/test_state.py tests/test_monitor.py tests/test_integration.py；硬件动态调度验证见 tests/test_hardware_monitor.py，Docker 接入验证见 tests/test_docker_integration.py。节奏测试注入单调时钟，超时使用本机事件循环，采集端口使用离线样本。历史基线及分需求实现、验收结果见各需求交接单；硬件与 Docker 共同接线后的整合回归应单独执行并记录，不能以各自独立验证结果替代。
 
-整合时应保持 REQ-001 v1.12 的公共行为，并覆盖动态调度、全部资源关闭和运行期接线。硬件与 Docker 采集已分别实现，vLLM 采集留给 REQ-004。本轮不连接服务器；目标服务器的 GPU、Docker、vLLM 权限及实际输出不在此离线验证范围内。
+整合时应保持 REQ-001 v1.12 的公共行为，并覆盖动态调度、全部资源关闭和运行期接线。硬件与 Docker 采集已实现，本轮普通 State 路径仅迁移结果类型；vLLM accumulator、状态专支和组合接线仍留 R4。本轮不连接服务器；用户回传的 vLLM 采证只作为离线指标证据，不构成运行期联调验证。
 
 ## 修订说明
 
@@ -138,3 +155,13 @@ v1.4 按用户反馈精简为单张类图，删除连线标签、非关键成员
 v1.5 对应需求v1.12：限定有效挂载来源为前三项，容器来源与状态完整保留，Docker可见容量只作用于Frame；补充隐藏对象采集/日志/缩放的离线联合测试。核心类图和公开方法签名不变。
 
 v1.6 对应 REQ-002、REQ-003：明确 GPU UUID、inventory、CPU/RAM 独立身份及挂载序号，补充 DiscoveryResult/Discovery 与 Monitor.register_discovery 接口、动态来源注册和生命周期约定；补齐 Docker 的 state 字段及组合根接入边界。两类来源复用 Monitor/MonitorState 的状态、调度和错误处理。动态发现及硬件细节见[本机硬件设计](hardware.md)，容器契约见 [Docker 设计](docker.md)。
+
+v1.7 按用户确定的公共基类加两个子类拆分结果类型；公共基类不再引用具体观测类型，failure 统一仅关键字传参。Collector/Monitor/State 接口仍接受公共基类，普通路径迁移为 MetricCollectionResult；VllmCollectionResult 及 accumulator 专支继续作为 R2 契约，不提前实现业务。
+
+## REQ-004 结果分型与窗口扩展（vLLM业务待R4实现）
+
+CollectionResult 只声明 key 和仅关键字 failure。MetricCollectionResult 在公共模型模块增加 metrics；VllmCollectionResult 在 `data/vllm.py` 增加 observation。VllmSpec 携带模型类型、期望服务名与静态 Metric 模板，匹配的 `VllmCollectionResult(key, observation)` 由 State 内 VllmAccumulator 验证并投影；完整失败允许 observation=None 且 failure 非空，局部失败保留有效观测字段。普通 ObjectSpec 只接收 MetricCollectionResult，包括旧的 vllm 命名空间声明，不按命名空间字符串自动切换分支。Monitor 生成的纯公共失败按目标 spec 处理，成功公共基类或不匹配的具体结果一律拒绝。
+
+State在同一次accept中原子验证并推进每模型/指标组基线、计算字段、合并保值及写历史；任何failure保守写整点gap。全失败打断所有基线，局部失败只打断受影响组；Total不能混用不同时刻的RUNNING/WAITING。reset/epoch/topology变化仅重建相关基线，已验证的旧延迟区间自然过期。原始计数、异常、HTTP正文不进入ObjectSnapshot。
+
+snapshot使用同一单调时钟对accumulator作只读窗口投影，过期均值可变为None但不改变revision、采样状态、基线或旧快照。业务速率浮点溢出在accumulator内隔离为该字段None，不能终止Monitor。通用HistoryPoint结构不变，硬件/Docker的普通支路只迁移结果类型。精确字段、计数单位、多引擎及失败契约见[vLLM设计](vllm.md)；当前vLLM专门分支尚未接入，不能把这次类型迁移计作窗口业务实现。

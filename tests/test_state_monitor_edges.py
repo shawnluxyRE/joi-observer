@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.data.models import CollectionResult, MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorKind, Failure
 from joi_observer.monitor import Monitor
@@ -26,10 +26,10 @@ FAILURE = Failure(ErrorKind.TIMEOUT, "collection.timeout", "Collection timed out
 ])
 def test_invalid_metric_submissions_leave_snapshot_unchanged(metrics):
     state = MonitorState((SPEC,), clock=lambda: 1)
-    state.accept(CollectionResult(KEY, (Metric("a", 5), Metric("b", 8))), sampled_at=0)
+    state.accept(MetricCollectionResult(KEY, (Metric("a", 5), Metric("b", 8))), sampled_at=0)
     before = state.snapshot()
     with pytest.raises(ValueError):
-        state.accept(CollectionResult(KEY, metrics), sampled_at=1)
+        state.accept(MetricCollectionResult(KEY, metrics), sampled_at=1)
     assert state.snapshot() == before
 
 
@@ -59,14 +59,14 @@ def test_duplicate_initial_identity_is_rejected():
                          ids=["positive", "negative", "beyond_string_limit"])
 def test_exact_integer_metrics_survive_state_failure_and_recovery(value):
     state = MonitorState((SPEC,), clock=lambda: 3)
-    state.accept(CollectionResult(KEY, (Metric("a", value), Metric("b", 0))), sampled_at=1)
+    state.accept(MetricCollectionResult(KEY, (Metric("a", value), Metric("b", 0))), sampled_at=1)
     initial = state.snapshot()
     assert initial.objects[0].metrics[0].value == value
     state.accept(CollectionResult(KEY, failure=FAILURE), sampled_at=2)
     failed = state.snapshot().objects[0]
     assert failed.stale and failed.metrics[0].value == value
     assert failed.history[-1].metrics is None
-    state.accept(CollectionResult(KEY, (Metric("a", value + 1), Metric("b", 0))), sampled_at=3)
+    state.accept(MetricCollectionResult(KEY, (Metric("a", value + 1), Metric("b", 0))), sampled_at=3)
     recovered = state.snapshot().objects[0]
     assert not recovered.stale and recovered.metrics[0].value == value + 1
     assert recovered.history[-1].metrics[0].value == value + 1
@@ -79,7 +79,7 @@ def test_unrepresentable_time_parameters_are_value_errors_and_do_not_mutate_stat
     state = MonitorState((SPEC,), clock=lambda: 1)
     before = state.snapshot()
     with pytest.raises(ValueError):
-        state.accept(CollectionResult(KEY, (Metric("a", 1), Metric("b", 2))), sampled_at=10**309)
+        state.accept(MetricCollectionResult(KEY, (Metric("a", 1), Metric("b", 2))), sampled_at=10**309)
     assert state.snapshot() == before
 
 
@@ -98,7 +98,7 @@ class Source:
         if self.gate is not None:
             await self.gate.wait()
         key = ObjectKey("gpu", "incorrect") if self.wrong_key else KEY
-        return CollectionResult(key, (Metric("a", self.calls),), self.failure)
+        return MetricCollectionResult(key, (Metric("a", self.calls),), failure=self.failure)
 
     async def close(self):
         self.closed += 1
@@ -251,7 +251,7 @@ class CooperativeSource:
         self.started.set()
         try:
             await self.release.wait()
-            return CollectionResult(self.spec.key, (Metric("running", self.calls),))
+            return MetricCollectionResult(self.spec.key, (Metric("running", self.calls),))
         except asyncio.CancelledError:
             # Exercise real asynchronous cleanup within the 250 ms contract.
             await asyncio.sleep(0.02)
@@ -366,9 +366,9 @@ def test_history_windows_and_failure_gaps_are_independent_per_object():
     second = ObjectKey("gpu", "GPU-b")
     specs = tuple(ObjectSpec(key, (Metric("util", None, "%"),)) for key in (first, second))
     state = MonitorState(specs, max_history_points=3, clock=lambda: now[0])
-    state.accept(CollectionResult(second, (Metric("util", 8, "%"),)), sampled_at=0)
+    state.accept(MetricCollectionResult(second, (Metric("util", 8, "%"),)), sampled_at=0)
     for stamp in (1, 2, 3, 4):
-        state.accept(CollectionResult(first, (Metric("util", stamp, "%"),)), sampled_at=stamp)
+        state.accept(MetricCollectionResult(first, (Metric("util", stamp, "%"),)), sampled_at=stamp)
     # Completion order and timestamps are per object, rather than global.
     state.accept(CollectionResult(second, failure=TIMEOUT), sampled_at=1)
     now[0] = 4

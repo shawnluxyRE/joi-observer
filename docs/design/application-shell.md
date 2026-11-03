@@ -1,7 +1,7 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114；共享布局约束关联 AC-207/301/304/605/607/608。
-- 修订：v1.3，2026-10-30；沿用已验收半页布局，整合 REQ-002 硬件接线与 REQ-003 命令端口注入、生产装配边界。
+- 修订：v1.4，2026-11-02；沿用已验收半页布局，同步公共结果分型及 REQ-004 待实现的接线边界。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 
@@ -10,6 +10,8 @@
 本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005/006 完成模型导航和完整主题，均复用本模块的生命周期与容量约束。
 
 ApplicationRuntime 通过 build_hardware_sources 和 build_docker_collectors 组装两类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 仅替换 Docker 外部命令 IO；全部配置容器参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源或调用 Docker 工厂。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
+
+公共采集结果现在分为仅含 key/failure 的 CollectionResult、携带平面 metrics 的 MetricCollectionResult，以及在 `data/vllm.py` 中携带 observation 的 VllmCollectionResult。Collector 协议和 Monitor/State 接口仍依赖公共基类，组合根无需读取具体载荷；它只将普通 ObjectSpec 与硬件/Docker 来源配对，将 VllmSpec 与模型来源配对。failure 统一仅关键字传参，Monitor 可用公共无载荷失败处理任意来源，成功结果必须使用与 spec 匹配的具体子类。
 
 目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，使模块导入、配置加载及非终端离线测试不依赖终端初始化。必需验证在本地 Ubuntu 或 WSL Ubuntu 执行，Windows 工作区通过 WSL 运行测试，不要求维护原生 Windows 专用测试或执行 Windows 全量回归。源码无需安装 Windows curses 兼容包；真实终端验收在本地 Ubuntu 或 WSL Ubuntu 完成，不连接任何服务器。
 
@@ -171,3 +173,15 @@ v1.1 按用户要求将安装/开发工具明确为 uv：正式使用 `uv tool i
 v1.2 依据需求 v1.12 废止固定 16 行服务区和按容器数增高的旧公式，定义全页上下各半、独立服务切换行、Storage 固定 3 内容行与 Docker 仅显示可容纳前缀。接口签名保留，Frame 增加 `service_switch` 区域。同步目标注释及黑盒断言，保留 R4/R5 既有执行代码与历史证据，供 R4 实现新契约。
 
 v1.3 衔接REQ-002：保留已实现的v1.12几何与运行期，明确硬件来源/发现器、共享State、纯控件和序号身份接线；新增入口仍待R4实现，R2不修改既有执行流程。
+
+v1.4 同步公共 CollectionResult 与两个具体结果子类，硬件/Docker/普通 State 只迁移类型，保持已有行为。vLLM 采集、accumulator、State 专支及下述组合/呈现接线继续留待 R4，不能将类型迁移或接口声明视为业务实现。
+
+## REQ-004 vLLM 接线契约（待R4实现）
+
+`ApplicationRuntime`新增可选`vllm_http_factory`注入点，构造只保存依赖；组装时调用`build_vllm_collectors(config,http_factory=...)`，全部模型各创建一个独立端口，将其VllmSpec与采集器合入同一State/Monitor，替换旧的手工RUNNING/WAITING占位。prepare_log只构造，不访问HTTP；注入完整components时不创建任何额外端口；空models不调用工厂。Monitor负责关闭所有模型端口，整体退出预算保持不变。
+
+模型采集器返回 VllmCollectionResult，普通硬件/Docker 返回 MetricCollectionResult；ApplicationRuntime 不拆包或转换它们，统一交 Monitor 按公共 key/failure 调度提交。State 按 spec 接收对应子类并生成同一种只读快照；Monitor 自身产生的纯公共失败没有载荷，按目标 spec 执行保值与缺口处理。公共模型模块不反向引用 vLLM 观测类型。
+
+`compose_frame`新增可选`monotonic_now`用于离线历史时钟，生产缺省取`time.monotonic()`；现有datetime参数仍只负责页眉时间，二者不可混用。在原service Region内调用纯`vllm_cells`替换占位详情，外边框、上下各半、Docker容量、service_switch/footer和最小终端尺寸保持原规则。CursesTerminal需增加amber角色到黄色的基础映射，完整RGB主题留REQ-006；不得让WAITING标签、0或STALE旧值使用amber。
+
+上述参数和注释已声明，执行接线尚未实现。规格见[vLLM设计](vllm.md)与[服务窗口契约](../dev-workflow/dev-0/REQ-004/view-contract.md)，集成与首帧验证使用完全离线HTTP端口。

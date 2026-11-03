@@ -15,7 +15,7 @@ import pytest
 
 from joi_observer.collectors.base import DiscoveryResult
 from joi_observer.config import LogConfig
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.data.models import CollectionResult, MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorKind, ErrorLog, Failure
 from joi_observer.monitor import Monitor
@@ -53,7 +53,7 @@ class OfflineCollector:
             raise
         if self.failure:
             return CollectionResult(self.spec.key, failure=self.failure)
-        return CollectionResult(self.spec.key, tuple(
+        return MetricCollectionResult(self.spec.key, tuple(
             Metric(metric.name, self.value, metric.unit, metric.applicable)
             for metric in self.spec.metrics
         ))
@@ -90,7 +90,7 @@ class OfflineDiscovery:
                 raise
         if self.failure:
             return DiscoveryResult(CollectionResult(self.spec.key, failure=self.failure))
-        return DiscoveryResult(CollectionResult(
+        return DiscoveryResult(MetricCollectionResult(
             self.spec.key, (Metric("device_count", len(self.specs)),)
         ), self.specs)
 

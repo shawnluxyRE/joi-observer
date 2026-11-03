@@ -1,12 +1,19 @@
-"""离线调度契约：真正运行 Monitor/MonitorState，替身仅隔离采集IO与日志端口。"""
+"""离线调度契约：常规场景运行真实 Monitor/MonitorState。
+
+类型分派用例只观察公开状态提交边界，其余替身隔离采集IO与日志端口。
+"""
 
 import asyncio
 from datetime import datetime, timezone
 
 import pytest
 
-from joi_observer.data.models import CollectionResult, Metric, ObjectKey, ObjectSpec
+from joi_observer.config import ModelConfig, ModelType
+from joi_observer.data.models import (CollectionResult, MetricCollectionResult, Metric,
+                                    ObjectKey, ObjectSpec, ObjectSnapshot, StateSnapshot)
 from joi_observer.data.state import MonitorState
+from joi_observer.data.vllm import (VllmCollectionResult, VllmObservation, ChatEngineSample,
+                                  CounterSample, LatencySample, make_vllm_spec)
 from joi_observer.error_log import ErrorKind, Failure
 from joi_observer.monitor import Monitor
 
@@ -31,7 +38,7 @@ class Source:
             await self.gate.wait()
             if self.crash:
                 raise RuntimeError("SECRET raw response must not escape")
-            return CollectionResult(self.spec.key, (Metric("running", self.calls),), self.failure)
+            return MetricCollectionResult(self.spec.key, (Metric("running", self.calls),), failure=self.failure)
         except asyncio.CancelledError:
             self.cancelled = True
             raise
@@ -53,9 +60,21 @@ class LogPort:
         self.recoveries.append((collector, object_id))
 
 
+class RecordingState(MonitorState):
+    """记录公开提交参数，真实状态校验、合并与快照行为仍由父类执行。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.submitted = []
+
+    def accept(self, result, *, sampled_at):
+        self.submitted.append(result)
+        super().accept(result, sampled_at=sampled_at)
+
+
 def setup_monitor(sources, *, interval=1, timeout=3):
     now = [0.0]
-    state = MonitorState(tuple(s.spec for s in sources), clock=lambda: now[0])
+    state = RecordingState(tuple(s.spec for s in sources), clock=lambda: now[0])
     logs = LogPort()
     updates = []
     monitor = Monitor(tuple(sources), state, logs, interval=interval, timeout=timeout,
@@ -132,6 +151,10 @@ def test_ac103_timeout_marks_only_its_source_stale():
             assert a.stale and not b.stale
             assert logs.errors[0][2].kind == ErrorKind.TIMEOUT
             assert logs.errors[0][2].code == "collection.timeout"
+            submitted = [result for result in state.submitted if result.key == slow.spec.key]
+            assert len(submitted) == 1 and type(submitted[0]) is CollectionResult
+            assert not hasattr(submitted[0], "metrics") and not hasattr(submitted[0], "observation")
+            assert submitted[0].failure is logs.errors[0][2]
             assert slow.cancelled
         finally:
             await monitor.stop()
@@ -148,6 +171,10 @@ def test_ac110_unexpected_exception_is_sanitized_and_other_source_continues(caps
             failure = logs.errors[0][2]
             assert failure.code == "collector.unexpected"
             assert "SECRET" not in repr(failure)
+            submitted = [result for result in state.submitted if result.key == ObjectKey("vllm", "bad")]
+            assert len(submitted) == 1 and type(submitted[0]) is CollectionResult
+            assert not hasattr(submitted[0], "metrics") and not hasattr(submitted[0], "observation")
+            assert submitted[0].failure is failure
         finally:
             await monitor.stop()
     asyncio.run(scenario())
@@ -237,7 +264,7 @@ def test_ac108_normal_zero_unsupported_inapplicable_and_exited_do_not_log(value,
     class SuccessfulSource(Source):
         async def collect(self):
             self.calls += 1
-            return CollectionResult(self.spec.key, (Metric("running", value, applicable=applicable),))
+            return MetricCollectionResult(self.spec.key, (Metric("running", value, applicable=applicable),))
 
     async def scenario():
         monitor, state, logs, _, _ = setup_monitor([SuccessfulSource("normal")])
@@ -247,4 +274,53 @@ def test_ac108_normal_zero_unsupported_inapplicable_and_exited_do_not_log(value,
             assert logs.errors == []
         finally:
             await monitor.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", ["metric", "vllm"])
+def test_monitor_forwards_concrete_success_result_unchanged(kind):
+    """仅检验Monitor提交边界，不以spy替代尚未实现的vLLM状态业务验收。"""
+    if kind == "metric":
+        spec = ObjectSpec(ObjectKey("host", "cpu"), (Metric("usage", None, "%"),))
+        produced = MetricCollectionResult(spec.key, (Metric("usage", 25, "%"),))
+    else:
+        config = ModelConfig("chat", ModelType.CHAT, "model", "http://offline.invalid")
+        spec = make_vllm_spec(config)
+        sample = ChatEngineSample("0", running=0, waiting=0, queue=LatencySample(0, 0),
+                                  kv_cache_fraction=0, prompt_tokens=CounterSample(0),
+                                  generation_tokens=CounterSample(0), ttft=LatencySample(0, 0))
+        produced = VllmCollectionResult(spec.key, VllmObservation(ModelType.CHAT, "model", (sample,)))
+
+    class SubmissionPort:
+        def __init__(self):
+            self.submitted = []
+
+        def snapshot(self):
+            return StateSnapshot((ObjectSnapshot(spec.key, spec.metrics),))
+
+        def accept(self, result, *, sampled_at):
+            self.submitted.append(result)
+
+    class ReturningSource:
+        def __init__(self):
+            self.spec = spec
+
+        async def collect(self):
+            return produced
+
+        async def close(self):
+            pass
+
+    async def scenario():
+        state, logs = SubmissionPort(), LogPort()
+        monitor = Monitor((ReturningSource(),), state, logs, clock=lambda: 0)
+        try:
+            await settle(monitor)
+            assert len(state.submitted) == 1 and state.submitted[0] is produced
+            assert produced.failure is None
+            assert logs.errors == []
+            assert logs.recoveries == [(spec.key.collector, spec.key.object_id)]
+        finally:
+            await monitor.stop()
+
     asyncio.run(scenario())
