@@ -8,13 +8,15 @@
 
 ## 当前阶段
 
-REQ-001 公共运行基础、REQ-002 本机硬件、REQ-003 Docker 生命周期与 REQ-004 三类型 vLLM 采集、计算及服务区显示已实现。公共能力包括严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端与终端恢复。当前详情默认显示首个配置模型，所有模型持续采集；方向键模型导航和完整双主题分别留给 REQ-005/006。REQ-004 已按 R2 确认将统一标签上限修订为 64，以兼容完整响应中的正常服务元数据，并通过 R5 完整响应复验；旧 7a4e950 测试包不包含此修复。最新结果见 [R4 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 和 [R5 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r5.md)。
+REQ-001 公共运行基础、REQ-002 本机硬件、REQ-003 Docker 生命周期、REQ-004 三类型 vLLM 采集与显示，以及 REQ-005 模型导航与服务入口已实现。公共能力包括严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端与终端恢复。默认选择首个配置模型，↑↓ 切换详情、单位、历史和关联 GPU 高亮，所有模型持续采集。完整双主题配色留给 REQ-006。REQ-004 已按 R2 确认将统一标签上限修订为 64，以兼容完整响应中的正常服务元数据，并通过 R5 完整响应复验；旧 7a4e950 测试包不包含此修复。REQ-004 结果见 [R4 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 和 [R5 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r5.md)。
 
 需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。REQ-001、REQ-002 和 REQ-003 均已通过各自范围的 R5 离线验收。
 
-设计入口：[本机硬件](docs/design/hardware.md)、[Docker](docs/design/docker.md)、[vLLM](docs/design/vllm.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。各需求的实现范围与验证记录见 [REQ-001](docs/dev-workflow/dev-0/REQ-001/handoff-r4.md)、[REQ-002](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md)、[REQ-003](docs/dev-workflow/dev-0/REQ-003/handoff-r4.md) 和 [REQ-004](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 的 R4 交接。
+REQ-005 的会话控制器、默认应用接线及服务页脚已完成；直接构造应用与正式 CLI 使用相同的默认导航。已通过 R5 离线验收及代码、测试逻辑复查，WSL Ubuntu 全量 1450 项通过；验收范围与证据见 [REQ-005 R5 交接](docs/dev-workflow/dev-0/REQ-005/handoff-r5.md)，实现记录见 [R4 交接](docs/dev-workflow/dev-0/REQ-005/handoff-r4.md)，契约见 [模型导航设计](docs/design/navigation.md)。
 
-硬件采集在运行工具的 Ubuntu 主机本地执行。GPU 需要已安装并可查询的 `nvidia-smi`，按完整 UUID 保持设备身份；新卡追加，暂时消失的卡保留原位置并显示 STALE。发现器失败不阻断已知卡和 Host 采样；成功无卡显示 `No NVIDIA GPUs`。不会安装驱动或修改硬件。当前按配置的首个模型计算显式 GPU 关联色，索引只使用新鲜且唯一的采样值，未知映射不猜测；方向键联动待 REQ-005。
+设计入口：[本机硬件](docs/design/hardware.md)、[Docker](docs/design/docker.md)、[vLLM](docs/design/vllm.md)、[模型导航](docs/design/navigation.md)、[运行架构与内存状态](docs/design/monitor-state.md)、[配置](docs/design/configuration.md)、[启动与终端](docs/design/application-shell.md)、[采集错误日志](docs/design/error-logging.md)。各需求的实现范围与验证记录见 [REQ-001](docs/dev-workflow/dev-0/REQ-001/handoff-r4.md)、[REQ-002](docs/dev-workflow/dev-0/REQ-002/handoff-r4.md)、[REQ-003](docs/dev-workflow/dev-0/REQ-003/handoff-r4.md)、[REQ-004](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 和 [REQ-005](docs/dev-workflow/dev-0/REQ-005/handoff-r4.md) 的 R4 交接。
+
+硬件采集在运行工具的 Ubuntu 主机本地执行。GPU 需要已安装并可查询的 `nvidia-smi`，按完整 UUID 保持设备身份；新卡追加，暂时消失的卡保留原位置并显示 STALE。发现器失败不阻断已知卡和 Host 采样；成功无卡显示 `No NVIDIA GPUs`。不会安装驱动或修改硬件。按当前选中模型计算显式 GPU 关联色，索引只使用新鲜且唯一的采样值，未知映射不猜测；导航不改变 GPU 集合、顺序或采样。
 
 CPU 使用 `/proc/stat` 的整机累计 tick 差分，首次及失败恢复后的第一轮显示 `—`。RAM 使用 `MemTotal - MemAvailable`，不以 MemFree 或 GPU 显存替代。Storage 精确验证挂载点，并在容量读取前后核对挂载身份；未挂载不回退到父文件系统，也不以第四项补位。容量使用 `f_frsize × f_blocks` 与 `f_frsize × (f_blocks - f_bfree)`，包含保留块；界面统一显示 GiB/TiB。GPU 显存按驱动 MiB 换算，功率是驱动最近测得的板卡功率，可能为一秒平均。失败只显示固定位置的 STALE，原因仅写 ERROR 日志。
 
@@ -57,13 +59,19 @@ uv --offline run --locked --python 3.12 --no-python-downloads --no-index \
 
 WSL 中的 uv 位于 `/home/shawn/.local/bin/uv`，实测版本为 0.13.6。使用原有 pip 缓存中的原始 wheel 包生成的 `uv.lock` 继续复用；项目环境与工具安装均采用离线依赖，最新测试结果记录在 R4 交接单。锁文件引用仓库相对目录 `.pytest_cache/offline_wheels`，该目录被 Git 忽略，换机器时须一并准备对应 wheel 包；当前二进制包覆盖 CPython 3.12 的 Linux x86_64 / Windows amd64，不能假定覆盖其他 Python 版本或平台。
 
-当前工作区的完整离线 wheel 集合包含 HTTPX 及其传递依赖，来源与 SHA-256 见 [REQ-004 离线包清单](docs/dev-workflow/dev-0/REQ-004/evidence/r4-offline-wheels.json)。这些包从本地 pip 缓存原样恢复，没有下载或重打包。证据与 wheel 目录均被 Git 忽略，克隆仓库时不会自动获得；须从已有交付材料另行准备。源码、wheel、真实 PTY 和工具安装验证记录在 R4 交接单。
+当前工作区的完整离线 wheel 集合包含 HTTPX 及其传递依赖，来源与 SHA-256 见 [REQ-005 离线包清单](docs/dev-workflow/dev-0/REQ-005/evidence/r4-offline-wheels.json)。这些包按既有清单从本地文件及 pip 缓存原样恢复，没有下载或重打包。证据与 wheel 目录均被 Git 忽略，克隆仓库时不会自动获得；须从已有交付材料另行准备。源码、wheel、真实 PTY 和工具安装验证记录在 R4 交接单。
 
 配置优先级：`joi-observer --config /absolute/path/config.yaml` → 当前目录 `config.yaml` → `~/.joi-observer/config.yaml`。指定配置缺失/非法时退出，不回退。随包示例位于 [examples/config.yaml](src/joi_observer/examples/config.yaml)，包含本地部署材料记载的三个模型；地址仅供部署参考，使用时须核对实际目标，示例不会自动用于采集。容器列表初始为空，用户填写真实名称；GPU 关联也由用户显式配置。
 
 默认每秒采样、每对象超时 3 秒，约 60 秒历史只保存在内存。默认错误日志为 `~/.joi-observer/error.log`，10,000,000 字节轮转、3 份备份，仅记录采集失败 ERROR；`time` 使用服务器本地 `YYYY-MM-DD HH:MM:SS`，不附带时区信息。相同对象相同错误连续发生最多每 60 秒记录一次。日志不可写时启动前提示一次并继续监控。
 
-布局按全页高度平分：下半区包含服务窗口、服务切换及键位提示，奇数高度时多出的一行留给上半区。无 GPU 或不超过 4 个 GPU 槽时最低为 120×36；5 GPU 场景最低为 120×37，GPU 更多时按设计公式增高，容器数量不提高最低高度。Storage 固定 3 行内容，只纳入原配置前三个挂载点，前项失败不以尾项补位；整个 YAML 仍执行安全校验。Docker 全部配置项持续采集，只显示区域可容纳的前若干项，隐藏不丢失状态或改变采样。页高 44/48/42 行时分别显示前 4/6/3 个容器，36 行时容量可为零；溢出不提示、不滚动、不占用下半区，内容不足时保留空白。低于基础尺寸时显示英文放大提示，`q` 仍可退出。具体分配见[终端设计](docs/design/application-shell.md)。
+布局按全页高度平分：下半区包含服务窗口、服务切换及键位提示，奇数高度时多出的一行留给上半区。无 GPU 或不超过 4 个 GPU 槽时最低为 120×36；5 GPU 场景最低为 120×37，GPU 更多时按设计公式增高，容器数量不提高最低高度。Storage 固定 3 行内容，只纳入原配置前三个挂载点，前项失败不以尾项补位；整个 YAML 仍执行安全校验。Docker 全部配置项持续采集，只显示区域可容纳的前若干项，隐藏不丢失状态或改变采样。页高 44/48/42 行时分别显示前 4/6/3 个容器，36 行时容量可为零；溢出不提示、不滚动、不占用下半区，内容不足时保留空白。低于基础尺寸时显示英文放大提示，仍处理 ↑↓、t 和 q；放大后显示最新选择。具体分配见[终端设计](docs/design/application-shell.md)。
+
+## 模型导航与键位
+
+↑↓ 按配置顺序单步选择模型，到首尾停留。同名、同类型或同端点但 id 不同的模型仍独立；模型列表较长时选中项保持可见。空配置显示英文空态，零或一个模型时方向键安全。刷新、采集失败和窗口缩放保留选择，切换模型不清空历史或暂停其他来源。
+
+底部固定显示当前 `vLLM` 和 `WebUI (disabled)`；←→ 不切换服务。Enter、p、Tab 无操作。正常尺寸下页脚为 `↑↓ Select model    t Theme    q Quit`，其中 `Select model` 来自当前服务描述。q 全局退出，t 在 Moonlight/Hologram 会话标识间切换，保持模型和历史。新启动默认 Moonlight，不保存偏好；同一个应用实例再次运行保留其会话。完整 RGB 配色和全屏双主题视觉验收属于 REQ-006，本轮只完成主题状态与名称切换。
 
 ## Docker 容器配置与边界
 
@@ -127,7 +135,7 @@ pytest 从 `pyproject.toml` 将 `src` 加入导入路径。黑盒和集成用例
 真实终端用例已包含在全量测试中，也可由本地 Ubuntu 普通用户单独运行（仅本机 PTY）：
 
 ```bash
-python -m pytest -q tests/test_terminal_pty.py tests/test_hardware_pty.py tests/test_vllm_pty.py
+python -m pytest -q tests/test_terminal_pty.py tests/test_hardware_pty.py tests/test_vllm_pty.py tests/test_navigation_pty.py
 ```
 
 这些验证不代表目标服务器或后续具体采集器已验收，不能据此连接部署服务器。

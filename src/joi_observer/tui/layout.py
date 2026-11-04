@@ -13,6 +13,7 @@ import unicodedata
 
 from joi_observer.config import AppConfig
 from joi_observer.data.models import Metric, StateSnapshot
+from joi_observer.tui import services
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,11 @@ class HostInfo:
 
 @dataclass(frozen=True)
 class ViewSelection:
-    """仅会话内的展示选择。theme 为 moonlight/hologram；未知选择用 None。"""
+    """不可变的会话选择；theme 为 moonlight/hologram。
+
+    默认控制器在非空配置中只返回有效模型 id；空配置返回 None。
+    纯渲染兼容外部 None/未知 id 的既有回退，不负责修改控制器选择。
+    """
 
     model_id: str | None = None
     theme: str = "moonlight"
@@ -171,7 +176,14 @@ def compose_frame(
     对象的预留5字符状态位显示 STALE，不展示 sampled_at/history时间、原因
     或任何错误诊断。正常/失败/恢复、不同模型类型共用同样区域高度。
     顶部文字 Joi::Observer，hostname/system 在时间左侧；默认主题 Moonlight。
-    底部 vLLM 与禁用 WebUI；键位仅 ↑↓ Models、t Theme、q Quit。
+    底部切换位单独绘制当前 vLLM（primary），分隔符与 WebUI (disabled)
+    为 muted；不新增焦点或可切换入口。从 services.VLLM_SERVICE
+    读取一次当前服务描述，title 用于服务标题和当前服务项，同一描述传入
+    services.footer_text 生成页脚。Select model 属于 vLLM 的
+    navigation_label；不能固定为所有服务共用的文字。当前页脚为
+    '↑↓ Select model    t Theme    q Quit'，role=primary；箭头、间距及
+    t Theme/q Quit 不随服务变化。沿用服务切换位和
+    页脚各一行及下半页预算。
 
     实际尺寸低于 required_size 任一维度时返回 too_small=True，只显示
     'Enlarge terminal to at least {columns}x{rows}' 和 'q Quit'（极小终端可
@@ -240,8 +252,10 @@ def compose_frame(
             region_put(region, row, region.column + region.width - 1, "│", "muted")
         region_put(region, region.row, region.column + 2, f" {title} ", role, region.width - 4)
 
+    current_service = services.VLLM_SERVICE
     for name, title in (("gpu", "GPU"), ("host", "Host Resources"),
-                        ("storage", "Storage"), ("docker", "Docker"), ("service", "vLLM")):
+                        ("storage", "Storage"), ("docker", "Docker"),
+                        ("service", current_service.title)):
         border(by_region[name], title)
 
     header = by_region["header"]
@@ -279,9 +293,11 @@ def compose_frame(
 
     cells.extend(vllm_cells(snapshot, config, service, view, now=monotonic_now))
     switch = by_region["service_switch"]
-    region_put(switch, switch.row, 2, "vLLM  /  WebUI (disabled)", "muted")
+    region_put(switch, switch.row, 2, current_service.title, "primary")
+    region_put(switch, switch.row, 2 + len(current_service.title),
+               "  /  WebUI (disabled)", "muted")
     footer = by_region["footer"]
-    region_put(footer, footer.row, 0, "↑↓ Models    t Theme    q Quit", "primary")
+    region_put(footer, footer.row, 0, services.footer_text(current_service), "primary")
     return Frame(tuple(cells), regions, minimum)
 
 

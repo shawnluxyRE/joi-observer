@@ -1,8 +1,8 @@
 # 本机硬件模块设计
 
 - 关联需求：dev-0 / REQ-002，AC-201～AC-207；共享 AC-101～AC-103、AC-108、AC-110、AC-112、AC-606～AC-608。
-- 修订：v1.1，2026-11-02；依据 [requirements.md](../dev-workflow/dev-0/requirements.md) v1.12，同步公共采集结果分型。
-- 阶段：原硬件接口由 REQ-002 R2 定义，业务已随 REQ-002 实现；本轮只迁移结果类型，不重新实现采集、计算、动态调度或硬件绘制。
+- 修订：v1.3，2026-11-03；依据 [requirements.md](../dev-workflow/dev-0/requirements.md) v1.12，复核 REQ-005 会话联动并清除过期 vLLM 占位说明；映射和硬件业务不变。
+- 阶段：硬件与公共结果类型已实现并合并；本轮只补充 REQ-005 关联说明，不修改采集、计算、动态调度或硬件绘制。
 - 代码：`collectors/hardware.py`、`collectors/base.py`、`monitor.py`、`tui/widgets.py`；组合接线在 `cli.py`、`tui/layout.py`。
 - 关联设计：[Monitor/State](monitor-state.md)、[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
@@ -10,9 +10,9 @@
 
 运行在被监控 Ubuntu 主机上，只读采集 NVIDIA GPU、整机 CPU/RAM 和配置前三个挂载点。采用已有 `Collector → Monitor → MonitorState → TUI`；不增加数据库、采样日志、网络流量、磁盘 IO、逐进程指标或服务控制。
 
-REQ-002 负责硬件数据与按当前 `ViewSelection` 计算的 GPU 关联高亮。方向键修改选择由 REQ-005 完成，完整主题颜色映射由 REQ-006 完成；本需求提供对应语义颜色角色，不提前实现上述交互。Docker 采集由 REQ-003 负责，vLLM 保留占位。
+REQ-002 负责硬件数据与按当前 `ViewSelection` 计算的 GPU 关联高亮。方向键修改选择由 [REQ-005 导航控制器](navigation.md) 完成，完整主题颜色映射由 REQ-006 完成；本模块提供对应语义颜色角色。Docker 与 vLLM 采集已分别随 REQ-003/004 合并。
 
-保留已合并的配置、状态、调度、日志和半页布局。当前公共 CollectionResult 仅含 key/failure，硬件各 collect 返回携带 metrics 的 MetricCollectionResult；此次只同步类型及注释、设计和测试，不改变原业务算法或调用 vLLM 未实现骨架。
+保留已合并的配置、状态、调度、日志和半页布局。当前公共 CollectionResult 仅含 key/failure，硬件各 collect 返回携带 metrics 的 MetricCollectionResult；导航不改变结果类型或原业务算法。
 
 ## 核心结构
 
@@ -169,7 +169,7 @@ stop须取消发现任务及所有静态/动态来源，关闭每个已创建资
 
 不新增运行依赖或更改uv锁文件；R4若发现本地worker成本不适合0.1秒最小采样，可在维持隔离/取消契约的前提下使用有界常驻worker，仍不能让慢挂载阻塞其他来源。真实底层资源回收须在本地Ubuntu验证，R2不声称现有骨架已满足。
 
-`build_hardware_sources(config)` 无IO地组装CPU、RAM、前三挂载及发现器。R4在 `ApplicationRuntime._components` 移除host/local占位、把静态spec加入同一State，交静态来源给Monitor后注册发现器。导入、`--help`、缺配置、构造阶段不能执行硬件查询。仅保留 vLLM 占位及 RuntimeComponents 注入通道。
+`build_hardware_sources(config)` 无IO地组装CPU、RAM、前三挂载及发现器。`ApplicationRuntime._components` 已移除host/local占位、把静态spec加入同一State，交静态来源给Monitor后注册发现器。导入、`--help`、缺配置、构造阶段不能执行硬件查询。vLLM模型来源已随REQ-004接入同一State/Monitor，RuntimeComponents注入通道保留。
 
 ## 硬件显示与模型关联
 
@@ -188,6 +188,8 @@ stop须取消发现任务及所有静态/动态来源，关闭每个已创建资
 inventory首次未知显示—，成功0卡且从未有槽显示 `No NVIDIA GPUs`，失败在GPU面板标题状态槽STALE，不能显示成“检测到0卡”。有旧槽时保留所有旧槽。Host的CPU/RAM任一失败在标题预留位STALE；挂载逐行STALE。长路径/名称按终端字符宽度裁切，优先保住指标与状态，不增加行。
 
 `linked_gpu_ids` 只读配置中当前模型的显式gpu_ids；缺省选择第一模型，未知选择或空映射清空高亮。完整UUID精确匹配可用于旧卡；索引只匹配本次已采样且非STALE的唯一index，规范十进制字符串（`4`，非`04`）。出现重复的当前index时不以索引猜映射。UUID前缀、名称、显存和负载均不作为依据。切换只改变编号/填充/百分比的role，不改变GPU顺序、状态、历史或采样次数。
+
+REQ-005 默认控制器仅输出合法模型 id（空配置为 None）；同一帧模型详情与硬件关联使用同一选择值。模型服务失败不撤销显式映射，GPU 自身过期索引仍按上面的安全匹配规则处理。不修改本模块的未知 id 兼容行为，不新增 GPU 焦点或滚动。导航贯穿视图的黑盒覆盖见 `tests/test_navigation.py`。
 
 Storage采用序号key。为保留REQ-001已有通用快照，缺少序号对象时兼容读取旧路径key，序号优先；旧host/local仍汇总通用字段和STALE。无index字段的旧GPU对象或纯十进制空槽沿用`GPU {key}`标签与`name: value`通用指标；存在index模板即走新硬件契约，None时显示GPU —，不得退回UUID标签。生产只建立新schema，这些只读兼容不用于GPU发现或真实设备身份推断。既有共享测试保持原公共行为断言，不以硬件接线为由跳过。
 

@@ -1,7 +1,7 @@
 # Application Shell 模块设计
 
-- 关联需求：dev-0 / REQ-001，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114；共享布局约束关联 AC-207/301/304/605/607/608。
-- 修订：v1.4，2026-11-02；沿用已验收半页布局，同步公共结果分型及 REQ-004 待实现的接线边界。
+- 关联需求：dev-0 / REQ-001、REQ-005，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114、AC-501～504；共享布局约束关联 AC-207/301/304/605/607/608。
+- 修订：v1.7，2026-11-03；复核 REQ-005 接线与测试映射，清除仍称 vLLM 占位/未接线的过期现状说明。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 
@@ -9,7 +9,7 @@
 
 本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005/006 完成模型导航和完整主题，均复用本模块的生命周期与容量约束。
 
-ApplicationRuntime 通过 build_hardware_sources 和 build_docker_collectors 组装两类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 仅替换 Docker 外部命令 IO；全部配置容器参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源或调用 Docker 工厂。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
+ApplicationRuntime 通过 build_hardware_sources、build_docker_collectors 和 build_vllm_collectors 组装三类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 与 vllm_http_factory 分别替换外部命令和 HTTP IO；全部配置容器和模型参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令或 HTTP 请求；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [vLLM 设计](vllm.md)。
 
 公共采集结果现在分为仅含 key/failure 的 CollectionResult、携带平面 metrics 的 MetricCollectionResult，以及在 `data/vllm.py` 中携带 observation 的 VllmCollectionResult。Collector 协议和 Monitor/State 接口仍依赖公共基类，组合根无需读取具体载荷；它只将普通 ObjectSpec 与硬件/Docker 来源配对，将 VllmSpec 与模型来源配对。failure 统一仅关键字传参，Monitor 可用公共无载荷失败处理任意来源，成功结果必须使用与 spec 匹配的具体子类。
 
@@ -83,7 +83,7 @@ AC-114 的本地安装验证使用预先准备好的 uv、Python 和离线依赖
 
 `ApplicationRuntime` 是唯一组合根。先构建初始只读快照，让 UI 可显示 `—`，再并发执行 `Monitor.run(stop_event)` 与 `ObserverApp.run()`。一个会话只创建一个 MonitorState、一个 Monitor 和一个 ErrorLog；界面不拥有采集器或写状态接口。
 
-REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位，仅保留vLLM占位与注入RuntimeComponents路径。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
+REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位；REQ-004也已接入全部vLLM模型，RuntimeComponents注入路径仍保留。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
 
 绘制接线：compose_frame沿用本模块全部Region和required_size，硬件内部内容委托`widgets.hardware_cells`替换旧通用占位；不增加区域或改行数。ObserverApp的gpu_slots仍只收集collector=gpu的UUID，gpu_inventory不计数；硬件控件根据ViewSelection计算关联色，不负责方向键导航。具体字段、挂载序号、STALE和颜色角色见[硬件设计](hardware.md)。
 
@@ -95,7 +95,9 @@ q 使 UI 正常返回，组合根通知/停止 Monitor；UI 内部异常同样�
 
 总体清理预算不超过 1 秒，`run()` 与 `close()` 共享预算；采集端口必须合作取消，底层同步操作必须有超时，不能等待无限阻塞线程退出。日志关闭不向 stdout/stderr 输出积压记录，也不要求补写停机时尚未落盘的事件。清理中的异常不能掩盖原异常。
 
-`ViewActions` 只接受 t/up/down/left/right，供 REQ-005/006 实现只读选择；q 由应用全局处理。Enter、p 没有行为，首版左右键不能进入 WebUI。没有鼠标主题操作。键位区只保留 `↑↓ Models`、`t Theme`、`q Quit`。
+`ViewActions` 接收 t/up/down/left/right；q 由应用全局处理，Enter/p/Tab 没有行为，首版左右键不能进入 WebUI。REQ-005 由 `SessionViewActions(config.models)` 提供具体会话状态；`ObserverApp` 在 `actions is None` 时默认创建，显式注入原样保留。刷新、缩放、失败及同一实例再次运行不重建选择。每帧只读取一次选择并用于整帧。没有鼠标主题操作。正常页脚目标为 `↑↓ Select model    t Theme    q Quit`，服务行 vLLM 用 primary、WebUI (disabled) 用 muted。完整边界与新增测试见[模型导航](navigation.md)；本轮只更新契约，默认接线和两项呈现修改仍留 R4。
+
+`Select model` 仅是当前 vLLM 服务的导航提示。布局从 `services.VLLM_SERVICE` 取得一次描述，同时用于当前服务标题/入口及 `footer_text(service)`；该函数只替换上下箭头后的 navigation_label。未来启用其它服务后，提示随当前服务描述变化，`↑↓`、间距、`t Theme`、`q Quit` 及其它文字保持不变。本轮不实现服务切换，契约和黑盒测试见 `tests/test_service_footer.py`。
 
 ## 可验证的字符容量
 
@@ -159,6 +161,8 @@ Docker 填充右侧剩余高度，只显示配置前 `docker_capacity` 项；全
 | `required_size` | `tests/test_tui.py`：GPU容量、非负整数边界、容器不限量且不增高、挂载点尾项不增高 | AC-106 |
 | `compose_frame` / `format_metric` | 标题/值槽/STALE、偶数及奇数半页、8区边界、Storage固定及无补位、Docker 4→6→3行/零行/空态/无溢出提示、失败恢复稳定 | AC-101/106/110/207/304/607/608 |
 | `ObserverApp.run` / `TerminalPort` | 初次绘制、q、部分进入异常、绘制异常、Ctrl+C、小窗口退出、缩放恢复、键位只分派展示操作 | AC-103/104/106 |
+| `SessionViewActions` / 默认 `ObserverApp` | `tests/test_navigation.py`、`tests/test_navigation_app.py`、`tests/test_navigation_pty.py`：真实控制器、默认接线、只读采样隔离、失败/缩放保持、真实方向键、页脚与禁用入口 | AC-501～504 |
+| `ServicePresentation` / `footer_text` / `compose_frame` | `tests/test_service_footer.py`：服务描述冻结、同描述驱动标题/当前入口/导航提示、其余全局文字不变 | AC-504及用户补充 |
 | `ApplicationRuntime` / `RuntimeComponents` | `tests/test_tui.py`联合真实Monitor/State/UI：慢采集仍绘制和q退出、键盘异常使采集取消/关闭、终端恢复先于日志关闭；采样时序另见调度测试 | AC-102/103/104 |
 | uv 工具安装与命令入口 | 新 shell、未激活环境、不同工作目录、命令/示例资源定位及离线 TUI 启停；已有 R4/R5 历史证据，布局边界变更后须重新验证 | AC-114 |
 
@@ -176,7 +180,9 @@ v1.3 衔接REQ-002：保留已实现的v1.12几何与运行期，明确硬件来
 
 v1.4 同步公共 CollectionResult 与两个具体结果子类，硬件/Docker/普通 State 只迁移类型，保持已有行为。vLLM 采集、accumulator、State 专支及下述组合/呈现接线继续留待 R4，不能将类型迁移或接口声明视为业务实现。
 
-## REQ-004 vLLM 接线契约（待R4实现）
+v1.5 衔接 REQ-005：新增默认会话控制器契约、精确键位文字和当前服务角色；保留已实现的终端输入、半页布局和监控运行逻辑。REQ-004 的以下接线已随 `83aad39` 合并，先前版本的“待实现”描述是设计阶段历史状态。
+
+## REQ-004 vLLM 接线契约（已合并）
 
 `ApplicationRuntime`新增可选`vllm_http_factory`注入点，构造只保存依赖；组装时调用`build_vllm_collectors(config,http_factory=...)`，全部模型各创建一个独立端口，将其VllmSpec与采集器合入同一State/Monitor，替换旧的手工RUNNING/WAITING占位。prepare_log只构造，不访问HTTP；注入完整components时不创建任何额外端口；空models不调用工厂。Monitor负责关闭所有模型端口，整体退出预算保持不变。
 
@@ -184,4 +190,4 @@ v1.4 同步公共 CollectionResult 与两个具体结果子类，硬件/Docker/�
 
 `compose_frame`新增可选`monotonic_now`用于离线历史时钟，生产缺省取`time.monotonic()`；现有datetime参数仍只负责页眉时间，二者不可混用。在原service Region内调用纯`vllm_cells`替换占位详情，外边框、上下各半、Docker容量、service_switch/footer和最小终端尺寸保持原规则。CursesTerminal需增加amber角色到黄色的基础映射，完整RGB主题留REQ-006；不得让WAITING标签、0或STALE旧值使用amber。
 
-上述参数和注释已声明，执行接线尚未实现。规格见[vLLM设计](vllm.md)与[服务窗口契约](../dev-workflow/dev-0/REQ-004/view-contract.md)，集成与首帧验证使用完全离线HTTP端口。
+上述 REQ-004 执行接线已合并；本次待实现的是 REQ-005 默认导航及服务页脚接线。vLLM 规格见[vLLM设计](vllm.md)与[服务窗口契约](../dev-workflow/dev-0/REQ-004/view-contract.md)，集成与首帧验证继续使用完全离线HTTP端口。
