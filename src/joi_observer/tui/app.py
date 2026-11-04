@@ -10,6 +10,7 @@ from typing import Protocol
 from joi_observer.config import AppConfig
 from joi_observer.data.models import StateSnapshot
 from joi_observer.tui.layout import Frame, HostInfo, TerminalSize, ViewSelection, compose_frame
+from joi_observer.tui.navigation import SessionViewActions
 
 
 class SnapshotReader(Protocol):
@@ -62,14 +63,26 @@ class TerminalPort(Protocol):
 
 
 class ViewActions(Protocol):
-    """REQ-005/006 的展示操作边界，不允许持有Collector或触发采集。"""
+    """会话展示操作边界，不允许持有 Collector 或触发采集。
+
+    默认实现为 navigation.SessionViewActions；可显式注入其他实现。
+    应用每帧只读取一次 selection，并将同一值用于模型详情和 GPU 关联。
+    """
 
     def selection(self) -> ViewSelection:
-        """返回当前模型/主题；默认 Moonlight，首个配置模型。"""
+        """返回不可变的当前模型/主题；空配置模型为 None，默认 moonlight。
+
+        非空配置初始选择首个模型 id。刷新、失败或缩放不改变选择；不能
+        由显示名判断身份或自动跳过不可用项。已返回的值保持不变。
+        """
         ...
 
     def on_key(self, key: str) -> None:
-        """接收 t/up/down/left/right；只更新会话选择，首版左右不能进入WebUI。"""
+        """接收归一化键名；up/down 单步且首尾停留，t 切主题而保留模型。
+
+        left/right 及未声明键无动作；服务固定 vLLM，不进入 WebUI。
+        操作不能修改快照、配置、GPU 槽位或采样。q 由应用全局处理。
+        """
         ...
 
 
@@ -271,9 +284,13 @@ class CursesTerminal:
 class ObserverApp:
     """全屏会话，依赖仅包含只读状态、终端、本地时钟与展示操作。
 
-    构造只保留依赖，不读取状态、不进入终端、不采集。没有actions时使用
-    首个模型和Moonlight初值；t/方向键交给后续展示实现。终端和时钟在测试中
-    可替换，监控指标和STALE渲染必须使用真实compose_frame行为。
+    构造只保留依赖，不读取状态、不进入终端、不采集。actions
+    为 None 时创建独立的 SessionViewActions(config.models)，显式注入时
+    原样使用，不以真假值替代 None 判断；默认控制器贯穿整个应用实例。
+    读取选择和分派按键也不得因控制器真假值为 false 而跳过。
+    不因刷新、重绘、失败、resize 或再次 run 重建；新应用实例才重置选择。
+    同一 ViewSelection 传给整帧，保证详情与 GPU 关联一致。终端和时钟在
+    测试中可替换，监控指标和 STALE 渲染必须使用真实 compose_frame。
     """
 
     def __init__(
@@ -291,7 +308,7 @@ class ObserverApp:
         self.terminal = terminal
         self.host = host
         self.wall_clock = wall_clock
-        self.actions = actions
+        self.actions = SessionViewActions(config.models) if actions is None else actions
         self._running = False
 
     async def run(self) -> None:
@@ -299,8 +316,10 @@ class ObserverApp:
 
         键盘轮询最长50ms；绘制正常最多10Hz，快照变化在下个绘制周期展示，
         当前时间至少每秒更新。尺寸变化例外：下一次读键前立即重绘，不受
-        普通10Hz节流限制。小窗口仍保持同样读键与监控节奏。t和方向键
-        仅送ViewActions，Enter/p不产生行为。UI不调用Monitor或Collector。
+        普通10Hz节流限制。小窗口仍保持同样读键与监控节奏，并继续更新
+        会话选择，放大后显示该选择。t和方向键仅送ViewActions，Enter/p/
+        Tab及其他未声明键不产生行为。导航与主题在下一普通绘制周期可见，
+        不为按键突破10Hz上限。UI不调用Monitor或Collector。
         新见GPU追加会话槽位；失败恢复不删槽，保证大小与配置不变时布局稳定。
 
         将enter也置于try/finally保护内；q、KeyboardInterrupt、协程取消及
@@ -324,8 +343,7 @@ class ObserverApp:
                     for obj in snapshot.objects:
                         if obj.key.collector == "gpu" and obj.key.object_id not in gpu_slots:
                             gpu_slots.append(obj.key.object_id)
-                    view = self.actions.selection() if self.actions else ViewSelection(
-                        self.config.models[0].id if self.config.models else None)
+                    view = self.actions.selection()
                     frame = compose_frame(snapshot, self.config, size, self.host, self.wall_clock(),
                                           gpu_slots=tuple(gpu_slots), view=view)
                     self.terminal.render(frame)
@@ -336,7 +354,7 @@ class ObserverApp:
                     return
                 if key == "interrupt":
                     raise KeyboardInterrupt
-                if self.actions and key in {"t", "up", "down", "left", "right"}:
+                if key in {"t", "up", "down", "left", "right"}:
                     self.actions.on_key(key)
         finally:
             original_error = sys.exc_info()[0]

@@ -1,7 +1,7 @@
 # vLLM 多类型模型负载与历史设计
 
 - 关联需求：dev-0 / REQ-004，`requirements.md` v1.12，AC-401～412；依赖 REQ-001，复用 REQ-002、REQ-003 运行基础。
-- 修订：v1.3，2026-11-03。采纳 R4-DES-005 / R5-004-005，将全局标签资源契约从16修订为64，补齐完整响应兼容性边界；执行修复与验收由R4/R5完成。采集结果与引擎观测分别使用公共基类及具体子类。完整阶段结果以 [`handoff-r2.md`](../dev-workflow/dev-0/REQ-004/handoff-r2.md) 为准。
+- 修订：v1.4，2026-11-03。衔接 REQ-005 会话导航，沿用 v1.3 的统一64标签及完整响应契约，不改变指标和视图算法。REQ-004 已随 `83aad39` 合并并通过 R5；以下关于骨架/待实现的叙述保留原设计阶段背景，完整阶段结果见 [`handoff-r5.md`](../dev-workflow/dev-0/REQ-004/handoff-r5.md)。
 - 范围：冻结模块职责、数据和接口契约，提供可加载的接口骨架及离线黑盒测试。业务入口留待 R4 实现，不能把导入成功或预期的 `NotImplementedError` 解释为功能已完成。
 - 关联文档：[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)、[视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
@@ -12,6 +12,8 @@
 精确指标名、标签、行号、源码哈希及证据边界集中维护在[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)。本设计只支持已核对的 `0.31.0` profile，不承诺其他版本自动兼容。实采为单 engine 空闲窗口；多 engine、故障、重启和负载增量的确定性规则由源码及离线构造验证支持，不宣称完成这些场景的实机演练。
 
 展示三个模型并持续采集未选中项；直接读取配置的 vLLM origin，不访问 LiteLLM、WebUI、推理接口或其他地址。REQ-004 接收现有模型选择输入；方向键导航和服务入口由 REQ-005 完成，完整视觉主题由 REQ-006 完成。
+
+REQ-005 使用 [SessionViewActions](navigation.md) 维护合法配置 id，并通过 ObserverApp 把同一选择传给本视图与硬件关联。不以健康状态重排或替换选择，不触发采样、清空历史或修改本模块指标。列表容量和无状态可见窗口沿用 `vllm_cells`，不新增滚动缓存。
 
 ## 2. 职责与协作
 
@@ -289,6 +291,8 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 不显示错误原因、最后成功时间、距今时长、异常堆栈、窗口不足或模拟标记。历史轴相对时间仅表达图表实际范围。服务切换位保留 vLLM/WebUI，WebUI 禁用；不新增推理、告警或服务管理操作。
 
 ## 11. 黑盒测试与验证边界
+
+导航贯穿验证另外位于 `tests/test_navigation.py`、`tests/test_navigation_app.py` 和 `tests/test_navigation_pty.py`；这些新增用例的 R2 未实现基线记录在 [REQ-005 交接](../dev-workflow/dev-0/REQ-005/handoff-r2.md)，不改写 REQ-004 已通过的历史验收。
 
 测试从公开函数、注入字节端口、client factory、State 快照和 TextCell 观察正确业务行为；不模拟被测 parser、reducer 或渲染结果。未实现导致的失败保留为 R2 基线，不以断言 NotImplementedError 的方式“通过”业务验收。
 

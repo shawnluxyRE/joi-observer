@@ -271,3 +271,19 @@ def test_escape_wait_can_be_cancelled_without_delaying_terminal_restore(tmp_path
     assert result["cancelled"], result
     assert result["cancellation_seconds"] < 0.04, result
     assert result["maximum_loop_gap_seconds"] < 0.04, result
+
+
+@pytest.mark.parametrize("chunks,expected_keys", [
+    ([(0, b"\x1b")], []),
+    ([(0, b"\x1b[")], []),
+    ([(0, b"\x1b["), (0.008, b"\x1b[B"), (0.008, b"q")], ["down", "q"]),
+    ([(0, b"\x1b["), (0.08, b"\x1bOA"), (0.008, b"q")], ["up", "q"]),
+], ids=["escape_emits_no_keys", "incomplete_csi_emits_no_keys",
+        "malformed_prefix_then_csi_arrow", "expired_prefix_then_ss3_arrow"])
+def test_incomplete_prefixes_never_emit_actions_or_consume_following_arrows(
+        tmp_path, chunks, expected_keys):
+    """Inspect every result, including transient keys before the final poll."""
+    result = run_fragmented_input(tmp_path, chunks, expected="q" if expected_keys else None)
+    assert result["keys"] == expected_keys, result
+    assert result["maximum_read_seconds"] < 0.04, result
+    assert result["maximum_loop_gap_seconds"] < 0.04, result
