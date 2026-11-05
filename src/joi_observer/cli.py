@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 from pathlib import Path
-import platform
+import re
 import signal
 import sys
 from typing import TYPE_CHECKING, Protocol, TextIO
@@ -91,6 +91,53 @@ class CliDependencies:
     stdout: TextIO
     stderr: TextIO
     runtime_factory: Callable[[AppConfig], RuntimePort]
+
+
+_OS_RELEASE_PATHS = (Path("/etc/os-release"), Path("/usr/lib/os-release"))
+_OS_RELEASE_LINE = re.compile(
+    r"""^(?P<name>[a-zA-Z0-9_]+)=(?P<quote>["']?)(?P<value>.*)(?P=quote)$"""
+)
+_OS_RELEASE_UNESCAPE = re.compile(r"""\\([\\$"'`])""")
+
+
+def _local_release_fields() -> dict[str, str]:
+    """Parse only fields actually supplied by the first readable os-release.
+
+    Keep the standard os-release quoting and five special-character escapes,
+    but do not inject platform.freedesktop_os_release's synthetic Linux names.
+    Read one file once; never merge missing fields with a lower-priority file
+    or expand variables/commands. Invalid encoding makes this metadata unknown.
+    """
+    for path in _OS_RELEASE_PATHS:
+        try:
+            fields: dict[str, str] = {}
+            with path.open(encoding="utf-8") as source:
+                for line in source:
+                    match = _OS_RELEASE_LINE.match(line)
+                    if match and match["name"] in {"PRETTY_NAME", "NAME", "VERSION_ID"}:
+                        fields[match["name"]] = _OS_RELEASE_UNESCAPE.sub(r"\1", match["value"])
+            return fields
+        except OSError:
+            continue
+        except UnicodeError:
+            return {}
+    return {}
+
+
+def _local_host_info() -> HostInfo:
+    """Read local distribution metadata once; the device label is user-defined.
+
+    This is a startup presentation label, not hardware discovery. A missing or
+    unreadable os-release must not prevent monitoring or substitute a kernel
+    version for the requested Ubuntu distribution version.
+    """
+    release = _local_release_fields()
+    system = release.get("PRETTY_NAME", "").strip()
+    if not system:
+        name = release.get("NAME", "").strip() or "Ubuntu"
+        version = release.get("VERSION_ID", "").strip() or "—"
+        system = f"{name} {version}"
+    return HostInfo("H3C R5300 G6", system)
 
 
 class ApplicationRuntime:
@@ -220,7 +267,7 @@ class ApplicationRuntime:
                               timeout=self.config.collection_timeout)
             monitor.register_discovery(hardware.discovery)
             app = ObserverApp(self.config, _ReadOnlyState(state), CursesTerminal(),
-                              host=HostInfo(platform.node(), f"{platform.system()} {platform.release()}"),
+                              host=_local_host_info(),
                               wall_clock=lambda: datetime.now().astimezone())
             self.components = RuntimeComponents(monitor, app, log)
         return self.components

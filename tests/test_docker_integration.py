@@ -182,6 +182,12 @@ def test_docker_row_status_ignores_same_named_stale_gpu_cells(tmp_path, same_row
     status = row_status(frame, name)
     assert "Running" in status
     assert "STALE" not in status
+    running = [cell for cell in frame.cells if cell.text == "Running"
+               and docker.row <= cell.row < docker.row + docker.height
+               and docker.column <= cell.column < docker.column + docker.width]
+    assert len(running) == 1
+    assert running[0].column + len(running[0].text) == docker.column + docker.width - 2
+    assert running[0].role == "primary"
 
 
 def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_change(tmp_path, capsys):

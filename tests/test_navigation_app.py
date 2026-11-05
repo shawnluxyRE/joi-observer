@@ -1,13 +1,13 @@
 """Session navigation through the real app and frame composer, using offline IO.
 
-Assertions describe the finished behavior. Missing default navigation wiring and
-the revised footer are expected design-stage failures, never skipped or xfailed.
+Assertions describe the finished behavior. A default-theme mismatch remains an
+ordinary design-stage failure, never skipped or xfailed.
 """
 
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -114,14 +114,27 @@ def detail_cells(frame):
     service = region(frame, "service")
     return tuple(cell for cell in frame.cells
                  if service.row < cell.row < service.row + service.height - 1
-                 and cell.column >= service.column + service.width // 3 + 2)
+                 and cell.column >= service.column + 30)
 
 
 def selected_name(frame):
     service = region(frame, "service")
-    return next(cell.text for cell in detail_cells(frame)
-                if cell.row == service.row + 1
-                and cell.column == service.column + service.width // 3 + 2)
+    names = [cell.text for cell in detail_cells(frame)
+             if cell.row == service.row + 2 and cell.column == service.column + 30]
+    assert len(names) == 1, "Detail name must occupy the fixed column after the 24-column rail"
+    return names[0]
+
+
+def detail_metric(frame, label):
+    """Read a metric's separate label and numeric value from the public frame."""
+    service = region(frame, "service")
+    headings = [cell for cell in detail_cells(frame)
+                if cell.row == service.row + 9 and cell.text == label]
+    assert len(headings) == 1, f"Missing four-column metric label: {label}"
+    values = [cell.text for cell in detail_cells(frame)
+              if cell.row == service.row + 10 and cell.column == headings[0].column]
+    assert len(values) == 1, f"Missing numeric value below metric label: {label}"
+    return values[0]
 
 
 def test_default_app_arrows_traverse_all_types_and_stop_at_both_ends():
@@ -133,10 +146,12 @@ def test_default_app_arrows_traverse_all_types_and_stop_at_both_ends():
                                         "reranker", "embedding", "chat", "chat")):
         text = " ".join(cell.text for cell in detail_cells(frame))
         if expected == "chat":
-            assert "DECODE: 100tok/s" in text and "TTFT: 3s" in text
+            assert detail_metric(frame, "DECODE / tok/s") == "100"
+            assert detail_metric(frame, "TTFT / s") == "3"
             assert "DECODE HISTORY / tok/s" in text
         else:
-            assert "RATE: 3seq/s" in text and "Avg latency: 3s" in text
+            assert detail_metric(frame, "RATE / seq/s") == "3"
+            assert detail_metric(frame, "Avg latency / s") == "3"
             assert "RATE HISTORY / seq/s" in text
             assert "TTFT" not in text and "DECODE" not in text
 
@@ -144,13 +159,15 @@ def test_default_app_arrows_traverse_all_types_and_stop_at_both_ends():
 @pytest.mark.parametrize("count", (0, 1))
 def test_empty_or_single_model_keeps_global_theme_and_quit_keys(count):
     config = configuration(models()[:count])
-    frames = run_app(config, ("up", "down", "left", "right", "t", "up", "down", "q"))
+    frames = run_app(config, ("up", "down", "left", "right", "t", "up", "down", "t", "q"))
+    assert len(frames) == 9
     for frame in frames:
         if count:
             assert selected_name(frame) == "chat"
         else:
             assert any(cell.text == "No models configured" for cell in frame.cells)
-    assert any(cell.text == "Theme: Hologram [t]" for cell in frames[-1].cells)
+    for frame, theme in zip(frames, ["Hologram"] * 5 + ["Moonlight"] * 3 + ["Hologram"]):
+        assert any(cell.text == f"Theme: {theme} [t]" for cell in frame.cells)
 
 
 def test_selected_unavailable_model_survives_snapshot_refresh_and_recovery():
@@ -170,15 +187,15 @@ def test_selected_unavailable_model_survives_snapshot_refresh_and_recovery():
 
 
 def test_fixed_size_key_burst_updates_next_normal_frame_without_extra_redraws(monkeypatch):
-    """Fast input is accumulated without bypassing the ordinary 10Hz budget."""
+    """Fast input is accumulated without bypassing the ordinary 60Hz budget."""
     async def scenario():
         config = configuration()
         reader = ReadOnlyInput((snapshot(config),))
         clock = [0.0]
         schedule = (
-            (0.01, "down"), (0.02, "down"), (0.03, "up"), (0.04, "t"),
-            (0.05, "left"), (0.06, "right"), (0.07, "enter"), (0.08, "p"),
-            (0.09, "tab"), (0.125, None), (0.25, None), (0.26, "q"),
+            (0.001, "down"), (0.002, "down"), (0.003, "up"), (0.004, "t"),
+            (0.005, "left"), (0.006, "right"), (0.007, "enter"), (0.008, "p"),
+            (0.009, "tab"), (1 / 60, None), (2 / 60, None), (0.035, "q"),
         )
 
         class BurstTerminal(ScriptedTerminal):
@@ -192,6 +209,8 @@ def test_fixed_size_key_burst_updates_next_normal_frame_without_extra_redraws(mo
 
             async def read_key(self, timeout):
                 assert 0 < timeout <= 0.05
+                next_deadline = (len(self.frames)) / 60
+                assert timeout <= next_deadline - clock[0] + 1e-12
                 # Initial rendering precedes input. Every key in this burst
                 # must be consumed even though no redraw is due yet.
                 if self.index < 10:
@@ -203,19 +222,20 @@ def test_fixed_size_key_burst_updates_next_normal_frame_without_extra_redraws(mo
                 return key
 
         terminal = BurstTerminal()
-        app = ObserverApp(config, reader, terminal, host=HOST, wall_clock=lambda: NOW)
+        app = ObserverApp(config, reader, terminal, host=HOST,
+                          wall_clock=lambda: NOW + timedelta(seconds=clock[0] * 100))
         # Only the external clock changes; default actions, application loop
         # and frame composition remain real. Restore it before loop teardown.
         with monkeypatch.context() as patch:
             patch.setattr(asyncio.get_running_loop(), "time", lambda: clock[0])
             await app.run()
 
-        assert terminal.draw_times == [0.0, 0.125, 0.25]
+        assert terminal.draw_times == pytest.approx([0.0, 1 / 60, 2 / 60])
         assert [selected_name(frame) for frame in terminal.frames] == [
             "chat", "embedding", "embedding",
         ]
         for frame in terminal.frames[1:]:
-            assert any(cell.text == "Theme: Hologram [t]" for cell in frame.cells)
+            assert any(cell.text == "Theme: Moonlight [t]" for cell in frame.cells)
             assert frame.regions == terminal.frames[0].regions
         assert terminal.index == len(schedule)
         assert terminal.events == ["enter", "restore"]
@@ -230,7 +250,7 @@ def test_small_window_processes_navigation_and_theme_then_restores_selection():
     assert all(frame.too_small for frame in frames[1:4])
     assert not frames[-1].too_small
     assert selected_name(frames[-1]) == "reranker"
-    assert any(cell.text == "Theme: Hologram [t]" for cell in frames[-1].cells)
+    assert any(cell.text == "Theme: Moonlight [t]" for cell in frames[-1].cells)
 
 
 def test_long_list_selection_stays_visible_when_terminal_shrinks_and_grows():
@@ -245,8 +265,8 @@ def test_long_list_selection_stays_visible_when_terminal_shrinks_and_grows():
     for frame in frames:
         service = region(frame, "service")
         selected = selected_name(frame)
-        assert any(cell.text == selected and cell.role == "primary"
-                   and cell.column < service.column + service.width // 3
+        assert any(cell.text.removeprefix("› ") == selected and cell.role == "primary"
+                   and cell.column < service.column + 26
                    and service.row < cell.row < service.row + service.height - 1
                    for cell in frame.cells)
         assert region(frame, "footer").row + 1 - service.row == (
@@ -296,10 +316,10 @@ def test_new_app_session_does_not_reuse_previous_model_or_theme():
     config = configuration()
     previous = run_app(config, ("down", "t", "q"))
     assert selected_name(previous[-1]) == "embedding"
-    assert any(cell.text == "Theme: Hologram [t]" for cell in previous[-1].cells)
+    assert any(cell.text == "Theme: Moonlight [t]" for cell in previous[-1].cells)
     fresh = run_app(config, ("q",))
     assert selected_name(fresh[0]) == "chat"
-    assert any(cell.text == "Theme: Moonlight [t]" for cell in fresh[0].cells)
+    assert any(cell.text == "Theme: Hologram [t]" for cell in fresh[0].cells)
 
 
 def test_same_app_preserves_model_and_theme_across_sequential_runs():
@@ -312,11 +332,11 @@ def test_same_app_preserves_model_and_theme_across_sequential_runs():
         await app.run()
         previous_count = len(terminal.frames)
         assert selected_name(terminal.frames[-1]) == "embedding"
-        assert any(cell.text == "Theme: Hologram [t]" for cell in terminal.frames[-1].cells)
+        assert any(cell.text == "Theme: Moonlight [t]" for cell in terminal.frames[-1].cells)
         await app.run()
         assert len(terminal.frames) == previous_count + 1
         assert selected_name(terminal.frames[-1]) == "embedding"
-        assert any(cell.text == "Theme: Hologram [t]" for cell in terminal.frames[-1].cells)
+        assert any(cell.text == "Theme: Moonlight [t]" for cell in terminal.frames[-1].cells)
         assert terminal.events == ["enter", "restore", "enter", "restore"]
 
     asyncio.run(scenario())
@@ -369,7 +389,7 @@ def test_production_composition_navigates_without_starting_or_rebuilding_sources
             assert len(ports) == len(config.models)
             assert all(not port.calls for port in ports)
             assert selected_name(terminal.frames[-1]) == "embedding"
-            assert any(cell.text == "Theme: Hologram [t]" for cell in terminal.frames[-1].cells)
+            assert any(cell.text == "Theme: Moonlight [t]" for cell in terminal.frames[-1].cells)
         finally:
             await runtime.close()
         assert all(port.closed for port in ports)
@@ -430,7 +450,7 @@ def test_real_monitor_sampling_and_histories_are_independent_of_navigation(tmp_p
             terminal = SamplingTerminal(("down", "down", "up", "left", "right", "p", "enter", "t", "q"))
             app = ObserverApp(config, state, terminal, host=HOST, wall_clock=lambda: NOW, actions=actions)
             await app.run()
-            assert actions.selection() == ViewSelection("embedding", "hologram")
+            assert actions.selection() == ViewSelection("embedding", "moonlight")
             assert selected_name(terminal.frames[-1]) == config.models[1].name
             assert checkpoints == ["p", "enter"]
             assert state.snapshot() == expected_snapshot
@@ -526,26 +546,27 @@ def test_default_app_uses_id_for_same_type_name_and_endpoint_samples(monkeypatch
         object_snapshot("first", decode_rate=0, stale=True, history=history((22, 0))),
         object_snapshot("second", decode_rate=11, history=history((0, 11))),
     ), 3)
-    # Replace only the history clock dependency, leaving the application loop,
-    # default controller, view composition and asyncio clock untouched.
+    # Keep application-owned scales and rendering in the same controlled clock
+    # domain. Alternating sizes drive these frames without elapsed real time.
+    monkeypatch.setattr(asyncio.BaseEventLoop, "time", lambda self: 100.0)
     monkeypatch.setattr("joi_observer.tui.layout.time", SimpleNamespace(monotonic=lambda: 100))
     frames = run_app(config, ("down", "up", "q"), samples=(sample,))
 
     assert len(frames) == 3
     for frame, expected_rate, stale, selected_offset in zip(
-            frames, (11, 0, 11), (False, True, False), (1, 3, 1)):
+            frames, (11, 0, 11), (False, True, False), (2, 6, 2)):
         service = region(frame, "service")
         detail = detail_cells(frame)
-        assert any(cell.text == f"DECODE: {expected_rate}tok/s" for cell in detail)
+        assert detail_metric(frame, "DECODE / tok/s") == str(expected_rate)
         assert any(cell.text == "STALE" for cell in detail) is stale
-        names = sorted((cell for cell in frame.cells if cell.text == "Shared"
-                        and cell.column < service.column + service.width // 3),
+        names = sorted((cell for cell in frame.cells if cell.text.removeprefix("› ") == "Shared"
+                        and cell.column < service.column + 26),
                        key=lambda cell: cell.row)
         assert len(names) == 2
         assert [cell.row - service.row for cell in names if cell.role == "primary"] == [selected_offset]
         plot = [cell for cell in detail
-                if service.row + 10 <= cell.row <= service.row + service.height - 3]
-        left = service.column + service.width // 3 + 2
+                if service.row + 13 <= cell.row <= service.row + service.height - 3]
+        left = service.column + 30
         right = service.column + service.width - 3
         zeros = {cell.column for cell in plot if cell.text == "·"}
         bars = {cell.column for cell in plot if cell.text in "▁▂▃▄▅▆▇█"}
@@ -583,8 +604,8 @@ def test_each_frame_reads_selection_once_for_model_details_and_gpu_highlight():
             self.delegate.on_key(key)
 
     actions = CountedActions()
-    expected = ((0, "Moonlight"), (1, "Moonlight"), (1, "Hologram"),
-                (0, "Hologram"), (0, "Hologram"))
+    expected = ((0, "Hologram"), (1, "Hologram"), (1, "Moonlight"),
+                (0, "Moonlight"), (0, "Moonlight"))
 
     class ObservedTerminal(ScriptedTerminal):
         def render(self, frame):
@@ -593,8 +614,8 @@ def test_each_frame_reads_selection_once_for_model_details_and_gpu_highlight():
             assert actions.reads == len(self.frames) + 1
             model_index, theme = expected[len(self.frames)]
             assert selected_name(frame) == configured[model_index].name
-            details = " ".join(cell.text for cell in detail_cells(frame))
-            assert ("DECODE: 100tok/s" if model_index == 0 else "RATE: 3seq/s") in details
+            assert detail_metric(frame, "DECODE / tok/s" if model_index == 0 else "RATE / seq/s") == (
+                "100" if model_index == 0 else "3")
             highlighted = [cell.text for cell in frame.cells
                            if cell.text in {"GPU 0", "GPU 1"} and cell.role == "primary"]
             assert highlighted == [f"GPU {model_index}"]

@@ -1,8 +1,8 @@
 # 本机硬件模块设计
 
-- 关联需求：dev-0 / REQ-002，AC-201～AC-207；共享 AC-101～AC-103、AC-108、AC-110、AC-112、AC-606～AC-608。
-- 修订：v1.3，2026-11-03；依据 [requirements.md](../dev-workflow/dev-0/requirements.md) v1.12，复核 REQ-005 会话联动并清除过期 vLLM 占位说明；映射和硬件业务不变。
-- 阶段：硬件与公共结果类型已实现并合并；本轮只补充 REQ-005 关联说明，不修改采集、计算、动态调度或硬件绘制。
+- 关联需求：dev-0 / REQ-002、REQ-006，AC-201～AC-207；共享 AC-101～AC-103、AC-108、AC-110、AC-112、AC-606～AC-608及HTML布局修订。
+- 修订：v1.10，2026-11-05；依据[需求说明](../dev-workflow/dev-0/requirements.md) v1.24，GPU/CPU/RAM填充与轨道统一为▌，仅未填充段改用独立深灰track；原段数、条宽、填充色、数字与公共percentage_bar保持，不改vLLM历史柱或采样。
+- 当前阶段：硬件采集与公共结果类型已实现并合并；REQ-006的行列、紧凑容量、右对齐和用户精度修订已由R4实现。2026-11-04按R5建议同步阶段措辞，不改变接口或显示契约；当前验证见[REQ-006 R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)与[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)，旧布局测试结果仍仅作为历史证据。
 - 代码：`collectors/hardware.py`、`collectors/base.py`、`monitor.py`、`tui/widgets.py`；组合接线在 `cli.py`、`tui/layout.py`。
 - 关联设计：[Monitor/State](monitor-state.md)、[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
@@ -167,31 +167,51 @@ stop须取消发现任务及所有静态/动态来源，关闭每个已创建资
 
 `HardwareIO` 只返回原始文本、statvfs计数、命令输出；测试替换此边界，不替换被测数值计算。`LocalHardwareIO` 将潜在阻塞的文件/statvfs调用放入可终止本地worker，nvidia-smi使用异步子进程。输出每路≤1 MiB，固定操作白名单、无shell，timeout取配置；取消和close须250ms内终止/回收自己创建的子进程。不能以无限阻塞线程宣称满足取消，也不执行任何网络请求。
 
-不新增运行依赖或更改uv锁文件；R4若发现本地worker成本不适合0.1秒最小采样，可在维持隔离/取消契约的前提下使用有界常驻worker，仍不能让慢挂载阻塞其他来源。真实底层资源回收须在本地Ubuntu验证，R2不声称现有骨架已满足。
+不新增运行依赖或更改uv锁文件；R4若发现本地worker成本不适合0.1秒最小采样，可在维持隔离/取消契约的前提下使用有界常驻worker，仍不能让慢挂载阻塞其他来源。上述IO与资源回收要求属于已合并REQ-002契约；本轮REQ-006复用采集实现，只修订呈现目标。其原设计/验收证据见REQ-002交接。
 
 `build_hardware_sources(config)` 无IO地组装CPU、RAM、前三挂载及发现器。`ApplicationRuntime._components` 已移除host/local占位、把静态spec加入同一State，交静态来源给Monitor后注册发现器。导入、`--help`、缺配置、构造阶段不能执行硬件查询。vLLM模型来源已随REQ-004接入同一State/Monitor，RuntimeComponents注入通道保留。
 
 ## 硬件显示与模型关联
 
-`widgets.hardware_cells` 只生成既有GPU/Host/Storage区域内的文字和状态槽；R4在compose_frame中替换通用占位内容，不重复绘制。区域坐标、边框、最小尺寸继续由layout.py负责。GPU每卡3行，Host外壳5行，Storage外壳6行/内容3行；5GPU最低120×37，0～4GPU最低120×36，Docker总数不参与高度公式。
+`widgets.hardware_cells` 已由compose_frame调用，只生成GPU/Host/Storage区域内的文字和状态槽，不重复绘制边框。当前实现沿用此纯入口，已接入下述字段布局与精度规则。区域坐标、边框、最小尺寸继续由layout.py负责。C列时GPU宽为`floor((C-1)*3/5)`，间隔1列，右侧使用剩余宽度；120列对应GPU宽71、右侧起点72/宽48。GPU每卡仍为3行。
+
+Host从row2开始、外壳6行；紧接Storage row8/外壳6行，取消原Host/Storage之间的空行。Storage内容仍为row10～12，row14留白，Docker仍从row15填满上半区余高。右侧最低高度仍是16行，因此原最小终端公式不变：5GPU最低120×37，0～4GPU最低120×36，Docker总数不参与高度公式。上述行号为零基字符单元。
+
+每个区域内容边界记为`L=column+2`、`R=column+width-2`，R为排他边界。右对齐指可见文字末端恰到指定边界，不依赖先前内容长度。状态槽所在行健康时留空；Storage状态只占标题行，不挤占挂载内容行。
 
 | 区域 | 内容安排 | 语义颜色 |
 | --- | --- | --- |
-| GPU每槽第1行 | GPU编号、裁切名称、固定STALE槽 | 关联编号primary，否则muted；名称text |
-| 第2行 | 分段条占可用内宽约一半，百分比紧邻条末 | 关联填充/百分比primary，否则muted；轨道muted |
-| 第3行 | 显存已用/总量、温度、功耗 | 显存muted，其余text |
-| Host内部3行 | CPU条与比例、RAM条与比例、RAM已用/总量 | 填充secondary；轨道muted；RAM已用muted，总量text |
-| Storage row+2～row+4 | 每行配置路径、已用/总量、比例、固定STALE槽 | text/muted；无amber |
+| GPU每槽第1行 | row+1+3i；编号靠L、最多10格，名字随后；显存槽`[L+12,R−12)`，温度槽`[R−10,R)`均右对齐 | 关联编号primary，否则muted；名称/温度text；显存整组muted |
+| 第2行 | 条从L起、宽`floor((width−4)/2)`；空1格后紧接百分比；功率在`[R−10,R)`右对齐，数值与W之间一空格 | 关联填充/百分比primary，否则muted；轨道track、功率muted |
+| 第3行 | 仅在`[R−5,R)`保留STALE，健康留空；不把状态挤回首行 | text，无amber |
+| Host row+1 | CPU标签靠L，百分比固定1位小数并在`[L+4,R)`右对齐，如30.0% | 标签/数字text，%单位muted，未知—为text |
+| Host row+2 | CPU条从L起，宽`floor((width−4)/2)`，不重复显示比例 | 填充secondary、轨道track |
+| Host row+3 | RAM标签靠L，GiB/TiB整数已用/总量组在`[L+4,R)`右对齐；不添加百分比文字 | 标签/总量数字text；已用/分隔符/末尾共享单位muted |
+| Host row+4 | RAM条与CPU条等宽、同左端；保持既有布局，不添加百分比文字 | 填充secondary、轨道track |
+| Storage标题row | 仅当前3个配置挂载点任一对象stale时，在`[R−5,R)`显示一次STALE；其余情况留空 | text，无amber |
+| Storage row+2～row+4 | 路径靠L；紧凑容量与固定1位小数的百分比组在`[L+2,R)`右对齐，内容行不预留状态槽 | 路径text、容量/中点分隔muted；百分比含%为text；无amber |
 
-百分比先按ROUND_HALF_UP保留1位小数再去尾零，条的填充数使用同一显示百分比四舍五入到字符格；未知保留空轨道和—。容量以GiB/TiB二进制单位保留1位小数；已用和总量使用同一单位（总量≥1TiB切TiB）。不重新计算不同口径的使用率。
+GPU编号最多10格，之后至少一空格；名字只使用编号之后、显存之前的剩余空间，可以为空。有名字时和相邻内容至少各留一空格，显存与温度之间保留两格。超长Unicode名字或编号在自身槽内裁切，不能覆盖数值组。GPU条及百分比不进入最右温度/功率组。Storage路径只裁数值组左侧剩余空间，至少与数值隔一格；健康、失败与恢复均使用完整内容右缘。120列时GPU的R=69，显存槽14～56、温度/功率槽59～68、第三行状态位64～68；Host/Storage的R=118，Host值槽78～117、Storage值槽76～117、Storage标题状态位113～117。
 
-inventory首次未知显示—，成功0卡且从未有槽显示 `No NVIDIA GPUs`，失败在GPU面板标题状态槽STALE，不能显示成“检测到0卡”。有旧槽时保留所有旧槽。Host的CPU/RAM任一失败在标题预留位STALE；挂载逐行STALE。长路径/名称按终端字符宽度裁切，优先保住指标与状态，不增加行。
+常规数值保持现有精度和文本，温度如`60°C`、功率如`100 W`。超出自身值槽时，先用最多3位有效数字的科学记数压缩，保留指数和单位；例如极大容量仍能辨别已用/总量及GiB/TiB，极大温度/功率仍能辨别°C/W。原始指标与`capacity_text`输出不变，任意精度整数不能先转float溢出。科学记数仍放不下时只在该槽显示明确的`…`，不能截掉指数/单位伪装成较小完整值，也不能用`—`、`0`或`N/A`表示槽位不足。先保留身份/标签/状态，再安排数值，不能向左挤占它们。
+
+公共`percentage_bar`仍按ROUND_HALF_UP保留1位小数再去尾零，条的填充数沿用同一舍入比例换算字符格，GPU利用率文本不变。仅CPU和Storage已有百分比文本固定保留1位小数，如`30.0%`、`0.0%`、`100.0%`，未知仍为`—`；这只改变面板文本，不改变CPU累计tick采样、百分比口径或条格计算。RAM保留容量行与下行条，不添加百分比文字。
+
+GPU/CPU/RAM在`hardware_cells`绘制时，按公开返回的`len(filled)`和`len(empty)`各画同数量的`▌`；填充和轨道字形一致，每段仍占1字符格，组合宽度仍为原width。`percentage_bar`继续返回`█`/`░`，取整公式保持，不乘2或增加半格精度。未填充段独立使用track角色，双主题目标色均为#3E4A5B；关联GPU填充primary、未关联GPU填充muted、CPU/RAM填充secondary均保持原样。0和未知全为track，100%全为填充；未知文字仍为—。即使没有关联GPU高亮，原muted填充也不会被替换成track。条宽、位置、段数、百分比列和三行/四行布局不变，硬件条不设置TextCell.bold；低色track的基础BLACK|A_BOLD属于主题能力近似，不修改字体元数据。固定256色track映射239，单色style为0，完整降级/资源恢复见[主题设计](theme.md)。vLLM竖向历史柱及其他muted内容不使用track。
+
+容量仍采用GiB/TiB二进制单位，已用和总量使用同一单位（总量≥1TiB切TiB，按原始容量选单位）。GPU及Storage的TiB保留1位小数；RAM的GiB/TiB以及Storage的GiB数值从原始字节直接按ROUND_HALF_UP舍入为整数，不先舍入到1位小数后再次舍入。例如所用单位下1.49显示1、1.5显示2，真实0显示0。不以显示后的整数重新计算RAM或Storage使用率。
+
+GPU、RAM、Storage的容量组合共用一个末尾单位。GPU例如`4.0 / 16.0 GiB`，单边未知为`— / 16.0 GiB`或`4.0 / — GiB`，真实0为`0.0`。RAM与Storage的GiB对应显示`4 / 16 GiB`、`— / 16 GiB`或`4 / — GiB`，真实0为`0`；RAM的TiB同样为整数，例如`1 / 2 TiB`，Storage的TiB仍为`1.0 / 2.0 TiB`。所有组合两边未知均为`— / —`。`capacity_text`公开返回仍是例如`('4.0 GiB', '16.0 GiB')`，其1位小数语义、既有formatter边界和二进制换算不变；RAM/Storage整数只属于对应面板的组合呈现。
+
+Storage完整数值组为`1 / 4 GiB · 25.0%`，TiB例如`1.0 / 4.0 TiB · 25.0%`，未知为`— / — · —`；路径及空配置文案用正文text，容量和中点分隔灰色，百分比用既有正文白色角色且贴内容右缘。RAM共享单位独立为灰色，不能跟随总量数字变白；CPU的百分比单位同样灰色，数值正文，不随进度条变为辅色。未知片段沿各自角色，STALE始终正文色。GPU功率灰色、温度正文，不因故障改为警告色。
+
+inventory首次未知显示—，成功0卡且从未有槽显示 `No NVIDIA GPUs`，失败在GPU面板标题状态槽STALE，不能显示成“检测到0卡”。有旧槽时保留所有旧槽。Host的CPU/RAM任一失败在标题预留位STALE；Storage前三个配置挂载点任一失败时仅在Storage标题右上角显示一次STALE，全部恢复后清除。缺少对象或尚未采样本身不视为stale；无配置和第4个起的挂载点不参与标题状态。各挂载仍独立保留已有值、更新和记录错误，标题不新增原因或数量。长路径/名称按终端字符宽度裁切，优先保住指标与状态，不增加行。
 
 `linked_gpu_ids` 只读配置中当前模型的显式gpu_ids；缺省选择第一模型，未知选择或空映射清空高亮。完整UUID精确匹配可用于旧卡；索引只匹配本次已采样且非STALE的唯一index，规范十进制字符串（`4`，非`04`）。出现重复的当前index时不以索引猜映射。UUID前缀、名称、显存和负载均不作为依据。切换只改变编号/填充/百分比的role，不改变GPU顺序、状态、历史或采样次数。
 
 REQ-005 默认控制器仅输出合法模型 id（空配置为 None）；同一帧模型详情与硬件关联使用同一选择值。模型服务失败不撤销显式映射，GPU 自身过期索引仍按上面的安全匹配规则处理。不修改本模块的未知 id 兼容行为，不新增 GPU 焦点或滚动。导航贯穿视图的黑盒覆盖见 `tests/test_navigation.py`。
 
-Storage采用序号key。为保留REQ-001已有通用快照，缺少序号对象时兼容读取旧路径key，序号优先；旧host/local仍汇总通用字段和STALE。无index字段的旧GPU对象或纯十进制空槽沿用`GPU {key}`标签与`name: value`通用指标；存在index模板即走新硬件契约，None时显示GPU —，不得退回UUID标签。生产只建立新schema，这些只读兼容不用于GPU发现或真实设备身份推断。既有共享测试保持原公共行为断言，不以硬件接线为由跳过。
+Storage采用序号key。为保留REQ-001已有通用快照，缺少序号对象时兼容读取旧路径key，序号优先；旧host/local仍汇总通用字段和STALE。无index字段的旧GPU对象或纯十进制空槽沿用`GPU {key}`标签、首行旧状态槽与次行`name: value`通用指标，不要求其具备新生产schema的显存/温度槽；存在index模板即走新硬件契约，None时显示GPU —，不得退回UUID标签。生产只建立新schema，这些只读兼容不用于GPU发现或真实设备身份推断。既有共享测试保持原公共行为断言，不以硬件接线为由跳过。
 
 ## 验证依据与边界
 
@@ -200,15 +220,29 @@ Storage采用序号key。为保留REQ-001已有通用快照，缺少序号对象
 | CPU/RAM/Storage/GPU collect，GPU discover，工厂 | `tests/test_hardware.py` | AC-201～204/207；原始离线文本、IO错误、计数、挂载真实性、字段/单位/恢复 |
 | Monitor.register_discovery/poll/stop | `tests/test_hardware_monitor.py` | 动态来源、发现原子性、独立周期/故障、真实State及ErrorLog、关闭 |
 | percentage_bar/capacity_text/linked_gpu_ids/hardware_cells/compose_frame | `tests/test_hardware_view.py` | AC-201～207；值与颜色、固定布局、无映射清空、长路径、只读展示 |
+| 新行列与右对齐 | `tests/test_html_hardware_layout.py`、`tests/test_hardware_view_edges.py` | 3:2区域、GPU三行分组、Host四内容行、共享容量、右边缘/状态槽/Unicode无覆盖；只读快照与纯控件真实运行 |
 | ApplicationRuntime.prepare_log/run/close | `tests/test_hardware_runtime.py` | 生产组合根到Frame，原始IO/终端替身，五卡最小尺寸、前三挂载、q退出与资源回收 |
+| 实际curses字符位置 | `tests/test_hardware_pty.py` | 本地PTY真实屏幕的区域与显存/温度/功率列；先完成退出和资源回收，再报告新布局断言差异 |
 | 既有Monitor/State/日志/CLI/配置/终端 | 原有全部tests | REQ-001回归、超时/键位响应、错误限频、Storage3行与半页布局 |
 
-测试断言正确业务行为，不以NotImplementedError为成功、不使用xfail掩盖未实现。本阶段失败可分为新骨架未实现与现有Frame尚未接线；导入/环境错误单独记录。执行结果与证据见 [REQ-002 R2交接](../dev-workflow/dev-0/REQ-002/handoff-r2.md)。
+测试断言正确业务行为，不以NotImplementedError为成功、不使用xfail掩盖未实现。REQ-002当时结果见[历史R2交接](../dev-workflow/dev-0/REQ-002/handoff-r2.md)；REQ-006的[R2交接](../dev-workflow/dev-0/REQ-006/handoff-r2.md)保留HTML呈现未实现时的基线，当前实现、用户精度修订和验证结果见其R4/R5交接。布局断言失败仍按业务问题处理；导入/环境错误独立报告，不包装为采集或启动超时。
 
-本次使用本机 `nvidia-smi --help` / `--help-query-gpu`（v596.47）核对字段及index/UUID/功率语义，并读取本地Ubuntu手册 `proc_stat(5)`、`proc_meminfo(5)`、`proc_pid_mountinfo(5)`。原文保存到本需求evidence，属于已安装工具的离线材料，不代表目标服务器驱动615.71.09经过实测。部署文件仅作为已有目标环境背景，不从其GPU数量推定当前设备数。
+以下两段保留REQ-002原设计时点的离线材料与当时待验事项，不表示本轮重新执行硬件命令或需要重写已合并采集器。
 
-尚需R4的本地Linux适配/worker超时取消/无输出泄漏测试、实际Frame呈现和运行期接线验证；最终目标GPU驱动输出、无卡返回码、权限、挂载状态没有现场验证。所有自动化保持离线，禁止连接服务器；未来部署验收须由用户安排。此限制不阻止本设计交接R3。
+REQ-002当时使用本机 `nvidia-smi --help` / `--help-query-gpu`（v596.47）核对字段及index/UUID/功率语义，并读取本地Ubuntu手册 `proc_stat(5)`、`proc_meminfo(5)`、`proc_pid_mountinfo(5)`。原文保存到本需求evidence，属于已安装工具的离线材料，不代表目标服务器驱动615.71.09经过实测。部署文件仅作为已有目标环境背景，不从其GPU数量推定当前设备数。
+
+REQ-002原阶段列有本地Linux适配/worker超时取消/无输出泄漏、Frame呈现和运行期接线验证，后续阶段结果以该需求R4/R5交接为准；最终目标GPU驱动输出、无卡返回码、权限、挂载状态没有现场验证。所有自动化保持离线，禁止连接服务器；未来部署验收须由用户安排。此限制不阻止本设计交接R3。
 
 ## 修订说明
+
+v1.10按用户要求覆盖v1.9的细轨道方案：填充和轨道同为▌，仅未填充段新增独立深灰track角色。原填充角色/色值、公开percentage_bar、分段数量、宽高、数字、历史和采样不变。本轮按用户指令不重建离线包，旧包和回放不能证明本轮轨道效果。
+
+v1.9仅在硬件呈现层映射分段字形为填充▌/细轨道▏。公共`percentage_bar`的返回字形、原段数及百分比算法保持；此前v1.7/v1.8的精度与文字角色、vLLM历史均不改变。
+
+v1.8仅按用户反馈调整Storage路径和空配置文字为text；保持数值组右缘、标题STALE、颜色分层和全部精度/数据契约。
+
+v1.7按用户后续修订覆盖v1.6中RAM精度保持不变的约定：RAM的GiB/TiB整数、CPU/Storage固定1位百分比仅属于面板显示。RAM不添加百分比文字，公开`capacity_text`/`percentage_bar`、GPU与采样/计算口径均保持；Storage TiB仍1位小数。
+
+v1.6由用户在REQ-006 R4的实际GUI复核中直接修订，取代旧逐挂载行STALE槽及Storage GiB一位小数的呈现约定。状态对象、日志、采集、公开`capacity_text`与GPU/RAM精度均不改变；实施与复验证据见REQ-006 R4交接。
 
 v1.1 仅同步公共结果分型：硬件具体 collect 及 inventory 状态采用 MetricCollectionResult，公共 Collector/Monitor 接口仍依赖 CollectionResult，failure 仅关键字传参。上述 REQ-002 初次 R2 验证规划保留其历史语境，后续实现与验收记录见原 REQ-002 R4/R5 交接；本次迁移不改写历史交接、不改变硬件算法，也不提前实现 vLLM accumulator 或运行期接线。

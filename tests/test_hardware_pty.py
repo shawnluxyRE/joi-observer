@@ -2,12 +2,13 @@
 
 Only the NVIDIA executable is a controlled local fixture. CPU, RAM, mount IO,
 worker creation, cancellation, reaping, CLI, Monitor and ncurses all run normally.
-The observation wrappers call the real render/spawn operations unchanged.
+The observation wrappers call the real compose/render/spawn operations unchanged.
 """
 
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -19,16 +20,75 @@ import pytest
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Requires a local Unix PTY; verified in WSL")
 
 
-CHILD = r'''
-import asyncio, json, os, socket, sys
+RENDER_OBSERVER = r'''
+def render_observation(terminal, frame, frame_size, renderer):
+    before = terminal.size()
+    renderer(terminal, frame)
+    after = terminal.size()
+    try:
+        screen = [terminal._screen.instr(row, 0).decode('utf-8') for row in range(after.rows)]
+    except Exception:
+        # Observation can race another resize too. Preserve that transition,
+        # but never reinterpret an unrelated rendering/inspection error.
+        if terminal.size() == after:
+            raise
+        screen = []
+    final = terminal.size()
+    return {
+        'size': [after.columns, after.rows],
+        'frame_size': [frame_size.columns, frame_size.rows],
+        'size_before_render': [before.columns, before.rows],
+        'size_after_render': [after.columns, after.rows],
+        'size_after_observation': [final.columns, final.rows],
+        'stable_size': frame_size == before == after == final,
+        'too_small': frame.too_small,
+        'minimum': [frame.minimum_size.columns, frame.minimum_size.rows],
+        'regions': {r.name: {'row': r.row, 'height': r.height, 'column': r.column, 'width': r.width}
+                    for r in frame.regions},
+        'gpu_labels': [c.text for c in frame.cells if c.text.startswith('GPU ')],
+        'screen': screen,
+    }
+'''
+
+
+CHILD = RENDER_OBSERVER + r'''
+import asyncio, ctypes, curses, json, os, socket, sys
 from pathlib import Path
 from joi_observer.cli import main
+from joi_observer.tui import app as app_module
 from joi_observer.tui.app import CursesTerminal
 
 config, progress, report = map(Path, sys.argv[1:])
 processes, frames, connections = [], [], []
 spawn = asyncio.create_subprocess_exec
 render = CursesTerminal.render
+compose = app_module.compose_frame
+composed_sizes = {}
+wide_curses = ctypes.CDLL('libncursesw.so.6')
+wide_curses.mvwin_wch.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p)
+wide_curses.mvwin_wch.restype = ctypes.c_int
+wide_curses.getcchar.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                               ctypes.POINTER(ctypes.c_short), ctypes.c_void_p)
+wide_curses.getcchar.restype = ctypes.c_int
+
+def wide_screen_color(row, column):
+    # Python's narrow inch combines Unicode character bits with attributes.
+    # Read the same Ubuntu ncurses stdscr through its wide-character API instead.
+    # Opaque, oversized storage avoids depending on the layout of cchar_t.
+    cell = ctypes.create_string_buffer(128)
+    screen = ctypes.c_void_p.in_dll(wide_curses, 'stdscr')
+    if wide_curses.mvwin_wch(screen, row, column, cell) == -1:
+        raise curses.error('wide screen read failed')
+    characters, attributes, pair = ctypes.create_unicode_buffer(32), ctypes.c_ulong(), ctypes.c_short()
+    if wide_curses.getcchar(cell, characters, ctypes.byref(attributes), ctypes.byref(pair), None) == -1:
+        raise curses.error('wide screen attributes unavailable')
+    foreground, background = curses.pair_content(pair.value)
+    return characters.value, curses.color_content(foreground), curses.color_content(background)
+
+def observed_compose(snapshot, config, size, *args, **kwargs):
+    frame = compose(snapshot, config, size, *args, **kwargs)
+    composed_sizes[id(frame)] = size
+    return frame
 
 async def observed_spawn(*args, **kwargs):
     process = await spawn(*args, **kwargs)
@@ -42,15 +102,25 @@ async def observed_spawn(*args, **kwargs):
     return process
 
 def observed_render(self, frame):
-    render(self, frame)
-    size = self.size()
-    observation = {
-        'size': [size.columns, size.rows], 'too_small': frame.too_small,
-        'minimum': [frame.minimum_size.columns, frame.minimum_size.rows],
-        'regions': {r.name: {'row': r.row, 'height': r.height} for r in frame.regions},
-        'gpu_labels': [c.text for c in frame.cells if c.text.startswith('GPU ')],
-        'screen': [self._screen.instr(row, 0).decode('utf-8') for row in range(size.rows)],
-    }
+    frame_size = composed_sizes.pop(id(frame))
+    observation = render_observation(self, frame, frame_size, render)
+    observation['bar_colors'] = []
+    if observation['stable_size'] and not frame.too_small:
+        try:
+            for cell in frame.cells:
+                if set(cell.text) != {'▌'}:
+                    continue
+                character, foreground, background = wide_screen_color(cell.row, cell.column)
+                observation['bar_colors'].append({
+                    'row': cell.row, 'column': cell.column, 'role': cell.role,
+                    'character': character, 'foreground': foreground, 'background': background,
+                })
+        except curses.error:
+            if self.size() == frame_size:
+                raise
+            observation['stable_size'] = False
+        if self.size() != frame_size:
+            observation['stable_size'] = False
     frames.append(observation)
     with progress.open('a') as stream:
         stream.write(json.dumps(observation) + '\n')
@@ -60,6 +130,7 @@ def forbidden(*args, **kwargs):
     raise AssertionError('Network is forbidden in this local test')
 
 asyncio.create_subprocess_exec = observed_spawn
+app_module.compose_frame = observed_compose
 CursesTerminal.render = observed_render
 socket.socket.connect = forbidden
 socket.create_connection = forbidden
@@ -139,6 +210,53 @@ def _cleanup_pty_child(child, drain, ownership):
     child.wait(timeout=1)
 
 
+@pytest.mark.parametrize("resize_phase", ("before-render", "during-render"))
+def test_render_observer_preserves_compose_size_when_resize_races_submission(resize_phase):
+    """A later physical size must not relabel an already-composed frame."""
+    from datetime import datetime, timezone
+    from joi_observer.config import AppConfig
+    from joi_observer.data.models import StateSnapshot
+    from joi_observer.tui.layout import HostInfo, TerminalSize, compose_frame
+
+    original, resized = TerminalSize(120, 45), TerminalSize(120, 48)
+    frame = compose_frame(StateSnapshot(()), AppConfig(mount_points=()), original,
+                          HostInfo("offline", "Ubuntu"), datetime(2026, 11, 4, tzinfo=timezone.utc),
+                          monotonic_now=100)
+
+    class Screen:
+        def instr(self, row, column):
+            return f"row {row}".encode()
+
+    class Terminal:
+        _screen = Screen()
+        physical = resized if resize_phase == "before-render" else original
+
+        def size(self):
+            return self.physical
+
+    def renderer(terminal, submitted):
+        assert submitted is frame
+        terminal.physical = resized
+
+    namespace = {}
+    exec(RENDER_OBSERVER, namespace)
+    observed = namespace["render_observation"](Terminal(), frame, original, renderer)
+    assert observed["frame_size"] == [120, 45]
+    assert observed["size"] == [120, 48]
+    assert observed["stable_size"] is False
+    assert observed["regions"]["service"] == {"row": 23, "height": 20, "column": 0, "width": 120}
+    if resize_phase == "before-render":
+        assert observed["size_before_render"] == observed["size_after_render"] == [120, 48]
+    else:
+        assert observed["size_before_render"] == [120, 45]
+        assert observed["size_after_render"] == [120, 48]
+    stable_terminal = Terminal()
+    stable_terminal.physical = original
+    stable = namespace["render_observation"](stable_terminal, frame, original,
+                                             lambda terminal, submitted: None)
+    assert stable["stable_size"] is True
+
+
 @pytest.mark.parametrize("scenario,mode,expected", [
     ("resize_quit", "normal", 0),
     ("sigint", "normal", 130),
@@ -195,7 +313,8 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
     try:
         # These strings come from ncurses' actual screen after its real refresh.
         final_index = 3 if mode == "slow" else 4
-        wait_for(lambda: any(f"PTY GPU {final_index}" in "\n".join(frame["screen"])
+        wait_for(lambda: any(frame["stable_size"]
+                             and f"PTY GPU {final_index}" in "\n".join(frame["screen"])
                              and "16.0 GiB" in "\n".join(frame["screen"])
                              for frame in _observations(progress)))
         if mode == "slow":
@@ -204,10 +323,11 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
             assert Path(f"/proc/{slow_pid}").exists()
         if scenario == "resize_quit":
             for columns, height in ((120, 36), (120, 37), (119, 44), (120, 45), (120, 48), (120, 44)):
+                observed_before_resize = len(_observations(progress))
                 resize(columns, height)
                 child.send_signal(signal.SIGWINCH)
-                wait_for(lambda: any(frame["size"] == [columns, height]
-                                     for frame in _observations(progress)))
+                wait_for(lambda: any(frame["stable_size"] and frame["frame_size"] == [columns, height]
+                                     for frame in _observations(progress)[observed_before_resize:]))
         before_exit = time.monotonic()
         if "sigterm" in scenario:
             child.send_signal(signal.SIGTERM)
@@ -229,8 +349,8 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
         assert not result["connections"]
         # A real mounted '/' must remain readable even when unrelated nsfs or
         # other special filesystem entries are present in local mountinfo.
-        assert all("STALE" not in frame["screen"][10] for frame in result["frames"]
-                   if not frame["too_small"])
+        assert all("STALE" not in frame["screen"][8][72:] for frame in result["frames"]
+                   if frame["stable_size"] and not frame["too_small"])
         assert result["children"] and all(item["returncode"] is not None for item in result["children"])
         assert not [item for item in result["children"] if Path(f"/proc/{item['pid']}").exists()]
         assert any("_hardware_worker.py" in " ".join(item["argv"]) for item in result["children"])
@@ -238,18 +358,61 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
         if mode == "slow":
             assert any(item["pid"] == slow_pid and item["returncode"] == -signal.SIGKILL
                        for item in result["children"])
+        # Exact presentation is checked only after q/signal cleanup completes;
+        # a layout mismatch must not be mistaken for failed startup/readiness.
+        visible = [frame for frame in result["frames"] if frame["stable_size"] and not frame["too_small"]
+                   and f"PTY GPU {final_index}" in "\n".join(frame["screen"])]
+        assert visible
+        frame = visible[-1]
+        assert frame["regions"]["gpu"]["column"] == 0 and frame["regions"]["gpu"]["width"] == 71
+        assert frame["regions"]["host"] == {"row": 2, "height": 6, "column": 72, "width": 48}
+        cpu_value = frame["screen"][3][78:118].strip()
+        assert cpu_value == "—" or re.fullmatch(r"\d+\.\d%", cpu_value)
+        ram_value = frame["screen"][5][78:118].strip()
+        assert ram_value == "— / —" or re.fullmatch(r"(?:\d+|—) / (?:\d+|—) (?:GiB|TiB)", ram_value)
+        for row in (4, 6):
+            assert len(frame["screen"][row][74:96]) == 22
+            assert frame["screen"][row][74:96] == "▌" * 22
+            assert frame["screen"][row][96:118].strip() == ""
+        assert frame["bar_colors"]
+        rgb = {"muted": [541, 616, 710], "secondary": [898, 439, 816], "track": [243, 290, 357]}
+        for observed in frame["bar_colors"]:
+            assert observed["character"] == "▌"
+            assert observed["foreground"] == rgb[observed["role"]]
+            assert observed["background"] == [31, 55, 94]
+        for index in range(final_index + 1):
+            row = 3 + 3 * index
+            memory = f"{index + 1}.0 / 16.0 GiB"
+            assert frame["screen"][row][57 - len(memory):57] == memory
+            assert frame["screen"][row][65:69] == f"{40 + index}°C"
+            assert frame["screen"][row + 1][64:69] == f"{100 + index} W"
+            filled = (0, 8, 17, 25, 33)[index]
+            assert frame["screen"][row + 1][2:35] == "▌" * 33
+            expected_spans = ([(2, "muted")] if filled else []) + ([(2 + filled, "track")] if filled < 33 else [])
+            actual_spans = [(item["column"], item["role"]) for item in frame["bar_colors"]
+                            if item["row"] == row + 1 and 2 <= item["column"] < 35]
+            assert actual_spans == expected_spans
+            percent = f"{25 * index}%"
+            assert frame["screen"][row + 1][35] == " "
+            assert frame["screen"][row + 1][36:36 + len(percent)] == percent
+            assert "STALE" not in frame["screen"][row][:71]
         if scenario == "resize_quit":
             for size in ([120, 36], [119, 44]):
-                assert any(frame["size"] == size and frame["too_small"] for frame in result["frames"])
+                assert any(frame["frame_size"] == size and frame["too_small"]
+                           for frame in result["frames"])
             for height in (37, 44, 45, 48):
-                frames = [frame for frame in result["frames"] if frame["size"] == [120, height]
+                # Check every generated frame against its actual compose input,
+                # even if a physical resize raced its render/observation.
+                frames = [frame for frame in result["frames"] if frame["frame_size"] == [120, height]
                           and len(frame["gpu_labels"]) == 5]
                 assert frames
                 for frame in frames:
                     upper = height - height // 2
                     assert frame["minimum"] == [120, 37] and not frame["too_small"]
-                    assert frame["regions"]["service"] == {"row": upper, "height": height // 2 - 2}
-                    assert frame["regions"]["storage"] == {"row": 8, "height": 6}
+                    assert frame["regions"]["service"] == {
+                        "row": upper, "height": height // 2 - 2, "column": 0, "width": 120}
+                    assert frame["regions"]["storage"] == {"row": 8, "height": 6, "column": 72, "width": 48}
+            assert visible[-1]["size"] == [120, 44]
         evidence = os.environ.get("JOI_PTY_EVIDENCE_DIR")
         if evidence:
             directory = Path(evidence)

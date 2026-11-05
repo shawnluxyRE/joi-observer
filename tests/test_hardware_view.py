@@ -1,7 +1,7 @@
-"""REQ-002 hardware view contracts; immutable samples only, with no OS or network IO.
+"""Hardware view contracts; immutable samples only, with no OS or network IO.
 
-The new public widgets and their compose_frame integration are R4 work. These
-assertions expect completed behavior; an unimplemented entry remains a failure.
+Existing formatters and GPU mapping stay unchanged. Updated HTML-oriented
+geometry remains a target; layout differences are ordinary failing assertions.
 """
 
 from copy import deepcopy
@@ -27,9 +27,9 @@ GIB = 2**30
 TIB = 2**40
 UUIDS = tuple(f"GPU-00000000-0000-0000-0000-{index:012d}" for index in range(5))
 REGIONS = (
-    Region("gpu", 2, 0, 60, 20),
-    Region("host", 2, 61, 59, 5),
-    Region("storage", 8, 61, 59, 6),
+    Region("gpu", 2, 0, 71, 20),
+    Region("host", 2, 72, 48, 6),
+    Region("storage", 8, 72, 48, 6),
 )
 GPU_REGION, HOST_REGION, STORAGE_REGION = REGIONS
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc)
@@ -245,21 +245,23 @@ def test_five_gpu_rows_have_stable_three_line_content_and_only_associated_highli
         row = GPU_REGION.row + 1 + 3 * index
         header = line(cells, row, GPU_REGION)
         bar = line(cells, row + 1, GPU_REGION)
-        details = line(cells, row + 2, GPU_REGION)
+        status = line(cells, row + 2, GPU_REGION)
         role = "primary" if index in highlighted else "muted"
         assert f"GPU {index}" in header and f"Device-{index}" in header
         assert text_roles(cells, row, GPU_REGION, str(index)) == {role}
         assert text_roles(cells, row, GPU_REGION, f"Device-{index}") == {"text"}
-        expected_percent, expected_filled = ("25%", 7) if index % 2 == 0 else ("50%", 14)
-        assert bar.count("█") == expected_filled and bar.count("░") == 28 - expected_filled
-        assert expected_percent in bar and bar.index(expected_percent) >= bar.rindex("░") + 1
-        assert text_roles(cells, row + 1, GPU_REGION, "█" * expected_filled) == {role}
+        expected_percent, expected_filled = ("25%", 8) if index % 2 == 0 else ("50%", 17)
+        assert bar[2:35] == "▌" * 33
+        assert expected_percent in bar and bar.index(expected_percent) == 36
+        grid = pixels(cells)
+        assert {grid[row + 1, column][1] for column in range(2, 2 + expected_filled)} == {role}
         assert text_roles(cells, row + 1, GPU_REGION, expected_percent) == {role}
-        assert text_roles(cells, row + 1, GPU_REGION, "░" * (28 - expected_filled)) == {"muted"}
-        assert f"{index + 1}.0 GiB" in details and "16.0 GiB" in details
-        assert "60" in details and "°C" in details and str(100 + index) in details and "W" in details
-        assert text_roles(cells, row + 2, GPU_REGION, f"{index + 1}.0 GiB") == {"muted"}
-        assert text_roles(cells, row + 2, GPU_REGION, "16.0 GiB") == {"muted"}
+        assert {grid[row + 1, column][1] for column in range(2 + expected_filled, 35)} == {"track"}
+        assert f"{index + 1}.0 / 16.0 GiB" in header and "60°C" in header
+        assert f"{100 + index} W" in bar and not status.strip()
+        assert text_roles(cells, row, GPU_REGION, f"{index + 1}.0 / 16.0 GiB") == {"muted"}
+        assert text_roles(cells, row, GPU_REGION, "60°C") == {"text"}
+        assert text_roles(cells, row + 1, GPU_REGION, f"{100 + index} W") == {"muted"}
     assert sample == before
     assert_contained(cells)
 
@@ -268,11 +270,11 @@ def test_gpu_unknown_field_keeps_other_fields_and_failure_reuses_fixed_slot():
     sample = StateSnapshot((gpu(0, stale=True, temperature=None),))
     cells = hardware_cells(sample, configured(), REGIONS, gpu_slots=(UUIDS[0],))
     header_row = GPU_REGION.row + 1
-    assert "STALE" in line(cells, header_row, GPU_REGION)
-    assert "—" in line(cells, header_row + 2, GPU_REGION)
-    assert "1.0 GiB" in line(cells, header_row + 2, GPU_REGION)
-    assert "100" in line(cells, header_row + 2, GPU_REGION)
-    assert all(cell.row == header_row and cell.column == GPU_REGION.column + GPU_REGION.width - 7
+    assert "STALE" in line(cells, header_row + 2, GPU_REGION)
+    assert "—" in line(cells, header_row, GPU_REGION)
+    assert "1.0 / 16.0 GiB" in line(cells, header_row, GPU_REGION)
+    assert "100 W" in line(cells, header_row + 1, GPU_REGION)
+    assert all(cell.row == header_row + 2 and cell.column == GPU_REGION.column + GPU_REGION.width - 7
                for cell in cells if cell.text == "STALE")
     assert not any("last" in cell.text.lower() or "error" in cell.text.lower() for cell in cells)
     assert_contained(cells)
@@ -281,8 +283,8 @@ def test_gpu_unknown_field_keeps_other_fields_and_failure_reuses_fixed_slot():
 def test_unsupported_gpu_field_is_unknown_without_stale_or_zero_substitution():
     cells = hardware_cells(StateSnapshot((gpu(0, temperature=None),)), configured(),
                            REGIONS, gpu_slots=(UUIDS[0],))
-    details = line(cells, 5, GPU_REGION)
-    assert "—" in details and "1.0 GiB" in details and "100" in details
+    details = line(cells, 3, GPU_REGION)
+    assert "—" in details and "1.0 / 16.0 GiB" in details and "100 W" in line(cells, 4, GPU_REGION)
     assert "STALE" not in line(cells, 3, GPU_REGION)
     assert "0°C" not in details and "0 °C" not in details
 
@@ -292,7 +294,7 @@ def test_gpu_name_is_clipped_without_losing_number_or_status_and_unknown_index_i
     unknown = replace(gpu(1), metrics=tuple(replace(metric, value=None) if metric.name == "index" else metric
                                            for metric in gpu(1).metrics))
     cells = hardware_cells(StateSnapshot((known, unknown)), configured(), REGIONS, gpu_slots=UUIDS[:2])
-    assert "GPU 0" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 3, GPU_REGION)
+    assert "GPU 0" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 5, GPU_REGION)
     assert "GPU —" in line(cells, 6, GPU_REGION)
     assert UUIDS[1] not in "".join(cell.text for cell in cells)
     assert_contained(cells)
@@ -304,12 +306,15 @@ def test_host_fields_are_named_and_ram_capacity_colors_are_separate(cpu_stale, r
     cpu, ram = host_objects(cpu_stale=cpu_stale, ram_stale=ram_stale)
     sample = StateSnapshot((replace(ram, metrics=tuple(reversed(ram.metrics))), cpu))
     cells = hardware_cells(sample, AppConfig(mount_points=()), REGIONS, gpu_slots=())
-    assert "CPU" in line(cells, 3, HOST_REGION) and "25%" in line(cells, 3, HOST_REGION)
-    assert "RAM" in line(cells, 4, HOST_REGION) and "25%" in line(cells, 4, HOST_REGION)
-    assert text_roles(cells, 3, HOST_REGION, "█") == {"secondary"}
-    assert text_roles(cells, 4, HOST_REGION, "█") == {"secondary"}
-    assert text_roles(cells, 5, HOST_REGION, "4.0 GiB") == {"muted"}
-    assert text_roles(cells, 5, HOST_REGION, "16.0 GiB") == {"text"}
+    assert "CPU" in line(cells, 3, HOST_REGION) and "25.0%" in line(cells, 3, HOST_REGION)
+    assert "RAM" in line(cells, 5, HOST_REGION) and "4 / 16 GiB" in line(cells, 5, HOST_REGION)
+    assert text_roles(cells, 4, HOST_REGION, "▌") == {"secondary"}
+    assert text_roles(cells, 6, HOST_REGION, "▌") == {"secondary"}
+    assert text_roles(cells, 5, HOST_REGION, "4") == {"muted"}
+    assert text_roles(cells, 5, HOST_REGION, "16") == {"text"}
+    assert text_roles(cells, 5, HOST_REGION, "GiB") == {"muted"}
+    assert text_roles(cells, 3, HOST_REGION, "25.0") == {"text"}
+    assert text_roles(cells, 3, HOST_REGION, "%") == {"muted"}
     assert ("STALE" in line(cells, HOST_REGION.row, HOST_REGION)) == (cpu_stale or ram_stale)
     assert_contained(cells)
 
@@ -321,25 +326,28 @@ def test_storage_has_three_content_rows_with_ordered_numbered_identity(count):
                            configured(paths), REGIONS, gpu_slots=())
     storage_cells = tuple(cell for cell in cells if STORAGE_REGION.column <= cell.column
                           and STORAGE_REGION.row <= cell.row < STORAGE_REGION.row + STORAGE_REGION.height)
-    assert all(10 <= cell.row <= 12 for cell in storage_cells)
+    assert all(10 <= cell.row <= 12 or cell.row == STORAGE_REGION.row and not cell.text.strip()
+               for cell in storage_cells)
     if not count:
-        assert any("No mount points configured" in cell.text for cell in storage_cells)
+        assert any("No mount points configured" in cell.text and cell.role == "text"
+                   for cell in storage_cells)
     for index, path in enumerate(paths):
         row = line(cells, 10 + index, STORAGE_REGION)
-        assert path in row and "1.0 GiB" in row and "4.0 GiB" in row and "25%" in row
+        assert path in row and "1 / 4 GiB · 25.0%" in row
     for unused in range(count or 1, 3):
         assert not line(cells, 10 + unused, STORAGE_REGION).strip()
     assert_contained(cells)
 
 
-def test_storage_long_path_reserves_capacity_percent_and_state_without_fourth_item_replacement():
+def test_storage_long_path_reserves_capacity_percent_and_heading_state_without_fourth_item_replacement():
     long_path = "/very-long-mount-" + "segment" * 30
     config = configured((long_path, "/data", "/cache", "/DO-NOT-SHOW"))
     sample = StateSnapshot((mount(0, stale=True), mount(1), mount(2), mount(3, used=3 * GIB)))
     cells = hardware_cells(sample, config, REGIONS, gpu_slots=())
     first = line(cells, 10, STORAGE_REGION)
-    assert "/very" in first and "1.0 GiB" in first and "4.0 GiB" in first and "25%" in first
-    assert "STALE" in first
+    assert "/very" in first and "1 / 4 GiB" in first and "25.0%" in first
+    assert "STALE" not in first
+    assert "STALE" in line(cells, STORAGE_REGION.row, STORAGE_REGION)
     assert "/data" in line(cells, 11, STORAGE_REGION) and "/cache" in line(cells, 12, STORAGE_REGION)
     assert "DO-NOT-SHOW" not in "".join(cell.text for cell in cells)
     assert_contained(cells)
@@ -349,7 +357,7 @@ def test_numbered_storage_identity_wins_over_legacy_path_fixture():
     legacy = replace(mount(0, used=3 * GIB), key=ObjectKey("storage", "/"))
     cells = hardware_cells(StateSnapshot((legacy, mount(0))), configured(("/",)), REGIONS, gpu_slots=())
     row = line(cells, 10, STORAGE_REGION)
-    assert "1.0 GiB" in row and "25%" in row and "3.0 GiB" not in row and "75%" not in row
+    assert "1 / 4 GiB" in row and "25.0%" in row and "3 / 4 GiB" not in row and "75.0%" not in row
 
 
 @pytest.mark.parametrize("sample,empty_text,stale", [
@@ -369,7 +377,7 @@ def test_gpu_inventory_distinguishes_initial_unknown_successful_empty_and_failur
 def test_successful_empty_inventory_does_not_remove_previously_known_gpu_slot():
     sample = StateSnapshot((inventory(0, sampled_at=2.0), gpu(0, stale=True)))
     cells = hardware_cells(sample, configured(), REGIONS, gpu_slots=(UUIDS[0],))
-    assert "GPU 0" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 3, GPU_REGION)
+    assert "GPU 0" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 5, GPU_REGION)
     assert "No NVIDIA GPUs" not in "".join(cell.text for cell in cells)
 
 
@@ -379,7 +387,7 @@ def test_compose_frame_integrates_named_hardware_values_without_generic_metric_d
                           HostInfo("offline-host", "Ubuntu"), NOW, gpu_slots=(UUIDS[0],))
     combined = "".join(cell.text for cell in frame.cells)
     assert "GPU 0" in combined and "Device-0" in combined and "25%" in combined
-    assert "█" in combined and "4.0 GiB" in combined and "16.0 GiB" in combined
+    assert "▌" in combined and "4 / 16 GiB" in combined
     assert "memory_used_bytes" not in combined and "ram_used_bytes" not in combined
     assert UUIDS[0] not in combined
 
@@ -401,7 +409,7 @@ def test_compose_failure_recovery_and_model_change_keep_regions_gpu_order_and_in
         for index in range(5):
             assert f"GPU {index}" in line(frame.cells, 3 + index * 3, region)
         assert "987654321" not in "".join(cell.text for cell in frame.cells)
-    assert "STALE" in line(frames[1].cells, 9, GPU_REGION)
-    assert "STALE" in line(frames[1].cells, 11, STORAGE_REGION)
+    assert "STALE" in line(frames[1].cells, 11, GPU_REGION)
+    assert "STALE" in line(frames[1].cells, STORAGE_REGION.row, STORAGE_REGION)
     assert not any(cell.text == "STALE" for cell in frames[2].cells)
     assert (normal, failed, config) == (normal_before, failed_before, config_before)

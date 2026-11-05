@@ -386,7 +386,14 @@ def test_61_failed_samples_keep_updating_ui_while_real_log_records_only_0_and_60
             frame_count = len(terminal.frames)
             await until(lambda: len(terminal.frames) > frame_count)
             assert "STALE" not in text(terminal.frames[-1])
-            assert "RUNNING: 0" in text(terminal.frames[-1])
+            recovered = terminal.frames[-1]
+            service = next(region for region in recovered.regions if region.name == "service")
+            left = service.column + 30
+            middle = left + (service.width - 32) // 2
+            assert [(cell.text, cell.role) for cell in recovered.cells
+                    if cell.row == service.row + 6 and left <= cell.column < middle - 1] == [
+                ("RUNNING", "text"), ("0", "text"),
+            ]
             bad.failure = TIMEOUT
             await sample(monitor, clock, 62)
             bad.failure = PERMISSION

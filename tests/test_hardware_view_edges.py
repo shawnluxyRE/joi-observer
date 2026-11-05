@@ -57,8 +57,12 @@ def test_five_card_content_has_no_overlapping_cells_at_minimum_or_odd_height(hei
                    and region.column < column < region.column + region.width - 1
                    for row, column in coordinates)
     text = " ".join(cell.text for cell in cells)
-    assert "0%" in text and "100%" in text and "0.0 GiB" in text
-    assert "0°C" in text and "0W" in text
+    assert "0%" in text and "100%" in text and "0.0 / 16.0 GiB" in text
+    assert "0°C" in text and "0 W" in text
+    for index in range(5):
+        bars = [cell for cell in cells if cell.row == 4 + index * 3 and cell.column < 71 and set(cell.text) == {"▌"}]
+        assert [(cell.column, len(cell.text), cell.role) for cell in bars] == [
+            (2, 33, "muted" if index % 2 else "track")]
 
 
 def test_new_missing_uuid_slot_keeps_unknown_identity_without_exposing_uuid():
@@ -66,6 +70,8 @@ def test_new_missing_uuid_slot_keeps_unknown_identity_without_exposing_uuid():
                           HostInfo("local", "Ubuntu"), NOW, gpu_slots=(UUIDS[0],))
     text = " ".join(cell.text for cell in frame.cells)
     assert "GPU —" in text and UUIDS[0] not in text
+    bars = [cell for cell in frame.cells if cell.row == 4 and cell.column < 71 and set(cell.text) == {"▌"}]
+    assert [(cell.column, len(cell.text), cell.role) for cell in bars] == [(2, 33, "track")]
 
 
 def test_control_characters_and_wide_names_cannot_damage_status_or_adjacent_panel():
@@ -76,7 +82,7 @@ def test_control_characters_and_wide_names_cannot_damage_status_or_adjacent_pane
     for cell in frame.cells:
         assert all(not unicodedata.category(character).startswith("C") for character in cell.text)
     stale = [cell for cell in frame.cells if cell.text == "STALE"]
-    assert len(stale) == 1 and (stale[0].row, stale[0].column) == (3, 53)
+    assert len(stale) == 1 and (stale[0].row, stale[0].column) == (5, 64)
 
 
 def test_legacy_numeric_gpu_key_is_not_treated_as_an_explicit_uuid_mapping():
@@ -122,5 +128,13 @@ def test_large_gpu_index_mapping_and_frame_keep_exact_alias_and_bounded_cells():
     assert not frame.too_small
     labels = [cell for cell in frame.cells if cell.text.startswith("GPU 1")]
     assert len(labels) == 1 and labels[0].role == "primary"
+    assert len(labels[0].text) <= 10
+    assert labels[0].column == 2
+    hardware = hardware_cells(snapshot, config, frame.regions, gpu_slots=(UUIDS[0],))
+    occupied = set()
+    for cell in hardware:
+        coordinates = set(positions(cell))
+        assert not occupied.intersection(coordinates), cell
+        occupied.update(coordinates)
     for cell in frame.cells:
         assert all(0 <= row < 37 and 0 <= column < 120 for row, column in positions(cell))

@@ -1,7 +1,7 @@
 # Docker 容器采集模块设计
 
-- 关联需求：dev-0 / REQ-003，requirements.md v1.12，AC-301～304；依赖 REQ-001 的配置、调度、状态、日志与布局。
-- 修订：v1.1，2026-11-02；在 REQ-003 已有业务基础上同步公共采集结果分型。
+- 关联需求：dev-0 / REQ-003、REQ-006，requirements.md v1.16，AC-301～304及HTML外壳排版；依赖 REQ-001 的配置、调度、状态、日志与布局。
+- 修订：v1.2，2026-11-04；补齐展示状态槽右对齐与新鲜Running主色；采集/调度行为及既有执行体保留。
 - 相关代码：`src/joi_observer/collectors/docker.py`、`config.py::ContainerConfig`、`cli.py::ApplicationRuntime`。
 - 关联模块：[配置](configuration.md)、[Monitor / State](monitor-state.md)、[错误日志](error-logging.md)、[应用外壳](application-shell.md)。
 
@@ -9,7 +9,7 @@
 
 每个显式配置项独立读取一个本机容器的生命周期，输出携带平面指标的 `MetricCollectionResult`，它继承只声明 key/failure 的公共 `CollectionResult`。全量配置参与采集，显示层自行取可见前缀。模块不依赖终端，不写状态或日志，不发现其他容器，不读取资源统计、容器日志或业务负载，不执行启停、重启或权限修改。
 
-REQ-001 的数量、布局与错误链路及 REQ-003 容器采集已实现。本轮仅迁移结果类型，保留命令端口、采集算法和既有组合根，不调用 REQ-004 的未实现业务入口。原 REQ-003 R2/R4/R5 交接仍作为历史记录保留。
+REQ-001公共外壳、REQ-003容器采集及REQ-004/005服务采集与导航均已合并。本轮仅为REQ-006同步Docker展示契约，不修改命令端口、采集算法、状态派生或组合根；新排版与颜色接线留R4。原REQ-003 R2/R4/R5交接保留为历史记录。
 
 ## 类图
 
@@ -131,9 +131,13 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 `build_docker_collectors(containers, timeout=..., command_factory=...)` 按完整配置顺序创建独立采集器，空配置返回空 tuple 且不创建端口。默认工厂创建 LocalDockerCommand；工厂、采集器构造与 prepare_log 都不执行命令。
 
-R4 在 `ApplicationRuntime._components()` 调用该工厂：用其全部 spec 替换现有 Docker 静态模板，并把全部采集器交给同一个 Monitor；硬件与 Docker 共用唯一 State/Log 和只读 reader，仅 vLLM 保留占位。传入 RuntimeComponents 时沿用注入组件，不创建额外采集器。新增 `docker_command_factory` 只隔离外部命令，不能替换采集结果或另建一套状态。
+`ApplicationRuntime._components()`已调用该工厂，以全部spec替换Docker静态模板，并把全部采集器交给同一个Monitor；硬件、Docker与已合并的vLLM共享唯一State/Log和只读reader。传入RuntimeComponents时沿用注入组件，不创建额外采集器。`docker_command_factory`只隔离外部命令，不能替换采集结果或另建一套状态。
 
 `compose_frame` 已按内容容量显示配置前缀，每项一行，失败不补位。未配置时仅在有内容行的区域显示 `No containers configured`；容量为 0 时不绘制条目或空态。配置 10 项、容量 4→6→3 时仅改变可见项，不影响采集、对象顺序、最小终端尺寸或下半区高度。隐藏项真实失败仍按既有 ERROR 规则记录；单纯隐藏不记错。无需新增滚动、分页、更多提示或展示类。
+
+REQ-006展示目标：内容左端`L=region.column+2`、右端`R=region.column+region.width-2`（不含R）。状态固定占`[R-14,R)`，Created/Running/Paused/Restarting/Removing/Exited/Dead、未知`—`和`STALE`均按文字宽度右对齐到R。名称在`[L,R-15)`内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长Unicode名不能覆盖状态。状态变化、失败恢复及resize不会重排配置前缀或增加行。
+
+仅已采样且非stale的Running使用primary；其余生命周期、未采样保留值、未知及STALE使用text，任何Docker状态均不用amber。STALE优先替换旧生命周期，只有该状态文字，无错误原因或时间。初始无对象/无状态使用`—`；成功Exited/Dead仍是生命周期，不误报采集失败。完整行列预算复用[应用外壳](application-shell.md)，本轮只写目标注释和黑盒。
 
 ## 接口与验证依据
 
@@ -143,11 +147,12 @@ R4 在 `ApplicationRuntime._components()` 调用该工厂：用其全部 spec �
 | DockerCollector / build_docker_collectors | 同上 | 固定单次只读命令、全量顺序、重复目标不同 id、无 IO 构造、失败恢复、取消、关闭 |
 | LocalDockerCommand | `tests/test_docker_command.py` | 仅替换 asyncio 子进程创建端口；参数/环境、原始字节、并发排空、两流上限、超时/取消/close 回收 |
 | Collector→Monitor→State→Frame/Log | `tests/test_docker_integration.py` | 真实采集业务入口与离线命令样本；隐藏项采样/日志、容量变化、恢复及错误净化 |
-| ApplicationRuntime | 同上 | 用 fake 命令与终端运行真实生产组装，要求全部容器实际采样，揭示当前只有静态槽位的缺口 |
+| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 全7种生命周期、初始未知、STALE、长名称、两主题、多宽、14格槽内统一右对齐；新鲜Running主色，其余正文，容量规则不变 |
+| ApplicationRuntime | 同上 | 用fake命令与终端运行真实生产组装，验证全部容器实际采样及隔离、恢复、退出清理 |
 | 配置与容量 | `tests/test_config.py`、`test_config_boundaries.py`、`test_tui.py`、`test_integration.py` | 复用 REQ-001 的 1/5/6/10 项完整保留、空态、0 容量、半页、配置不修改等测试 |
 
 运行入口：`python -m pytest tests/test_docker.py tests/test_docker_command.py tests/test_docker_integration.py`，以及全量 `python -m pytest`。所有 Docker IO 使用离线替身；不运行实际 docker、不访问 Unix socket 或网络。现有两个生产首帧测试增加 pending command 工厂，保持首次采样前的断言，并为 R4 接入后继续隔离真实 IO。
 
-测试不以 NotImplementedError 为成功条件，不使用 xfail 隐藏骨架；纯业务入口失败是 R2 基线。生产组装尚未接入导致的行为断言失败单独记录，不能当作导入/环境错误。实际命令、数量和结果见 [REQ-003 R2 交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)。
+测试不以NotImplementedError为成功条件。REQ-003最初R2的业务骨架/未接线失败是历史基线，实际命令与当时结果见[历史R2交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)；采集与运行期接线现已合并。本轮REQ-006只修订Docker状态的呈现位置和角色，新增失败记录在REQ-006交接，不当作导入/环境错误。
 
 后续集成待验证：真实 Docker CLI 与模板、Unix socket 权限和错误文案、真实进程取消的时限。当前仅验证离线协议和本地公共 TUI；不得将样本结果表述为实机验证，也不因交接自动获得服务器连接授权。

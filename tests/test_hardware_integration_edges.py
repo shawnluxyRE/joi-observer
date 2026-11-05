@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -14,6 +15,7 @@ from joi_observer.error_log import ErrorKind
 from joi_observer.tui.layout import HostInfo, TerminalSize, ViewSelection, compose_frame
 from test_hardware import DATA, MOUNTINFO, ROOT, RawIO, UUIDS, gpu_row, values
 from test_hardware_monitor import entries, objects, running_monitor, tick
+from test_hardware_view import pixels
 
 
 def frame(state):
@@ -126,14 +128,15 @@ def test_gpu_partial_failure_and_index_change_update_frame_mapping_without_extra
                                     gpu_slots=(UUIDS[0],), view=ViewSelection("selected"))
             frames.append(current)
             label = next(cell for cell in current.cells if cell.row == 3 and cell.column == 2)
-            filled = next(cell for cell in current.cells if cell.row == 4 and "█" in cell.text)
+            filled = next(cell for cell in current.cells if cell.row == 4 and cell.column == 2 and "▌" in cell.text)
             percent = next(cell for cell in current.cells if cell.row == 4 and "%" in cell.text)
             assert label.text == ("GPU 0" if index == 0 else "GPU 1")
             assert (label.role, filled.role, percent.role) == (role, role, role)
             assert percent.text == ("25%", "75%", "50%")[index]
             assert any(cell.text == "STALE" for cell in current.cells) == (index == 1)
-            details = next(cell.text for cell in current.cells if cell.row == 5 and "°C" in cell.text)
-            assert ("61°C" if index < 2 else "65°C") in details
+            temperature = next(cell for cell in current.cells if cell.row == 3 and "°C" in cell.text)
+            assert temperature.text == ("61°C" if index < 2 else "65°C")
+            assert temperature.column + len(temperature.text) == 69 and temperature.role == "text"
             assert "Unknown Error" not in " ".join(cell.text for cell in current.cells)
 
             # Rendering alternate selections is pure and does not resample or
@@ -298,7 +301,18 @@ def test_ram_byte_conversion_past_integer_string_limit_remains_exact_and_rendera
         assert values(snapshot)["ram_percent"] == 100
         rendered = frame(state)
         assert not rendered.too_small
-        assert "100%" in " ".join(cell.text for cell in rendered.cells)
+        # REQ-006 RAM has a capacity row and a separate bar, without a repeated
+        # percentage caption. Observe the full bar plus readable bounded values.
+        host = next(region for region in rendered.regions if region.name == "host")
+        grid = pixels(rendered.cells)
+        left, right = host.column + 2, host.column + host.width - 2
+        assert "".join(grid[host.row + 4, column][0]
+                       for column in range(left, left + (host.width - 4) // 2)) == "▌" * 22
+        capacity = "".join(grid.get((host.row + 3, column), (" ", "text"))[0]
+                           for column in range(left + 4, right)).strip()
+        assert capacity.endswith(" TiB")
+        used, total = capacity.removesuffix(" TiB").split(" / ")
+        assert used == total and Decimal(total).adjusted() == 4289 and "e" in total.lower()
         await source.close()
         assert io.closed
 

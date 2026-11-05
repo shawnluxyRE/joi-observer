@@ -9,8 +9,11 @@ from typing import Protocol
 
 from joi_observer.config import AppConfig
 from joi_observer.data.models import StateSnapshot
-from joi_observer.tui.layout import Frame, HostInfo, TerminalSize, ViewSelection, compose_frame
+from joi_observer.tui.history import HistoryScaleTracker
+from joi_observer.tui.layout import Frame, HostInfo, TerminalSize, ViewSelection, compose_frame, required_size
 from joi_observer.tui.navigation import SessionViewActions
+from joi_observer.tui.theme import CursesTheme
+from joi_observer.tui.timing import FrameSchedule
 
 
 class SnapshotReader(Protocol):
@@ -47,6 +50,7 @@ class TerminalPort(Protocol):
     def render(self, frame: Frame) -> None:
         """绘制完整帧并覆盖上一帧残留；只绘制frame，不附加任何文字。
 
+        根据 frame.theme 同步本帧所有语义色与空白背景；小窗口也应用该主题。
         不能往 stdout/stderr 打印诊断。遇缩放造成坐标短暂失效时可放弃本帧，
         下轮重绘；不可吞掉其他内部程序异常。
         """
@@ -70,7 +74,7 @@ class ViewActions(Protocol):
     """
 
     def selection(self) -> ViewSelection:
-        """返回不可变的当前模型/主题；空配置模型为 None，默认 moonlight。
+        """返回不可变的当前模型/主题；空配置模型为 None，默认 hologram。
 
         非空配置初始选择首个模型 id。刷新、失败或缩放不改变选择；不能
         由显示名判断身份或自动跳过不可用项。已返回的值保持不变。
@@ -89,13 +93,17 @@ class ViewActions(Protocol):
 class CursesTerminal:
     """Ubuntu curses 后端。构造无I/O，curses仅在enter中延迟导入。
 
-    这样Windows可离线导入骨架和运行测试；正式运行仍以Ubuntu24.04为目标。
+    这样Windows可离线导入模块和运行测试；正式运行仍以Ubuntu24.04为目标。
     enter须保存终端状态；restore在finally中恢复。关闭ncurses的同步序列
     判别，用非阻塞getch读字节，再以私有有界前缀状态异步解析方向键。
     不完整序列跨read_key调用保留，但不会阻塞事件循环或无限积累。
-    色彩角色细节留REQ-006；不能把全屏异常送到logging或stderr。
-    vLLM接线需增加amber角色（curses.COLOR_YELLOW），只用于QUEUED及新鲜的
-    正WAITING值；具体双主题RGB映射另行完善。
+    目标配色委托 theme.CursesTheme，每次 enter 创建独立配色会话；render
+    先 activate(frame.theme)，再 bkgd(' ', style('text'))、erase、逐项绘制。
+    主题变化时强制重绘物理画面，避免只更新色表而留下终端已缓存的旧色；
+    同主题普通帧继续使用curses差分，成功refresh后才记录已显示主题。
+    同一帧背景、角色与主题名一致，不启用鼠标；无色/低色终端仍可操作。
+    restore 在 endwin 前归还配色资源且不妨碍其他恢复；再次 enter 重新探测。
+    不把全屏异常送到 logging 或 stderr。
     """
 
     def __init__(self) -> None:
@@ -105,7 +113,8 @@ class CursesTerminal:
         self._terminal_mode = None
         self._fd = None
         self._cursor = None
-        self._styles: dict[str, int] = {}
+        self._theme: CursesTheme | None = None
+        self._rendered_theme: str | None = None
         self._input_prefix = b""
         self._input_expires = 0.0
         self._key_sequences: dict[bytes, str] = {}
@@ -118,6 +127,9 @@ class CursesTerminal:
 
         self._curses = curses
         self._termios = termios
+        self._theme = CursesTheme(curses)
+        self._rendered_theme = None
+        self._cursor = None
         self._fd = sys.stdin.fileno()
         self._terminal_mode = termios.tcgetattr(self._fd)
         self._screen = curses.initscr()
@@ -146,27 +158,20 @@ class CursesTerminal:
             self._cursor = curses.curs_set(0)
         except curses.error:
             pass  # A terminal without cursor controls can still draw safely.
-        if curses.has_colors():
-            curses.start_color()
-            try:
-                curses.use_default_colors()
-            except curses.error:
-                pass
-            for pair, (role, color) in enumerate((("primary", curses.COLOR_CYAN),
-                                                  ("secondary", curses.COLOR_MAGENTA),
-                                                  ("muted", curses.COLOR_WHITE),
-                                                  ("text", curses.COLOR_WHITE),
-                                                  ("amber", curses.COLOR_YELLOW)), 1):
-                curses.init_pair(pair, color, curses.COLOR_BLACK)
-                self._styles[role] = curses.color_pair(pair)
-            self._styles["muted"] |= curses.A_DIM
 
     def restore(self) -> None:
         """实现 TerminalPort.restore；幂等且不打印诊断。"""
         screen, curses = self._screen, self._curses
         self._screen = None
+        self._rendered_theme = None
         self._input_prefix = b""
         self._input_expires = 0.0
+        theme, self._theme = self._theme, None
+        if theme is not None:
+            try:
+                theme.restore()
+            except Exception:
+                pass  # Color cleanup must never prevent terminal restoration.
         if curses is not None and self._terminal_mode is not None:
             # Each restoration is independent: one unavailable feature must not
             # prevent echo or the original terminal screen from being restored.
@@ -193,14 +198,27 @@ class CursesTerminal:
         return TerminalSize(columns, rows)
 
     def render(self, frame: Frame) -> None:
-        """实现 TerminalPort.render；控制字符必须在布局边界处理。"""
+        """实现 TerminalPort.render；控制字符必须在布局边界处理。
+
+        逐单元组合原颜色属性与bold字体标记，不向后续文字泄漏加粗。
+        """
         if self._screen is None:
             raise RuntimeError("Terminal is not active")
         before = self.size()
+        self._theme.activate(frame.theme)
+        if self._rendered_theme is not None and frame.theme != self._rendered_theme:
+            # Reusing color-pair indices can leave ncurses' physical-screen
+            # cache unchanged. Repaint after the palette update so terminals
+            # that resolve indexed colors when writing also receive new cells.
+            self._screen.clearok(True)
+        self._screen.bkgd(" ", self._theme.style("text"))
         self._screen.erase()
         for cell in frame.cells:
             try:
-                self._screen.addstr(cell.row, cell.column, cell.text, self._styles.get(cell.role, 0))
+                attribute = self._theme.style(cell.role)
+                if cell.bold:
+                    attribute |= self._curses.A_BOLD
+                self._screen.addstr(cell.row, cell.column, cell.text, attribute)
             except self._curses.error:
                 # ncurses also reports ERR after successfully painting the
                 # lower-right cell; that cell is outside our regular content.
@@ -210,6 +228,7 @@ class CursesTerminal:
                     continue
                 raise
         self._screen.refresh()
+        self._rendered_theme = frame.theme
 
     async def read_key(self, timeout: float) -> str | None:
         """实现 TerminalPort.read_key，必须可取消且不阻塞事件循环。"""
@@ -291,6 +310,13 @@ class ObserverApp:
     不因刷新、重绘、失败、resize 或再次 run 重建；新应用实例才重置选择。
     同一 ViewSelection 传给整帧，保证详情与 GPU 关联一致。终端和时钟在
     测试中可替换，监控指标和 STALE 渲染必须使用真实 compose_frame。
+
+    本应用持有HistoryScaleTracker(config.models)，从每帧同一次读取的
+    快照和单调时间推进全部配置模型尺度，再传冻结元组给compose_frame。
+    不因选择/主题/resize/小窗口清空尺度；小窗口以最近有效图区列数继续推进，
+    未有有效尺寸时使用最小正常布局的图区宽度。现有选择控制器不持有尺度，
+    MonitorState不保存展示状态。再次run沿用本应用尺度和选择，新实例独立。
+    帧调度使用timing.FrameSchedule，每次run独立建立截止点。
     """
 
     def __init__(
@@ -309,17 +335,30 @@ class ObserverApp:
         self.host = host
         self.wall_clock = wall_clock
         self.actions = SessionViewActions(config.models) if actions is None else actions
+        self._history_scales = HistoryScaleTracker(config.models)
+        # The service detail starts at c+30, with two columns at the right.
+        # Keep the last valid width even while the terminal is too small.
+        self._history_columns = required_size(gpu_count=0, mount_count=0, container_count=0).columns - 32
         self._running = False
 
     async def run(self) -> None:
         """进入终端，先画初始快照，再刷新/读键，q正常返回。
 
-        键盘轮询最长50ms；绘制正常最多10Hz，快照变化在下个绘制周期展示，
-        当前时间至少每秒更新。尺寸变化例外：下一次读键前立即重绘，不受
-        普通10Hz节流限制。小窗口仍保持同样读键与监控节奏，并继续更新
+        普通绘制目标60FPS，以会话单调起点+n/60维护截止点。读键等待为下一
+        截止点剩余时间与50ms的较小值，不给read_key传非正超时。本轮尚未
+        绘制就跨过截止点时，保留到期节拍，下一轮先绘制；不能丢弃待画帧。
+        本轮已经绘制后若读键前再次跨点，按同一当前时刻跳到未来节拍并
+        提供一次读键机会，不能反复重绘而饿死输入。慢绘制后跳过过期节拍，
+        不积压或补画旧帧，不按
+        绘制结束时间另起周期。首次和尺寸变化可立即绘制，完成后推进到首个
+        未来节拍，防止紧接重复普通帧。当前时间至少每秒更新。小窗口仍保持
+        同样读键与监控节奏，并继续更新
         会话选择，放大后显示该选择。t和方向键仅送ViewActions，Enter/p/
         Tab及其他未声明键不产生行为。导航与主题在下一普通绘制周期可见，
-        不为按键突破10Hz上限。UI不调用Monitor或Collector。
+        不为按键突破普通帧上限。相同cells/theme/尺寸可省略终端写入；状态或
+        长文本缩短时须清除残留，不省略读键、尺度计时或调度。采样仍由Monitor
+        按配置独立运行；UI不调用Monitor或Collector。所有模型尺度用本帧同一
+        快照与同域now更新，5秒计时按时间而非帧数，compose_frame只读消费。
         新见GPU追加会话槽位；失败恢复不删槽，保证大小与配置不变时布局稳定。
 
         将enter也置于try/finally保护内；q、KeyboardInterrupt、协程取消及
@@ -332,30 +371,58 @@ class ObserverApp:
         self._running = True
         gpu_slots: list[str] = []
         previous_size = None
-        last_draw = float("-inf")
         try:
             self.terminal.enter()
             loop = asyncio.get_running_loop()
+            schedule = FrameSchedule(loop.time())
             while True:
+                drew_frame = False
                 size = self.terminal.size()
-                if size != previous_size or loop.time() - last_draw >= 0.1:
+                now = loop.time()
+                if size != previous_size or schedule.due(now):
                     snapshot = self.reader.snapshot()
                     for obj in snapshot.objects:
                         if obj.key.collector == "gpu" and obj.key.object_id not in gpu_slots:
                             gpu_slots.append(obj.key.object_id)
                     view = self.actions.selection()
+                    minimum = required_size(gpu_count=len(gpu_slots),
+                                            mount_count=len(self.config.mount_points),
+                                            container_count=len(self.config.containers))
+                    if size.columns >= minimum.columns and size.rows >= minimum.rows:
+                        self._history_columns = size.columns - 32
+                    scales = self._history_scales.update(snapshot, now=now,
+                                                         columns=self._history_columns)
                     frame = compose_frame(snapshot, self.config, size, self.host, self.wall_clock(),
-                                          gpu_slots=tuple(gpu_slots), view=view)
+                                          gpu_slots=tuple(gpu_slots), view=view,
+                                          monotonic_now=now, history_scales=scales)
                     self.terminal.render(frame)
+                    drew_frame = True
                     previous_size = size
-                    last_draw = loop.time()
-                key = await self.terminal.read_key(0.05)
+                    schedule.advance(loop.time())
+                read_now = loop.time()
+                timeout = schedule.timeout(read_now)
+                if timeout <= 0:
+                    if not drew_frame:
+                        # A deadline reached during input bookkeeping still
+                        # owes a frame. Keep it due for the next loop instead
+                        # of discarding unrendered slots under periodic input.
+                        await asyncio.sleep(0)
+                        continue
+                    # Bookkeeping may cross the tick chosen at draw completion.
+                    # Skip that expired slot, then service input before drawing
+                    # again. Use one clock observation for both operations so
+                    # repeated deadline crossings cannot bypass read_key.
+                    schedule.advance(read_now)
+                    timeout = schedule.timeout(read_now)
+                key = await self.terminal.read_key(timeout)
                 if key == "q":
                     return
                 if key == "interrupt":
                     raise KeyboardInterrupt
                 if key in {"t", "up", "down", "left", "right"}:
                     self.actions.on_key(key)
+                # Injected input ports may return ready keys without yielding.
+                await asyncio.sleep(0)
         finally:
             original_error = sys.exc_info()[0]
             try:

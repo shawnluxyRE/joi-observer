@@ -1,13 +1,14 @@
 # Application Shell 模块设计
 
-- 关联需求：dev-0 / REQ-001、REQ-005，需求说明 v1.12；AC-101～106、AC-110、AC-111、AC-113、AC-114、AC-501～504；共享布局约束关联 AC-207/301/304/605/607/608。
-- 修订：v1.7，2026-11-03；复核 REQ-005 接线与测试映射，清除仍称 vLLM 占位/未接线的过期现状说明。
+- 关联需求：dev-0 / REQ-001、REQ-005、REQ-006，需求说明 v1.24；AC-101～106、AC-110、AC-111、AC-113、AC-114、AC-501～504；共享布局约束关联 AC-202/203/207/301/304/605/607/608/613/614/616。
+- 修订：v1.20，2026-11-05；同步独立硬件深灰track与同字形▌轨道的配色接线，原布局、五个既有角色、字体、60FPS和采样保持；完整资源/降级规则见theme v1.12。本轮不重建离线包或更新旧GUI入口。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
+- 当前阶段：REQ-006布局、Frame主题、帧时钟和历史尺度接线已由R4实现。输入/绘制公平性沿用AC-603/609/612与原始帧相位；本轮按用户反馈同步设备标签、发行版本与显示细节。R5-006-001/002返修及当前复验证据见[REQ-006 R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)及[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)。
 
 ## 职责与边界
 
-本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005/006 完成模型导航和完整主题，均复用本模块的生命周期与容量约束。
+本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005 已完成模型导航，REQ-006 已实现完整主题及显示调度，均复用本模块的生命周期与容量约束；当前验收状态以对应交接单为准。
 
 ApplicationRuntime 通过 build_hardware_sources、build_docker_collectors 和 build_vllm_collectors 组装三类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 与 vllm_http_factory 分别替换外部命令和 HTTP IO；全部配置容器和模型参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令或 HTTP 请求；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [vLLM 设计](vllm.md)。
 
@@ -89,13 +90,63 @@ REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载�
 
 `RuntimeComponents` 允许注入真实 Monitor、ObserverApp 与日志端口的组合，注入时二者仍须共享同一个 MonitorState。这使联合黑盒测试能够使用真实调度和 UI 入口，仅替换外部采集源、终端与文件日志边界；不能把组合根编排替换为返回预定结果的 mock。
 
-UI 首次绘制发生在读取第一个按键前。键盘等待上限 50ms，正常绘制最多 10Hz，快照变化最迟在下一绘制周期可见；尺寸变化在下一次读键前立即重绘，不受普通绘制节流限制。主机当前时间至少每秒更新一次，使用本机带时区的墙钟，不使用样本时间。采样调度使用单调时间，其节奏由 Monitor 独立控制。UI 的刷新、主题与模型选择不启动新采集。
+UI 首次绘制发生在读取第一个按键前。正常绘制以 **60 FPS** 为目标，间隔 `P=1/60s`；它是调度目标而非任意终端的实测保证。快照/按键变化在下一个普通绘制机会呈现，尺寸变化可在下一次读键前立即重绘。主机时间至少每秒更新一次，使用带时区的墙钟；采样与帧调度均用各自单调时钟，Monitor 保持配置采样周期，UI 不启动新采集。本期不增加帧率切换或配置项。
+
+### 帧截止点与终端写入
+
+- 以会话单调起点和 `n * P` 维护下一截止点，不能每次在绘制结束时间上再加P而累积漂移。首次与resize紧急绘制后也应推进截止点，避免紧接一次重复普通绘制。
+- 读键等待为 `min(50ms, 下一截止点 - 当前时间)`，不能给只接受正超时的read_key传0或负数。读键前发现到期时，必须区分本轮是否已处理过显示机会：本轮尚未绘制，则保留到期deadline、不advance，主动让出事件循环后于下一轮绘制；单调时钟保证该deadline仍到期，不能因周期输入将它持续跳过。本轮已完成绘制，则可跳过随后调度操作跨过的逾期显示槽，沿原始相位advance，并以同一个read_now计算正超时、提供一次read_key机会。这个分支不能反复绘制/让出而绕过输入，也不能在未绘制时一律advance而绕过画面。
+- 本轮已绘制标记每轮重置，只在本轮完整帧处理成功后成立；其语义是已服务一次显示机会，将来允许相同帧省略物理写入时也不能误当成未处理。未绘制到期分支保留deadline，因此至多连续经过一次该分支就进入绘制；已绘制跨点分支随后必须服务输入。单独sleep(0)不等于已读取终端按键，完成读键后仍须主动让出事件循环，使立即就绪的输入端口也不饿死采样。连续按键不突破普通帧上限，连续慢帧保持q、导航和主题响应；不使用固定50ms等待替代截止点预算。
+- 一次绘制过慢时跳到当前时间之后的首个未来截止点，只取最新快照；不补画漏掉的帧、不排队积压。每个生成的Frame仍只读一次selection，按键不直接修改快照、历史或GPU顺序。
+- 同尺寸且cells/theme完全相同的帧可以跳过实际终端输出；变化时由curses差异输出更新。不要把当前erase虚拟窗口误解为每次物理清屏；减少无效输出应基于整帧比较/脏区域，并正确清理旧长文本、消失柱子与旧主题背景。
+- 本轮不要求重写为多窗口后端或引入终端同步输出协议。保持一次完整帧提交及原有终端恢复；配色/background更新仍遵守[主题设计](theme.md)。提高显示刷新频率不会增加采样次数，历史柱只在真实数据、时间桶、尺度或尺寸变化时改变。
+
+当前60Hz修订须用可控单调时钟检查60Hz节拍、连续输入、超预算跳帧及采样次数，并在本地WSL PTY记录绘制耗时/帧间隔和退出响应；当前结果见R4交接；R2/R3/R4/R5历史30Hz结果保留原时点事实，不作为60Hz已验证的依据。PTY吞吐不能代替具体终端窗口实际可见FPS，不保证未测试终端稳定60帧。AC-603/609/612由`tests/test_frame_timing.py`、`tests/test_frame_timing_edges.py`、`test_navigation_app.py`等覆盖；R5的慢绘制截止点跨越和周期输入相邻相位用例共同覆盖两个方向的公平性，必须同时保留并实际记录返修回归，不能仅由其中一方向通过推定另一方向正确。
+
+### 帧时钟和尺度接线
+
+`timing.py`已实现常量`FRAME_RATE=60`、`FRAME_INTERVAL=1/60`和`FrameSchedule(start)`。`due(now)`只读判断到期；`timeout(now)`返回0..50ms的剩余等待；`advance(completion_now)`跳到严格晚于完成时刻的首个原始节拍。同一完成时刻重复advance不额外跳槽，查询不改变状态。起点/时刻拒绝bool、非有限值、负值和早于起点的值；advance另拒绝时间回退，异常不能改变原进度。构造只保存起点和进度，不访问外部时钟；ObserverApp已使用此帧时钟替换原last_draw逻辑。
+
+应用实例拥有一个`HistoryScaleTracker(config.models)`；每个生成帧从reader取一次快照、actions取一次selection，并用同一单调now推进全部模型尺度。冻结尺度元组显式传给`compose_frame(..., history_scales=scales, monotonic_now=now)`，再由布局传给`vllm_cells`。小窗口使用最近正常图区宽度，尚未有正常帧时使用最小正常布局的图区宽度；不能为小窗口销毁尺度。主题/模型/resize/同实例再次run保持会话，新的应用实例独立。帧时钟每次run重新以本次起点调度，不补画上次run期间的帧。
+
+```mermaid
+classDiagram
+    class ObserverApp {
+        +run() None
+    }
+    class FrameSchedule {
+        +__init__(start)
+        +due(now) bool
+        +timeout(now) float
+        +advance(now) None
+    }
+    class HistoryScaleTracker {
+        +__init__(models)
+        +update(snapshot, now, columns) tuple
+    }
+    class HistoryScale {
+        +model_id str
+        +field str
+        +upper int
+    }
+    class Layout["tui.layout"] {
+        <<module>>
+        +compose_frame(snapshot, config, size, host, now, history_scales) Frame
+    }
+    ObserverApp *-- FrameSchedule
+    ObserverApp *-- HistoryScaleTracker
+    ObserverApp ..> Layout
+    HistoryScaleTracker ..> HistoryScale
+    Layout ..> HistoryScale
+```
+
+图示为当前已实现的所有权及传递关系：应用拥有尺度控制器，并显式传递冻结尺度。纯布局不能通过模块全局状态保存迟降计时。默认接线的黑盒为`tests/test_history_app.py`：未选中模型继续迟降、主题/resize/小窗口保持、同实例重入与新实例隔离，输入仅替换外部时钟与只读样本。
 
 q 使 UI 正常返回，组合根通知/停止 Monitor；UI 内部异常同样停止 Monitor。Monitor 的非采集类内部异常取消 UI，让 UI 的 `finally` 恢复终端。终端 `enter()` 也位于该 `try/finally` 内，覆盖部分初始化失败；`restore()` 幂等且必须尝试恢复光标、输入回显和原终端显示。协程取消、可捕获的 SIGINT/SIGTERM 使用同一路径。SIGKILL、断电和终端设备本身失效无法保证恢复。
 
 总体清理预算不超过 1 秒，`run()` 与 `close()` 共享预算；采集端口必须合作取消，底层同步操作必须有超时，不能等待无限阻塞线程退出。日志关闭不向 stdout/stderr 输出积压记录，也不要求补写停机时尚未落盘的事件。清理中的异常不能掩盖原异常。
 
-`ViewActions` 接收 t/up/down/left/right；q 由应用全局处理，Enter/p/Tab 没有行为，首版左右键不能进入 WebUI。REQ-005 由 `SessionViewActions(config.models)` 提供具体会话状态；`ObserverApp` 在 `actions is None` 时默认创建，显式注入原样保留。刷新、缩放、失败及同一实例再次运行不重建选择。每帧只读取一次选择并用于整帧。没有鼠标主题操作。正常页脚目标为 `↑↓ Select model    t Theme    q Quit`，服务行 vLLM 用 primary、WebUI (disabled) 用 muted。完整边界与新增测试见[模型导航](navigation.md)；本轮只更新契约，默认接线和两项呈现修改仍留 R4。
+`ViewActions` 接收 t/up/down/left/right；q 由应用全局处理，Enter/p/Tab 没有行为，首版左右键不能进入 WebUI。REQ-005 由 `SessionViewActions(config.models)` 提供具体会话状态；`ObserverApp` 在 `actions is None` 时默认创建，显式注入原样保留。刷新、缩放、失败及同一实例再次运行不重建选择。每帧只读取一次选择并用于整帧。没有鼠标主题操作。正常页脚为 `↑↓ Select model    t Theme    q Quit`，服务行 vLLM 用 primary、WebUI (disabled) 用 muted。完整边界与测试见[模型导航](navigation.md)；默认导航与服务呈现已随REQ-005合并，REQ-006已接入上述60Hz帧节拍。
 
 `Select model` 仅是当前 vLLM 服务的导航提示。布局从 `services.VLLM_SERVICE` 取得一次描述，同时用于当前服务标题/入口及 `footer_text(service)`；该函数只替换上下箭头后的 navigation_label。未来启用其它服务后，提示随当前服务描述变化，`↑↓`、间距、`t Theme`、`q Quit` 及其它文字保持不变。本轮不实现服务切换，契约和黑盒测试见 `tests/test_service_footer.py`。
 
@@ -111,7 +162,7 @@ minimum_rows = max(36, 2 * (2 + max(3 * max(gpu_count, 1) + 2, 16)) - 1)
 docker_capacity = max(0, upper_rows - 18)
 ```
 
-上半区包含 2 行页眉；硬件最低高度取 GPU 与右侧面板所需高度的较大值。GPU 每卡 3 行，面板边框另 2 行；右侧最低 16 行由 Host Resources 5 行、间距 1 行、Storage 6 行、间距 1 行、Docker 外壳 3 行组成。Docker 允许零内容行，不因需要显示某个容器而增加最小高度。下半区最低 18 行，由服务窗口至少 16 行、独立服务切换位 1 行、键位 1 行组成。页高为奇数时，多出的 1 行留给上半区。
+上半区包含2行页眉；硬件最低高度取GPU与右侧面板所需高度的较大值。GPU每卡仍3行、面板边框另2行；右侧最低16行现在由Host Resources 6行、Storage 6行、间距1行、Docker外壳3行组成。Host增加的第4内容行使用原Host/Storage之间的1行留白，两面板相邻而不额外占行。Docker 允许零内容行，不因需要显示某个容器而增加最小高度。下半区最低 18 行，由服务窗口至少 16 行、独立服务切换位 1 行、键位 1 行组成。页高为奇数时，多出的 1 行留给上半区。
 
 | GPU 槽数 | 最小尺寸（与挂载点/容器数量无关） |
 | --- | --- |
@@ -128,12 +179,30 @@ docker_capacity = max(0, upper_rows - 18)
 | --- | --- | --- | --- |
 | `header` | 0 | 2 | 品牌、主题、主机和当前时间 |
 | `gpu` | 2 | upper_rows − 2 | GPU 所有已知槽位，上半区内 |
-| `host` | 2 | 5 | Host Resources；第 7 行为右侧间距 |
+| `host` | 2 | 6 | Host Resources四行内容：CPU标签/数值、CPU条、RAM标签/容量、RAM条；无额外下间距 |
 | `storage` | 8 | 6 | 内容固定在第 10～12 行；第 14 行为右侧间距 |
 | `docker` | 15 | upper_rows − 15 | 内容从第 17 行起，到 upper_rows − 2；最后一行为边框 |
 | `service` | upper_rows | lower_rows − 2 | 服务窗口标题、边框、模型、指标、历史和内部留白 |
 | `service_switch` | H − 2 | 1 | 独立的 vLLM / WebUI 切换位，WebUI 禁用 |
 | `footer` | H − 1 | 1 | 键位提示 |
+
+### HTML 对齐的字符适配
+
+页眉保持两行，不增加预算外留白。row0的`Joi`、`::`、`Observer`分别为secondary、muted、primary；右侧仅显示`Theme: Hologram [t]`或`Theme: Moonlight [t]`，角色primary。按实际文本宽度令两种主题的右端都等于全页列数C；这是不可点击的状态说明，只有t可切换。名称长度变化不得使右边缘移动。
+
+row1沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，角色text；紧随` / `及HostInfo.system发行版本为muted。组合根`_local_host_info()`只在启动装配时读取本地os-release：按`/etc/os-release`、`/usr/lib/os-release`顺序尝试，打开或读取发生OSError时尝试下一候选；首个读取成功的文件一次解析，缺字段或空文件不与低优先级文件合并。只使用文件实际提供的字段，优先非空PRETTY_NAME，缺失或空值时组合NAME与VERSION_ID，名称/版本缺失或空值分别用Ubuntu/—。显式提供的字面值Linux是有效名称，不能当成库默认值丢弃；空文件、全部候选读取失败或所选文件UTF-8解码失败显示Ubuntu —。解析沿用标准库已核对的字段赋值、引号及五类转义规则，不执行shell、不使用标准库注入的Linux默认字段或全局缓存，不新增依赖。该读取不使用platform.release内核版本、不读取DMI、不发起网络探测；布局自身仍为纯函数，显式HostInfo注入接口保持。合计左区最多`C-19-2`列，按终端显示宽度裁切；右侧19列固定为传入本机aware墙钟的`YYYY-MM-DD HH:MM:SS`，muted，右端同为C，中间至少空两格。不把时间转换成UTC，不追加设计稿模拟的CST，不使用采样时间。控制字符和双向控制符先净化，宽字符/组合字符不得穿越时钟保护区。
+
+GPU标题`GPU`为primary；Host Resources、Storage、Docker及当前服务标题均为secondary。所有外框和内部分隔仍为muted；标题复用上边框行，保持既有内缩，不增加布局高度。固定主题token与参考HTML更暗的边框/表面的取舍统一见[主题设计](theme.md)，不由控件另建颜色。
+
+GPU/CPU/RAM填充与轨道同为▌；仅未填充段使用独立track角色，双主题目标#3E4A5B，不能改动muted来使轨道变暗。关联GPU填充primary、未关联GPU填充muted、CPU/RAM填充secondary与所有数值/位置保持；边框、历史和其他面板不改用track。
+
+水平分区按Neon Grid参考稿接近3:2：`gpu_width=floor((columns−1)*3/5)`；GPU从0列起，空1列，Host/Storage/Docker共用右侧余宽。120列时GPU外宽71，右侧起点72/外宽48；140列时分别83与84/56。横向调整不改变上面的高度公式、GPU槽数规则或Docker容量。
+
+硬件内部字段的固定右边缘见[硬件设计](hardware.md)：GPU显存在型号行中间区右对齐，温度/功率共享最右10格；STALE位于每卡第3行预留位。CPU固定1位小数的百分比与RAM共享单位整数容量分别在标签行右侧，条独占下一行。RAM的GiB/TiB均由原始字节直接ROUND_HALF_UP，不添加百分比文字。Storage路径和空配置文案使用text；路径在左、容量/固定1位小数的百分比整体贴内容右缘`R=column+width-2`，挂载内容行不再保留状态槽。前三个配置挂载点任一stale时仅在Storage标题行的`[R-5,R)`显示一次STALE，全部恢复后清除；未配置及第4个起的挂载点不参与汇总。Storage GiB整数、TiB1位及GPU/public formatter原精度见硬件设计；这些显示修订不改变CPU采样或其他原始数值。
+
+服务区外矩形保持不变。内部模型栏内容宽固定24字符，由compose_frame在`service.column+27`以muted竖线覆盖service内部行（不覆盖上下边框），右详情从`service.column+30`起，到右边框前2列结束；120列时图区宽88。左栏仍为MODELS标题及每项三行内容＋一行间隔，全部行位和容量不变。右侧相对+1/+5/+11为空行：模型名/状态+2、路由+3、横线+4、运行/等待+6、caption+7、横线+8、四指标标签+9/数值+10、历史标题+12、图区+13至height−3，轴仍height−2。新增空行在同一服务预算内减少3行图区，最小height16仍保留1行，不提高基础最小终端尺寸。具体坐标在[服务视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)维护。
+
+固定半页和最低终端尺寸优先；统一字体/字符边框替代浏览器字号及像素边框，不以多行ASCII大数字消耗历史高度。逐模型状态、GPU状态位、真实单位与未知值的保留是可靠监控需要的适配；不为模仿HTML而移除这些字段或复制模拟参数。不能以“终端适配”为由继续保留可以实现但未同步的数值左排、三列负载或两列同行指标。
 
 两半之间不另加预算外行。H=44/48/42 时 Docker 内容容量分别为 4/6/3 行；H=36 且 GPU 槽数不超过 4 时容量为 0。H=37 的主要 5 GPU 场景中，Docker 可见 1 行，下半区仍有完整 18 行；最小尺寸并不承诺显示所有容器。
 
@@ -143,6 +212,8 @@ Storage 内容区始终 3 行，标题/边框另计。0 项在内容区显示空
 
 Docker 填充右侧剩余高度，只显示配置前 `docker_capacity` 项；全部容器仍保留、仍采集、仍按对象记录实际采集错误，隐藏本身不是错误。面板内容少时允许留白，不缩短面板，不把余高让给 Storage。容量大于 0 且配置为空时显示空态；容量为 0 时不画条目或空态文字，避免占用边框。隐藏项无提示、无省略号/更多标记、无隐藏数量、无滚动分页；窗口变大重新显示时读取同一最新快照。失败项保持原位置，后续项不能补位。
 
+每个Docker条目从`L=column+2`开始，右端`R=column+width-2`；固定状态槽为`[R-14,R)`。七种生命周期、未知`—`及`STALE`的文字均在槽内右对齐到R，名称只占`[L,R-15)`，至少保留一格间隔。不能按当前状态长度扩大名称槽或让失败推挤名称。仅`stale=False`且`sampled_at`非None的Running用primary，其余生命周期、未知、STALE为text，均不用amber；失败以STALE替换旧状态，不并列展示。120列时状态槽为104～117，所有状态同在第117列结束。
+
 模型列表在服务窗口内随选择滚动，窗口高度随半页高度变化，模型总数不增加最小高度。上半区不提供方向键滚动；GPU 槽位不能因模型选择隐藏。所有内容必须限制在自己的区域内，不能仅依赖整屏裁切，否则 Docker 末尾项会覆盖下半区。
 
 仅低于基础尺寸时显示 `Enlarge terminal to at least 120x37`（数字随 GPU 容量）和 `q Quit`；Docker 溢出不触发该提示，也不触发局部提示。极小终端只裁切提示，q 仍可退出；恢复尺寸后立即重绘。Monitor 不因缩放、隐藏、主题或模型选择改变采集节奏。长名称按终端显示宽度截断而不换行；详细颜色和模型面板仍由后续需求设计。
@@ -151,7 +222,9 @@ Docker 填充右侧剩余高度，只显示配置前 `docker_capacity` 项；全
 
 `compose_frame()` 生成不可变 Frame，包含 TextCell 和 Region；不附带异常类型、原因或堆栈。布局只读取 StateSnapshot 的指标、stale 和对象身份，不渲染内部 sampled_at/history 时间。墙钟只用于顶部当前时间。
 
-每个对象/面板预留 5 字符状态位：正常留空，失败仅 `STALE`。失败、恢复和模型类型切换均不改变区域矩形。通用 `format_metric()` 规定：真实 0 是 0；未知/无观测是 `—`；不适用是 `N/A`。具体吞吐/延迟派生和单位由后续模型模块提供，界面不重新计算。全屏禁止错误弹窗、诊断列表、最后成功时间、堆栈及设计稿的模拟标记。
+`TextCell(row, column, text, role="text", bold=False)`在末尾增加字体标记，旧三/四参数构造默认不新增粗体，既有主题字重保持。vLLM只给右侧`+6`的RUNNING/WAITING真实数值和`+10`四指标真实数值设置bold；0、科学记数、STALE旧数字保持该强调，`—`/`N/A`/`…`及其他cell不新增粗体。后端每次按原`style(role)`叠加所请求的`A_BOLD`，逻辑色对/主题RGB不改变，不在正文中插入ANSI。单色的颜色style可为0但仍显示所请求的字体强调；低色终端对bold的亮化/字重处理依其设置，既有Moonlight辅色近似不变。详细槽位见服务视图契约。
+
+硬件对象/面板预留5字符失败位，正常留空、失败仅`STALE`；Storage将前3挂载的失败汇总到标题右上角，不在内容行重复显示。Docker在14格状态槽、模型在6格状态槽中原位替换正常生命周期/READY/QUEUED。失败、恢复和模型类型切换均不改变区域矩形。通用 `format_metric()` 规定：真实 0 是 0；未知/无观测是 `—`；不适用是 `N/A`。界面不重新计算吞吐/延迟或Total。全屏禁止错误弹窗、诊断列表、最后成功时间、堆栈及设计稿的模拟标记。
 
 ## 接口与验证依据
 
@@ -160,17 +233,22 @@ Docker 填充右侧剩余高度，只显示配置前 `docker_capacity` 项；全
 | `main` / `CliDependencies` | `tests/test_cli.py`：直接启动、缺配置、显式路径、非法配置、重新读取配置、非TTY、帮助、日志初始化失败、退出清理 | AC-104/105/110/111/113 |
 | `required_size` | `tests/test_tui.py`：GPU容量、非负整数边界、容器不限量且不增高、挂载点尾项不增高 | AC-106 |
 | `compose_frame` / `format_metric` | 标题/值槽/STALE、偶数及奇数半页、8区边界、Storage固定及无补位、Docker 4→6→3行/零行/空态/无溢出提示、失败恢复稳定 | AC-101/106/110/207/304/607/608 |
+| HTML外壳 / `compose_frame` | `tests/test_html_shell_layout.py`：两主题/多宽右边缘、主机与非UTC时钟分色、Unicode/ANSI保护、完整面板标题角色、7种Docker生命周期/未知/STALE固定槽、容量0与空配置 | REQ-006排版与颜色契约 |
 | `ObserverApp.run` / `TerminalPort` | 初次绘制、q、部分进入异常、绘制异常、Ctrl+C、小窗口退出、缩放恢复、键位只分派展示操作 | AC-103/104/106 |
 | `SessionViewActions` / 默认 `ObserverApp` | `tests/test_navigation.py`、`tests/test_navigation_app.py`、`tests/test_navigation_pty.py`：真实控制器、默认接线、只读采样隔离、失败/缩放保持、真实方向键、页脚与禁用入口 | AC-501～504 |
 | `ServicePresentation` / `footer_text` / `compose_frame` | `tests/test_service_footer.py`：服务描述冻结、同描述驱动标题/当前入口/导航提示、其余全局文字不变 | AC-504及用户补充 |
 | `ApplicationRuntime` / `RuntimeComponents` | `tests/test_tui.py`联合真实Monitor/State/UI：慢采集仍绘制和q退出、键盘异常使采集取消/关闭、终端恢复先于日志关闭；采样时序另见调度测试 | AC-102/103/104 |
 | uv 工具安装与命令入口 | 新 shell、未激活环境、不同工作目录、命令/示例资源定位及离线 TUI 启停；已有 R4/R5 历史证据，布局边界变更后须重新验证 | AC-114 |
 
-离线命令：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。配置解析与屏幕生成没有被替换；运行期/终端替身只隔离操作系统、驱动和终端。上述REQ-001回归应保持通过；REQ-002增加`test_hardware_view.py`验证硬件公开入口及compose_frame目标行为，其骨架/尚未接线失败单独记录在REQ-002交接中，不使用skip/xfail掩盖。
+离线命令：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。配置解析与屏幕生成没有被替换；运行期/终端替身只隔离操作系统、驱动和终端。REQ-001～005已合并的采集/退出等非呈现行为继续回归；REQ-006当前实现与验证记录在R4/R5交接，R2记录只保留当时的未实现基线。REQ-002最初骨架/未接线记录同样保留为历史，不使用skip/xfail掩盖当前差异。
 
-现有 PTY 输入和终端恢复测试保留。R4 必须按新最小尺寸重跑边界与缩放，并记录奇偶半页、Storage/Docker 区域和可见条目；还需结合后续需求做整体视觉验收。历史 `verify_pty.py` / `verify_uv_install.py` 以 5 容器抬高到 120×38，已不符合新规则：无 GPU 的生产外壳新最小为 120×36，5 GPU 场景为 120×37。旧 JSON 验证资料保留为历史，不改写成新通过；新增证据应标注需求 v1.12 和源码版本。`tests/test_terminal_pty.py` 的 Esc/方向键时限测试只针对终端适配器，不因布局改写。该计划不授权连接服务器。
+现有PTY输入、终端恢复、最低尺寸、边界与缩放测试继续保留，涵盖奇偶半页、Storage/Docker区域和可见条目；返修后按影响范围重跑。当前整体观感已由用户在R5确认，GUI-006-001关闭，详见R5交接。历史`verify_pty.py` / `verify_uv_install.py`中以5容器抬高到120×38的版本不再适用：无GPU最低120×36，5GPU最低120×37；这些旧JSON不改写为新通过，新证据须注明当前需求及源码版本。`tests/test_terminal_pty.py`的Esc/方向键时限测试只针对终端适配器，不因布局改写。上述验证不授权连接服务器。
 
 ## 修订说明
+
+v1.15按用户反馈同步静态设备标签、本地os-release发行版本及回退、斜线分隔、Storage路径正文色和主题切换整帧重绘；不自动更改TERM或扩大采集范围。
+
+以下v1.1～v1.5记录保留各次设计时点的范围和实施状态；其中“待R4”等文字不代表当前实现状态。当前状态以本文顶部及REQ-006交接为准。
 
 v1.1 按用户要求将安装/开发工具明确为 uv：正式使用 `uv tool install`，项目开发使用 `uv run`，新增 AC-114 的本地安装验证场景。CLI 接口、配置查找和既有黑盒用例不变；本次只修改文档，未重新运行业务测试或执行安装。
 
@@ -188,6 +266,14 @@ v1.5 衔接 REQ-005：新增默认会话控制器契约、精确键位文字和�
 
 模型采集器返回 VllmCollectionResult，普通硬件/Docker 返回 MetricCollectionResult；ApplicationRuntime 不拆包或转换它们，统一交 Monitor 按公共 key/failure 调度提交。State 按 spec 接收对应子类并生成同一种只读快照；Monitor 自身产生的纯公共失败没有载荷，按目标 spec 执行保值与缺口处理。公共模型模块不反向引用 vLLM 观测类型。
 
-`compose_frame`新增可选`monotonic_now`用于离线历史时钟，生产缺省取`time.monotonic()`；现有datetime参数仍只负责页眉时间，二者不可混用。在原service Region内调用纯`vllm_cells`替换占位详情，外边框、上下各半、Docker容量、service_switch/footer和最小终端尺寸保持原规则。CursesTerminal需增加amber角色到黄色的基础映射，完整RGB主题留REQ-006；不得让WAITING标签、0或STALE旧值使用amber。
+`compose_frame`的可选`monotonic_now`用于离线历史时钟，生产缺省取`time.monotonic()`；现有datetime参数仍只负责页眉时间，二者不可混用。在原service Region内调用纯`vllm_cells`替换占位详情，外边框、上下各半、Docker容量、service_switch/footer和最小终端尺寸保持原规则。REQ-006已通过CursesTheme实现精确RGB与能力降级，包括基础色终端的amber映射；不得让WAITING标签、0或STALE旧值使用amber。
 
-上述 REQ-004 执行接线已合并；本次待实现的是 REQ-005 默认导航及服务页脚接线。vLLM 规格见[vLLM设计](vllm.md)与[服务窗口契约](../dev-workflow/dev-0/REQ-004/view-contract.md)，集成与首帧验证继续使用完全离线HTTP端口。
+上述 REQ-004 以及 REQ-005 默认导航、服务页脚接线均已合并。REQ-006的Frame.theme传递与终端配色也已实现。vLLM 规格见[vLLM设计](vllm.md)与[服务窗口契约](../dev-workflow/dev-0/REQ-004/view-contract.md)，集成与首帧验证继续使用完全离线HTTP端口。
+
+## REQ-006 配色衔接
+
+默认主题为 Hologram，沿用会话控制器及一次 selection 读取。Frame 在 too_small 之后追加 theme 字段，compose_frame 的正常和小窗口返回均从同一 view 传入。TerminalPort 签名不变，后端按 frame.theme 激活配色并覆盖所有空白背景；不从主题标题反推状态，不增加采样或持久化。
+
+Palette在末尾追加默认track=(62,74,91)，原五个前景角色与旧构造保持兼容。精确配色保存/恢复私有色槽16～22，六色对1～6共享背景，COLOR_PAIRS至少7；固定256色track取239，基础色用BLACK|A_BOLD近似深灰，单色style为0。布局只提供track语义，不依赖curses索引；终端不修改用户TERM。详见[主题设计](theme.md)的能力表和异常回滚契约。
+
+CursesTerminal 每次 enter 创建独立 CursesTheme，render先激活；仅与上次已呈现主题不同时clearok(True)强制整帧刷新，随后设置背景、erase、绘制。同主题帧不强制清屏，保留差分输出；restore 在 endwin 前归还颜色并继续既有终端恢复。精确 RGB、256/8/无色降级和异常契约统一维护在[主题设计](theme.md)与 theme.py 注释，保留输入解析和采集调度，帧调度已按60FPS目标接线。黑盒见 test_theme_palette.py / test_theme_view.py / test_theme_terminal.py；导航与vLLM PTY覆盖默认主题、实际RGB、60Hz、固定时间轴及尺度契约，不改采集/计算业务期待。R2未实现基线保留为历史，当前实现和输入/绘制公平性返修结果见REQ-006 R4/R5交接。
