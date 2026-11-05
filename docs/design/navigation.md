@@ -1,7 +1,7 @@
 # 模型导航与服务入口设计
 
 - 关联需求：dev-0 / REQ-005、REQ-006，`requirements.md` v1.20，AC-501～504；依赖 REQ-001、REQ-002、REQ-004。
-- 修订：v1.9，2026-11-05；按用户要求同步60FPS（1/60秒，约16.7ms）显示节拍；选择、输入/绘制公平性、1秒默认采样、固定60秒历史轴与尺度生命周期保持，完整颜色见[主题设计](theme.md)。
+- 修订：v1.10，2026-11-05；保留选择、按键及服务页脚契约，呈现坐标、GPU匹配、配色与帧调度改为引用各自模块，行为和接口不变。
 - 代码：`src/joi_observer/tui/navigation.py`、`tui/services.py`；复用 `tui/app.py`、`tui/layout.py`、`tui/vllm.py`、`tui/widgets.py`。
 - 关联模块：[应用外壳](application-shell.md)、[硬件](hardware.md)、[vLLM](vllm.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)。
 - 当前阶段：REQ-005已实现并合并，REQ-006默认主题、HTML布局和会话接线已实现；当前60FPS修订的执行与验证见REQ-006 R4交接。REQ-006 R2的30FPS基线及REQ-005的[R2交接](../dev-workflow/dev-0/REQ-005/handoff-r2.md)保留原设计时点，不替代当前验证。
@@ -85,7 +85,7 @@ classDiagram
     Services --> ServicePresentation
 ```
 
-图中 `module` 框表示实际 Python 模块，列出模块级函数和常量，不代表新增类。`VLLM_SERVICE` 是 `ServicePresentation("vllm", "vLLM", "Select model")`；布局使用同一描述的 title 绘制当前服务，并传给 `footer_text(service)` 生成导航提示。图示导航接口及服务描述的布局接线已实现。主题状态仍由 `ViewSelection.theme` 承载，完整配色映射留 REQ-006。
+图中 `module` 框表示实际 Python 模块，不代表新增类。服务描述及页脚组合规则见[服务入口与键位呈现](#服务入口与键位呈现)；主题状态由 `ViewSelection.theme` 承载，配色定义见[主题设计](theme.md)。
 
 `SessionViewActions(models: tuple[ModelConfig, ...])` 结构化满足既有协议，不继承应用类。输入是配置解析后顺序固定、id 唯一的模型元组；复用配置校验，不在此层重新校验 URL、探测端点或增加新的配置字段。同名、同类型、同地址但 id 不同的项仍可分别选择。
 
@@ -93,12 +93,12 @@ classDiagram
 
 ## 选择与键盘契约
 
-非空配置初始选择第一项，空配置返回 `model_id=None`；目标为每个新应用实例从 `theme="hologram"` 开始（需求 v1.13；默认值调整待 REQ-006 R4）。非空配置的控制器始终输出合法 id，不向视图输出未知 id。连续读取的值相等，后续操作不能改变已返回的冻结值；不同控制器实例互不影响。
+非空配置初始选择第一项，空配置返回 `model_id=None`；新实例的主题取[主题模块的单一默认元数据](theme.md)。非空配置的控制器始终输出合法 id，不向视图输出未知 id。连续读取的值相等，后续操作不能改变已返回的冻结值；不同控制器实例互不影响。
 
 | 归一化输入 | 会话行为 | 应用处理 |
 | --- | --- | --- |
 | `up` / `down` | 按配置顺序前/后一项；在首/尾停留，不循环；保持主题 | 分派至控制器 |
-| `t` | moonlight ↔ hologram，保留模型 | 全局有效，空列表、小窗口、失败时也可操作 |
+| `t` | 在[主题模块](theme.md)定义的两个主题之间切换，保留模型 | 全局有效，空列表、小窗口、失败时也可操作 |
 | `left` / `right` | 无动作 | 不离开 vLLM，不改变模型或硬件，不发起新来源 |
 | `enter` / `p` / `tab` / 其他键 | 无动作 | 不开详情、不暂停、不转移面板焦点 |
 | `q` | 控制器直接收到时无动作 | 应用全局正常退出，沿用运行期清理 |
@@ -108,7 +108,7 @@ classDiagram
 
 零模型时所有方向键安全、主题可切换；单模型时上下始终停留。选中项首次未采集、STALE、恢复或暂时不在快照中时保持 id；这些状态只影响已有视图的指标和状态槽。模型列表来自配置，不从成功采样对象反推列表。不热加载配置，不增加运行时删除模型的迁移规则。
 
-REQ-005 完成主题标识的会话操作；REQ-006 设计见[主题模块](theme.md)，终端精确 Moonlight/Hologram RGB 映射及全屏颜色验收由其承接。不得把主题名称变化或语义角色通过视为完整双主题已实现。
+控制器只管理主题标识；终端配色、能力降级和颜色验收归[主题模块](theme.md)，不能仅由标识切换推定终端外观已验证。
 
 ## 默认接线与刷新
 
@@ -118,27 +118,27 @@ REQ-005 完成主题标识的会话操作；REQ-006 设计见[主题模块](them
 
 `ApplicationRuntime` 继续原样创建 ObserverApp，自动使用其默认控制器；不再额外创建第二份选择状态。注入完整 RuntimeComponents 时仍不创建额外来源或替换已注入的应用。单个应用实例重复顺序运行保留该实例选择；只有新建实例才重置，重复并发运行仍按既有契约拒绝。
 
-首次绘制发生在第一个按键前。每次绘制读取一次 `selection()`，将该值传给整帧；不分别读取模型详情与 GPU 高亮的选择。处理按键后在下一普通绘制周期显示，按目标60 FPS节拍调度，读键等待不超过下一帧截止点与50ms两者较小值；超预算跳过过期帧，不为导航增加采样或额外普通帧。具体截止点规则见[应用外壳](application-shell.md)。尺寸变化仍在下一次读键前立即重绘。
+每次绘制读取一次 `selection()`，将同一值传给整帧的模型详情和 GPU 高亮。按键本身不增加采样或额外普通帧；首次绘制、帧截止点、输入公平性及resize重绘时机统一见[应用外壳](application-shell.md#帧截止点与终端写入)。
 
-刷新、主题、采集失败与 resize 不重建控制器。不足基础尺寸时仍处理方向键和 t，恢复足够尺寸后显示最新选择；此时屏幕继续只显示既有放大提示和 `q Quit`，不为小窗口增加完整页脚。新发现 GPU 仍按既有顺序追加槽位，导航不增删或重排槽位。
+刷新、主题、采集失败与 resize 不重建控制器。不足基础尺寸时仍处理方向键和 t，恢复足够尺寸后显示最新选择；小窗口呈现由[应用外壳](application-shell.md#可验证的字符容量)负责。导航不增删或重排GPU槽位。
 
 ## 列表、详情与 GPU 关联
 
-模型栏内容固定24字符，标题MODELS位于service相对+1行；每项为名称/状态、类型/明确端口、运行/等待三行，项间留1行。service高度为`H // 2 - 2`，可见容量为`(service.height - 2) // 4`；最低高度16时可见3项（对应当前三模型），增高后显示更多。首个可见项名称在+2行，后续步长4行。纯绘制按已有规则，窗口首项为 `max(0, selected_index - capacity + 1)`，末端不超过模型总数。每项首行右侧保留6字符状态位，名称先裁切；选中指示与主色不侵占计数或状态。详细列位见[服务视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)。这不是带记忆的滚动窗口：选择靠前时可能显示较多后续项，选择靠后时可能留下余白，不新增分页、循环、更多标记或滚动条。任何可用尺寸下当前选择都在可见窗口内；模型数量不提高最低终端高度。
+控制器仅提供当前模型id，纯视图负责按选择计算可见窗口，控制器不保存第二份滚动状态。模型行位、容量公式、状态槽和可见窗口边界统一见[vLLM固定槽位](vllm.md#vllm-layout)。
 
 右侧详情、单位、历史取 `ObjectKey("vllm", model.id)`。Chat 的 DECODE/PREFILL、TTFT、KV Cache 和 pooling 的 RATE/Avg latency 继续使用 [vLLM 契约](vllm.md)，不复制计算逻辑。切走再切回不清空历史，不把旧样本当新样本，不替换选中故障模型。
 
-GPU 映射继续只读模型的 `gpu_ids`。完整 UUID 精确匹配；规范十进制索引只匹配当前已采样、非 STALE 且索引唯一的 GPU。空映射、未知标识、重复或过期索引不猜测；明确 UUID 关联可用于保留的旧卡。切换改变编号、填充条和百分比的 `primary/muted`，不改变 GPU 槽位、值、状态或顺序。模型服务本身 STALE 不使显式配置映射失效。
+GPU关联读取同一选择对应的 `gpu_ids`；UUID/index匹配、过期和未知映射、服务失败下的关联语义统一见[硬件模型关联](hardware.md#硬件显示与模型关联)。导航不复制映射算法。
 
-既有纯视图对外部未知 id 的容错保持：vLLM 回退首项，硬件清空关联。默认控制器从不产生这种输入，无需为本需求统一或扩大兼容规则。
+默认控制器不产生未知id；显式注入外部选择时，各视图沿用上述模块定义的兼容规则，不由导航统一或扩大容错行为。
 
 ## 服务入口与键位呈现
 
-下半区仍包含 service、service_switch 和 footer，共占 `H // 2` 行；奇数页高余行留给上半区。沿用八个 Region、120 列下限、Storage 三行和 Docker 可见前缀规则。
+服务窗口、服务入口行与页脚的 Region 和全页预算统一见[应用外壳](application-shell.md#可验证的字符容量)。
 
-正常帧在 `service_switch` 同一行保留可见文字 `vLLM  /  WebUI (disabled)`，将 `vLLM` 单独绘为 `primary` 表示当前服务，分隔符和 `WebUI (disabled)` 为 `muted`。不引入可变 service_id、焦点状态、WebUI 页面或鼠标流程。
+正常帧在 `service_switch` 同一行保留可见文字 `vLLM  /  WebUI (disabled)`，区分当前服务、分隔符与禁用入口，颜色见[主题设计](theme.md)。不引入可变 service_id、焦点状态、WebUI 页面或鼠标流程。
 
-当前 vLLM 页脚仍精确为 `↑↓ Select model    t Theme    q Quit`，角色 `primary`。其中 **Select model 由 vLLM 服务提供**，不是所有服务的固定文案；`↑↓`、四空格间距、`t Theme` 和 `q Quit` 保持全局固定，其余 UI 文字不改。不声称左右可切换，不显示 Details/Pause/Tab 操作。
+当前 vLLM 页脚精确为 `↑↓ Select model    t Theme    q Quit`。其中 **Select model 由 vLLM 服务提供**，不是所有服务的固定文案；`↑↓`、四空格间距、`t Theme` 和 `q Quit` 保持全局固定。不声称左右可切换，不显示 Details/Pause/Tab 操作；颜色见[主题设计](theme.md)。
 
 `tui/services.py` 定义不可变 `ServicePresentation(service_id, title, navigation_label)`；当前唯一启用描述是 `VLLM_SERVICE = ("vllm", "vLLM", "Select model")`。这只是静态呈现元数据，不增加服务状态机、配置字段或启用 WebUI。描述由服务定义提供，不从模型数量、模型类型、快照内容或当前文案反推服务身份；空模型时仍使用 vLLM 的提示。
 
@@ -160,7 +160,7 @@ REQ-005 已完成元数据、footer_text 及 compose_frame 接线。测试可替
 
 测试只隔离外部终端、时钟、只读样本或 HTTP 字节来源，不替换控制器的预期结果或 Frame 生成。默认应用测试不手工注入一个假控制器来掩盖接线缺失。PTY 子进程也封锁网络；不运行任何采证脚本，不连接部署服务。
 
-REQ-006 的四列指标将单位放在标签中（如 `DECODE / tok/s`），下一行只绘数值、`—`或`N/A`；统计caption保留 `Total 10 seq`、`Avg queue 0.25s`。左栏计数为左齐 `3 running`、右齐 `7 waiting`，明确槽位、分色和超宽科学记数规则见[服务视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)。这些是视图局部格式，不更改公共 `format_metric` 的值/单位拼接行为。历史标题保持原样。测试必须排除外边框后分别核对标签、纯数值及其位置，不能把未触达的旧格式期待保留下来。
+导航贯穿视图的测试以[vLLM呈现契约](vllm.md#vllm-view)为准，排除外边框后分别核对标签、数值及位置，不在导航文档维护第二套格式期待。
 
 在本地 Ubuntu/WSL 运行 `python -m pytest -q tests/test_navigation.py tests/test_navigation_app.py tests/test_navigation_pty.py tests/test_service_footer.py --tb=short`，并在实现后运行既有全量回归。断言期待真实业务行为，不以 skip/xfail 隐藏业务未实现，也不把 NotImplementedError 当通过；PTY 仅沿用非 POSIX 环境保护，本地 Ubuntu 必须实际执行。REQ-005 的骨架和 falsey 注入问题已解决；REQ-006 默认主题及终端接线尚未完成的失败独立记录，导入错误、环境问题或其他业务回归不得归为预期业务失败。
 
@@ -173,6 +173,6 @@ R4 完成实现后应重跑全部用例，并从实际离线安装包验证 CLI 
 - 沿用无状态可见窗口，避免选择与 resize 各维护一份滚动偏移。
 - 本需求只定义服务入口的当前/禁用状态，不为未来 WebUI 预造切换状态机。
 - 上下箭头后的文字属于当前服务描述；vLLM 是 Select model，全局主题/退出文字不变。静态描述与服务启用、可切换状态分开。
-- 用户已在 REQ-006 确认默认 Hologram；导航三份测试同步目标，显式注入主题不变。历史 REQ-005 交接保留原时点结果，新增失败归入 REQ-006 R2 基线。
+- 默认主题的测试期待跟随[主题模块](theme.md)的单一默认元数据，显式注入主题不变。历史阶段结果保留原时点事实。
 
-当前test_navigation_app.py的突发输入须按60Hz截止点校验，test_navigation.py继续采用固定60秒轴与独立尺度；应用尺度生命周期另由test_history_app.py覆盖。输入、采样隔离与显式ViewActions注入继续保留；历史30Hz结果不改写，60Hz实际验证见REQ-006 R4交接。
+`test_navigation_app.py`的突发输入按[应用外壳帧调度](application-shell.md#帧截止点与终端写入)校验，历史呈现沿用[vLLM历史契约](vllm.md#vllm-history)；应用尺度生命周期由`test_history_app.py`覆盖。输入、采样隔离与显式ViewActions注入继续保留，历史执行记录不改写为当前验证结果。

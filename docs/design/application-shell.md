@@ -1,7 +1,7 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001、REQ-005、REQ-006，需求说明 v1.24；AC-101～106、AC-110、AC-111、AC-113、AC-114、AC-501～504；共享布局约束关联 AC-202/203/207/301/304/605/607/608/613/614/616。
-- 修订：v1.20，2026-11-05；同步独立硬件深灰track与同字形▌轨道的配色接线，原布局、五个既有角色、字体、60FPS和采样保持；完整资源/降级规则见theme v1.12。本轮不重建离线包或更新旧GUI入口。
+- 修订：v1.21，2026-11-05；集中维护启动、终端生命周期、整页几何、页眉与帧调度；模块内部呈现和配色规则改为引用所属设计，行为不变。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 - 当前阶段：REQ-006布局、Frame主题、帧时钟和历史尺度接线已由R4实现。输入/绘制公平性沿用AC-603/609/612与原始帧相位；本轮按用户反馈同步设备标签、发行版本与显示细节。R5-006-001/002返修及当前复验证据见[REQ-006 R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)及[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)。
@@ -10,9 +10,9 @@
 
 本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005 已完成模型导航，REQ-006 已实现完整主题及显示调度，均复用本模块的生命周期与容量约束；当前验收状态以对应交接单为准。
 
-ApplicationRuntime 通过 build_hardware_sources、build_docker_collectors 和 build_vllm_collectors 组装三类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 与 vllm_http_factory 分别替换外部命令和 HTTP IO；全部配置容器和模型参与采集，不按可见行数裁剪。构造与 prepare_log 不执行采集命令或 HTTP 请求；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源。详见 [本机硬件](hardware.md)、[Docker 设计](docker.md) 与 [vLLM 设计](vllm.md)。
+ApplicationRuntime 通过 build_hardware_sources、build_docker_collectors 和 build_vllm_collectors 组装三类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 与 vllm_http_factory 分别替换外部命令和 HTTP IO；全部配置容器和模型参与采集，不按可见行数裁剪。每个模型使用独立端口，空 models 不调用 HTTP 工厂；Monitor 负责关闭所有来源端口。构造与 prepare_log 不执行采集命令或 HTTP 请求；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源。详见[本机硬件](hardware.md)、[Docker](docker.md)与[vLLM](vllm.md)。
 
-公共采集结果现在分为仅含 key/failure 的 CollectionResult、携带平面 metrics 的 MetricCollectionResult，以及在 `data/vllm.py` 中携带 observation 的 VllmCollectionResult。Collector 协议和 Monitor/State 接口仍依赖公共基类，组合根无需读取具体载荷；它只将普通 ObjectSpec 与硬件/Docker 来源配对，将 VllmSpec 与模型来源配对。failure 统一仅关键字传参，Monitor 可用公共无载荷失败处理任意来源，成功结果必须使用与 spec 匹配的具体子类。
+组合根只配对状态声明与采集来源，不拆解或转换业务载荷。公共结果分型、spec 匹配和失败接收规则统一见[Monitor 与内存状态](monitor-state.md#collection-results)。
 
 目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，使模块导入、配置加载及非终端离线测试不依赖终端初始化。必需验证在本地 Ubuntu 或 WSL Ubuntu 执行，Windows 工作区通过 WSL 运行测试，不要求维护原生 Windows 专用测试或执行 Windows 全量回归。源码无需安装 Windows curses 兼容包；真实终端验收在本地 Ubuntu 或 WSL Ubuntu 完成，不连接任何服务器。
 
@@ -34,20 +34,7 @@ flowchart LR
 
 ## uv 安装与开发运行
 
-正式使用采用 `uv tool install`，由 uv 创建持久的独立工具环境，并将 `pyproject.toml` 的 `[project.scripts]` 入口放入用户工具命令目录。首次完成 PATH 配置后，新开终端可直接运行 `joi-observer`，不要求激活项目 `.venv`，也不要求进入源码目录。uv 属于安装/开发工具，不加入应用的 Python 运行依赖。[uv 工具说明](https://docs.astral.sh/uv/concepts/tools/)
-
-以下安装契约保持不变，假定用户已安装 uv，并将源码放在本地目录：
-
-```bash
-uv tool install --python 3.12 /path/to/joi-observer
-uv tool update-shell
-```
-
-`uv tool update-shell` 负责把工具命令目录加入受支持的 shell 配置，首次执行后重新打开终端；项目不在每次启动时修改 PATH 或 shell 配置。用户随后通过 `joi-observer --example-config` 找到示例，复制到 `~/.joi-observer/config.yaml` 并修改，日常直接运行 `joi-observer`。配置查找规则保持不变；其他目录若存在高优先级 `config.yaml`，仍按既定规则处理。
-
-源码开发采用项目环境：在项目根目录运行 `uv run --python 3.12 joi-observer`；测试使用 `uv run --python 3.12 --extra test pytest`。uv 自动准备/同步项目环境，开发者不需要先手动激活。该环境与 `uv tool install` 创建的工具环境分离；安装后的工具需要重新安装才能采用新的本地源码版本。[uv 项目运行说明](https://docs.astral.sh/uv/concepts/projects/run/)
-
-`pyproject.toml` 继续声明构建后端、Python 版本、依赖、命令入口和示例资源，无需为了使用 uv 更换构建后端。R4 已生成项目 `uv.lock`；本次布局设计不解析依赖或修改锁文件。项目锁文件用于开发环境；不能假定工具安装自动复用同一项目环境或锁定结果。
+安装与日常使用命令统一见 [README](../../README.md#安装与启动)。uv 是安装/开发工具，不加入应用的 Python 运行依赖；应用启动不修改 PATH 或 shell 配置。构建后端、依赖、命令入口和示例资源由 `pyproject.toml` 声明，项目开发锁文件与已安装工具环境分开管理。
 
 AC-114 的本地安装验证使用预先准备好的 uv、Python 和离线依赖：安装工具并完成一次 PATH 配置，打开未激活虚拟环境的新 shell，在无项目 `config.yaml` 的其他目录验证 `joi-observer --version`、`--example-config` 的命令解析与资源可读性。有效配置进入/退出 TUI 的验证接入离线采集端口或禁用网络的本地测试环境，检查确实不依赖源码当前目录或 `VIRTUAL_ENV`。不能用 `uv run` 代替此工具安装验收，因为那不能证明裸命令可用。已有结果见 REQ-001 的 R4/R5 交接与历史证据；本次未重新安装，也不把旧布局通过结果计作新布局验证。这不构成服务器连接授权。
 
@@ -146,9 +133,9 @@ q 使 UI 正常返回，组合根通知/停止 Monitor；UI 内部异常同样�
 
 总体清理预算不超过 1 秒，`run()` 与 `close()` 共享预算；采集端口必须合作取消，底层同步操作必须有超时，不能等待无限阻塞线程退出。日志关闭不向 stdout/stderr 输出积压记录，也不要求补写停机时尚未落盘的事件。清理中的异常不能掩盖原异常。
 
-`ViewActions` 接收 t/up/down/left/right；q 由应用全局处理，Enter/p/Tab 没有行为，首版左右键不能进入 WebUI。REQ-005 由 `SessionViewActions(config.models)` 提供具体会话状态；`ObserverApp` 在 `actions is None` 时默认创建，显式注入原样保留。刷新、缩放、失败及同一实例再次运行不重建选择。每帧只读取一次选择并用于整帧。没有鼠标主题操作。正常页脚为 `↑↓ Select model    t Theme    q Quit`，服务行 vLLM 用 primary、WebUI (disabled) 用 muted。完整边界与测试见[模型导航](navigation.md)；默认导航与服务呈现已随REQ-005合并，REQ-006已接入上述60Hz帧节拍。
+`ObserverApp` 在 `actions is None` 时创建默认 `SessionViewActions(config.models)`，显式注入原样保留；每帧只读取一次选择并用于整帧。全局退出由应用处理，其他键分派给会话控制器。按键、选择生命周期及服务页脚统一见[模型导航](navigation.md)。
 
-`Select model` 仅是当前 vLLM 服务的导航提示。布局从 `services.VLLM_SERVICE` 取得一次描述，同时用于当前服务标题/入口及 `footer_text(service)`；该函数只替换上下箭头后的 navigation_label。未来启用其它服务后，提示随当前服务描述变化，`↑↓`、间距、`t Theme`、`q Quit` 及其它文字保持不变。本轮不实现服务切换，契约和黑盒测试见 `tests/test_service_footer.py`。
+布局从 `services.VLLM_SERVICE` 取得一次描述，同时用于当前服务标题、入口及 `footer_text(service)`，避免分别拼装不同服务的文案。服务描述和页脚接口契约见[导航设计](navigation.md#服务入口与键位呈现)。
 
 ## 可验证的字符容量
 
@@ -188,43 +175,41 @@ docker_capacity = max(0, upper_rows - 18)
 
 ### HTML 对齐的字符适配
 
-页眉保持两行，不增加预算外留白。row0的`Joi`、`::`、`Observer`分别为secondary、muted、primary；右侧仅显示`Theme: Hologram [t]`或`Theme: Moonlight [t]`，角色primary。按实际文本宽度令两种主题的右端都等于全页列数C；这是不可点击的状态说明，只有t可切换。名称长度变化不得使右边缘移动。
+页眉保持两行，不增加预算外留白。row0 左侧为 `Joi::Observer`，右侧显示当前 `Theme: {name} [t]`，按实际文本宽度使两种主题名称的右端都等于全页列数 C。Theme 为不可点击的状态说明；配色由[主题角色表](theme.md#color-roles)定义，交互见[导航](navigation.md)。
 
-row1沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，角色text；紧随` / `及HostInfo.system发行版本为muted。组合根`_local_host_info()`只在启动装配时读取本地os-release：按`/etc/os-release`、`/usr/lib/os-release`顺序尝试，打开或读取发生OSError时尝试下一候选；首个读取成功的文件一次解析，缺字段或空文件不与低优先级文件合并。只使用文件实际提供的字段，优先非空PRETTY_NAME，缺失或空值时组合NAME与VERSION_ID，名称/版本缺失或空值分别用Ubuntu/—。显式提供的字面值Linux是有效名称，不能当成库默认值丢弃；空文件、全部候选读取失败或所选文件UTF-8解码失败显示Ubuntu —。解析沿用标准库已核对的字段赋值、引号及五类转义规则，不执行shell、不使用标准库注入的Linux默认字段或全局缓存，不新增依赖。该读取不使用platform.release内核版本、不读取DMI、不发起网络探测；布局自身仍为纯函数，显式HostInfo注入接口保持。合计左区最多`C-19-2`列，按终端显示宽度裁切；右侧19列固定为传入本机aware墙钟的`YYYY-MM-DD HH:MM:SS`，muted，右端同为C，中间至少空两格。不把时间转换成UTC，不追加设计稿模拟的CST，不使用采样时间。控制字符和双向控制符先净化，宽字符/组合字符不得穿越时钟保护区。
+row1沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，紧随` / `及HostInfo.system发行版本。组合根`_local_host_info()`只在启动装配时读取本地os-release：按`/etc/os-release`、`/usr/lib/os-release`顺序尝试，打开或读取发生OSError时尝试下一候选；首个读取成功的文件一次解析，缺字段或空文件不与低优先级文件合并。只使用文件实际提供的字段，优先非空PRETTY_NAME，缺失或空值时组合NAME与VERSION_ID，名称/版本缺失或空值分别用Ubuntu/—。显式提供的字面值Linux是有效名称，不能当成库默认值丢弃；空文件、全部候选读取失败或所选文件UTF-8解码失败显示Ubuntu —。解析沿用标准库已核对的字段赋值、引号及五类转义规则，不执行shell、不使用标准库注入的Linux默认字段或全局缓存，不新增依赖。该读取不使用platform.release内核版本、不读取DMI、不发起网络探测；布局自身仍为纯函数，显式HostInfo注入接口保持。合计左区最多`C-19-2`列，按终端显示宽度裁切；右侧19列固定为传入本机aware墙钟的`YYYY-MM-DD HH:MM:SS`，右端同为C，中间至少空两格。不把时间转换成UTC，不追加设计稿模拟的CST，不使用采样时间。控制字符和双向控制符先净化，宽字符/组合字符不得穿越时钟保护区。
 
-GPU标题`GPU`为primary；Host Resources、Storage、Docker及当前服务标题均为secondary。所有外框和内部分隔仍为muted；标题复用上边框行，保持既有内缩，不增加布局高度。固定主题token与参考HTML更暗的边框/表面的取舍统一见[主题设计](theme.md)，不由控件另建颜色。
-
-GPU/CPU/RAM填充与轨道同为▌；仅未填充段使用独立track角色，双主题目标#3E4A5B，不能改动muted来使轨道变暗。关联GPU填充primary、未关联GPU填充muted、CPU/RAM填充secondary与所有数值/位置保持；边框、历史和其他面板不改用track。
+面板标题复用上边框行，保持既有内缩，不增加布局高度。正式标题与颜色角色、HTML 边框/表面的采用范围统一见[主题设计](theme.md#color-roles)。
 
 水平分区按Neon Grid参考稿接近3:2：`gpu_width=floor((columns−1)*3/5)`；GPU从0列起，空1列，Host/Storage/Docker共用右侧余宽。120列时GPU外宽71，右侧起点72/外宽48；140列时分别83与84/56。横向调整不改变上面的高度公式、GPU槽数规则或Docker容量。
 
-硬件内部字段的固定右边缘见[硬件设计](hardware.md)：GPU显存在型号行中间区右对齐，温度/功率共享最右10格；STALE位于每卡第3行预留位。CPU固定1位小数的百分比与RAM共享单位整数容量分别在标签行右侧，条独占下一行。RAM的GiB/TiB均由原始字节直接ROUND_HALF_UP，不添加百分比文字。Storage路径和空配置文案使用text；路径在左、容量/固定1位小数的百分比整体贴内容右缘`R=column+width-2`，挂载内容行不再保留状态槽。前三个配置挂载点任一stale时仅在Storage标题行的`[R-5,R)`显示一次STALE，全部恢复后清除；未配置及第4个起的挂载点不参与汇总。Storage GiB整数、TiB1位及GPU/public formatter原精度见硬件设计；这些显示修订不改变CPU采样或其他原始数值。
+硬件面板内部坐标、数值精度及状态位置统一见[硬件显示设计](hardware.md#硬件显示与模型关联)；硬件条字形及配色统一见[主题设计](theme.md#hardware-bars)。
 
-服务区外矩形保持不变。内部模型栏内容宽固定24字符，由compose_frame在`service.column+27`以muted竖线覆盖service内部行（不覆盖上下边框），右详情从`service.column+30`起，到右边框前2列结束；120列时图区宽88。左栏仍为MODELS标题及每项三行内容＋一行间隔，全部行位和容量不变。右侧相对+1/+5/+11为空行：模型名/状态+2、路由+3、横线+4、运行/等待+6、caption+7、横线+8、四指标标签+9/数值+10、历史标题+12、图区+13至height−3，轴仍height−2。新增空行在同一服务预算内减少3行图区，最小height16仍保留1行，不提高基础最小终端尺寸。具体坐标在[服务视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)维护。
+服务区外矩形由上方 Region 表分配。模型列表、详情行列、留白、分隔与图高只在[vLLM 固定槽位](vllm.md#vllm-layout)维护；compose_frame 和 vllm_cells 共用该契约。
 
 固定半页和最低终端尺寸优先；统一字体/字符边框替代浏览器字号及像素边框，不以多行ASCII大数字消耗历史高度。逐模型状态、GPU状态位、真实单位与未知值的保留是可靠监控需要的适配；不为模仿HTML而移除这些字段或复制模拟参数。不能以“终端适配”为由继续保留可以实现但未同步的数值左排、三列负载或两列同行指标。
 
 两半之间不另加预算外行。H=44/48/42 时 Docker 内容容量分别为 4/6/3 行；H=36 且 GPU 槽数不超过 4 时容量为 0。H=37 的主要 5 GPU 场景中，Docker 可见 1 行，下半区仍有完整 18 行；最小尺寸并不承诺显示所有容器。
 
-GPU 槽位按成功发现的设备身份在会话内保持稳定顺序，新设备追加；采集失败或暂时消失不删除已知槽位，因此不会因故障缩短面板。未发现任何 GPU 时用一个空态槽。成功发现的实际卡数不硬编码；若首次发现比初始空态更多的 GPU，容量提示可随已知数量增加而变化。
+GPU 槽位身份与生命周期见[硬件发现设计](hardware.md#gpu-发现调度与资源生命周期)。本模块按已知槽位数量计算容量；无已知 GPU 时按一个空态槽分配，首次发现后重新计算最低尺寸。
 
-Storage 内容区始终 3 行，标题/边框另计。0 项在内容区显示空态，1～2 项保留余下内容空行；仅前三项参与采集与显示，前项失败不得以第四项补位。窗口增高、失败/恢复或容器数量变化不改变其高度。
+Storage 的内容容量由 Region 表固定。0 项显示空态，未占用的内容行留白；窗口增高、失败/恢复或容器数量变化不改变其高度。采集对象的取用与校验见[配置设计](configuration.md#configuration-fields)，内容状态见[硬件显示设计](hardware.md#硬件显示与模型关联)。
 
 Docker 填充右侧剩余高度，只显示配置前 `docker_capacity` 项；全部容器仍保留、仍采集、仍按对象记录实际采集错误，隐藏本身不是错误。面板内容少时允许留白，不缩短面板，不把余高让给 Storage。容量大于 0 且配置为空时显示空态；容量为 0 时不画条目或空态文字，避免占用边框。隐藏项无提示、无省略号/更多标记、无隐藏数量、无滚动分页；窗口变大重新显示时读取同一最新快照。失败项保持原位置，后续项不能补位。
 
-每个Docker条目从`L=column+2`开始，右端`R=column+width-2`；固定状态槽为`[R-14,R)`。七种生命周期、未知`—`及`STALE`的文字均在槽内右对齐到R，名称只占`[L,R-15)`，至少保留一格间隔。不能按当前状态长度扩大名称槽或让失败推挤名称。仅`stale=False`且`sampled_at`非None的Running用primary，其余生命周期、未知、STALE为text，均不用amber；失败以STALE替换旧状态，不并列展示。120列时状态槽为104～117，所有状态同在第117列结束。
+Docker 条目内部名称、状态槽及失败替换规则统一见[Docker 行布局](docker.md#docker-row)。
 
-模型列表在服务窗口内随选择滚动，窗口高度随半页高度变化，模型总数不增加最小高度。上半区不提供方向键滚动；GPU 槽位不能因模型选择隐藏。所有内容必须限制在自己的区域内，不能仅依赖整屏裁切，否则 Docker 末尾项会覆盖下半区。
+模型总数不增加页面最小高度；模型列表的可见窗口由[vLLM 固定槽位](vllm.md#vllm-layout)和[导航](navigation.md)协调。所有内容必须限制在自己的区域内，不能仅依赖整屏裁切，否则 Docker 末尾项会覆盖下半区。
 
-仅低于基础尺寸时显示 `Enlarge terminal to at least 120x37`（数字随 GPU 容量）和 `q Quit`；Docker 溢出不触发该提示，也不触发局部提示。极小终端只裁切提示，q 仍可退出；恢复尺寸后立即重绘。Monitor 不因缩放、隐藏、主题或模型选择改变采集节奏。长名称按终端显示宽度截断而不换行；详细颜色和模型面板仍由后续需求设计。
+仅低于基础尺寸时显示 `Enlarge terminal to at least 120x37`（数字随 GPU 容量）和 `q Quit`；Docker 溢出不触发该提示，也不触发局部提示。极小终端只裁切提示，q 仍可退出；恢复尺寸后立即重绘。Monitor 不因缩放、隐藏、主题或模型选择改变采集节奏。长名称按终端显示宽度截断而不换行；颜色和模型面板分别遵循[主题](theme.md)与[vLLM](vllm.md#vllm-view)设计。
 
 ## 只读呈现与诊断隔离
 
 `compose_frame()` 生成不可变 Frame，包含 TextCell 和 Region；不附带异常类型、原因或堆栈。布局只读取 StateSnapshot 的指标、stale 和对象身份，不渲染内部 sampled_at/history 时间。墙钟只用于顶部当前时间。
 
-`TextCell(row, column, text, role="text", bold=False)`在末尾增加字体标记，旧三/四参数构造默认不新增粗体，既有主题字重保持。vLLM只给右侧`+6`的RUNNING/WAITING真实数值和`+10`四指标真实数值设置bold；0、科学记数、STALE旧数字保持该强调，`—`/`N/A`/`…`及其他cell不新增粗体。后端每次按原`style(role)`叠加所请求的`A_BOLD`，逻辑色对/主题RGB不改变，不在正文中插入ANSI。单色的颜色style可为0但仍显示所请求的字体强调；低色终端对bold的亮化/字重处理依其设置，既有Moonlight辅色近似不变。详细槽位见服务视图契约。
+`TextCell` 的角色、字体标记和终端绘制机制统一见[主题设计](theme.md#font-rendering)；vLLM 数字强调的选择范围见[vLLM 指标与状态](vllm.md#vllm-values)。布局只传递呈现属性，不在正文中插入 ANSI 转义。
 
-硬件对象/面板预留5字符失败位，正常留空、失败仅`STALE`；Storage将前3挂载的失败汇总到标题右上角，不在内容行重复显示。Docker在14格状态槽、模型在6格状态槽中原位替换正常生命周期/READY/QUEUED。失败、恢复和模型类型切换均不改变区域矩形。通用 `format_metric()` 规定：真实 0 是 0；未知/无观测是 `—`；不适用是 `N/A`。界面不重新计算吞吐/延迟或Total。全屏禁止错误弹窗、诊断列表、最后成功时间、堆栈及设计稿的模拟标记。
+失败、恢复和模型类型切换均不改变区域矩形；具体状态槽分别见[硬件](hardware.md#硬件显示与模型关联)、[Docker](docker.md#docker-row)和[vLLM](vllm.md#vllm-values)。通用 `format_metric()` 规定：真实 0 是 0；未知/无观测是 `—`；不适用是 `N/A`。界面不重新计算吞吐、延迟或 Total。全屏禁止错误弹窗、诊断列表、最后成功时间、堆栈及设计稿的模拟标记。
 
 ## 接口与验证依据
 
@@ -262,18 +247,8 @@ v1.5 衔接 REQ-005：新增默认会话控制器契约、精确键位文字和�
 
 ## REQ-004 vLLM 接线契约（已合并）
 
-`ApplicationRuntime`新增可选`vllm_http_factory`注入点，构造只保存依赖；组装时调用`build_vllm_collectors(config,http_factory=...)`，全部模型各创建一个独立端口，将其VllmSpec与采集器合入同一State/Monitor，替换旧的手工RUNNING/WAITING占位。prepare_log只构造，不访问HTTP；注入完整components时不创建任何额外端口；空models不调用工厂。Monitor负责关闭所有模型端口，整体退出预算保持不变。
-
-模型采集器返回 VllmCollectionResult，普通硬件/Docker 返回 MetricCollectionResult；ApplicationRuntime 不拆包或转换它们，统一交 Monitor 按公共 key/failure 调度提交。State 按 spec 接收对应子类并生成同一种只读快照；Monitor 自身产生的纯公共失败没有载荷，按目标 spec 执行保值与缺口处理。公共模型模块不反向引用 vLLM 观测类型。
-
-`compose_frame`的可选`monotonic_now`用于离线历史时钟，生产缺省取`time.monotonic()`；现有datetime参数仍只负责页眉时间，二者不可混用。在原service Region内调用纯`vllm_cells`替换占位详情，外边框、上下各半、Docker容量、service_switch/footer和最小终端尺寸保持原规则。REQ-006已通过CursesTheme实现精确RGB与能力降级，包括基础色终端的amber映射；不得让WAITING标签、0或STALE旧值使用amber。
-
-上述 REQ-004 以及 REQ-005 默认导航、服务页脚接线均已合并。REQ-006的Frame.theme传递与终端配色也已实现。vLLM 规格见[vLLM设计](vllm.md)与[服务窗口契约](../dev-workflow/dev-0/REQ-004/view-contract.md)，集成与首帧验证继续使用完全离线HTTP端口。
+来源组装与端口所有权见本文“职责与边界”；结果接收统一遵循[状态设计](monitor-state.md#collection-results)。`compose_frame` 的可选 `monotonic_now` 用于离线历史时钟，生产缺省取 `time.monotonic()`；datetime 参数仅负责页眉时间，二者不可混用。在 service Region 内调用纯 `vllm_cells`，服务内部契约见[vLLM](vllm.md#vllm-view)。集成与首帧验证使用离线 HTTP 端口。
 
 ## REQ-006 配色衔接
 
-默认主题为 Hologram，沿用会话控制器及一次 selection 读取。Frame 在 too_small 之后追加 theme 字段，compose_frame 的正常和小窗口返回均从同一 view 传入。TerminalPort 签名不变，后端按 frame.theme 激活配色并覆盖所有空白背景；不从主题标题反推状态，不增加采样或持久化。
-
-Palette在末尾追加默认track=(62,74,91)，原五个前景角色与旧构造保持兼容。精确配色保存/恢复私有色槽16～22，六色对1～6共享背景，COLOR_PAIRS至少7；固定256色track取239，基础色用BLACK|A_BOLD近似深灰，单色style为0。布局只提供track语义，不依赖curses索引；终端不修改用户TERM。详见[主题设计](theme.md)的能力表和异常回滚契约。
-
-CursesTerminal 每次 enter 创建独立 CursesTheme，render先激活；仅与上次已呈现主题不同时clearok(True)强制整帧刷新，随后设置背景、erase、绘制。同主题帧不强制清屏，保留差分输出；restore 在 endwin 前归还颜色并继续既有终端恢复。精确 RGB、256/8/无色降级和异常契约统一维护在[主题设计](theme.md)与 theme.py 注释，保留输入解析和采集调度，帧调度已按60FPS目标接线。黑盒见 test_theme_palette.py / test_theme_view.py / test_theme_terminal.py；导航与vLLM PTY覆盖默认主题、实际RGB、60Hz、固定时间轴及尺度契约，不改采集/计算业务期待。R2未实现基线保留为历史，当前实现和输入/绘制公平性返修结果见REQ-006 R4/R5交接。
+`compose_frame` 在正常和小窗口两条路径都把同一次 selection 的主题传入 Frame；终端后端消费该元数据。字段兼容、硬件条、能力降级、字体、刷新和颜色恢复均以[主题设计](theme.md)为唯一详细定义。帧调度由本模块负责，配色切换不触发采集或重建运行期。

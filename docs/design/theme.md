@@ -1,16 +1,18 @@
 # Neon Grid 主题与终端配色设计
 
 - 关联需求：dev-0 / REQ-006，需求说明 v1.24，AC-601～616；复用 REQ-001～005。
-- 修订：v1.12，2026-11-05；硬件填充与轨道统一为▌，新增深灰track角色；保留原五个角色的RGB与编号。Palette末尾默认值兼容旧构造，配色资源扩展为七色槽/六色对；本轮不生成离线包或更新旧GUI回放。
+- 修订：v1.13，2026-11-05；集中维护颜色、硬件分段条与终端能力契约；布局、数值和交互细则改为引用所属设计，不改变行为。
 - 代码：`src/joi_observer/tui/theme.py`、`layout.py`、`navigation.py`、`app.py`；沿用 `widgets.py`、`vllm.py`、`services.py`。
 - 关联模块：[应用外壳](application-shell.md)、[模型导航](navigation.md)、[硬件](hardware.md)、[vLLM](vllm.md)。
 - 当前阶段：REQ-006配色、Frame传递、默认值和终端接线已由R4实现。2026-11-04按R5建议同步实现状态，不改变本设计契约；当前返修与证据见[R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)，审查结论见[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)。[R2交接](../dev-workflow/dev-0/REQ-006/handoff-r2.md)保留当时骨架与失败基线。
 
 ## 职责与边界
 
-REQ-005 已随 `0a42646` 合并：会话选择、t 切换标识、服务页脚、模型与 GPU 联动均已有实现。REQ-006复用这些导航与采集模块，已实现默认Hologram、主题值、整帧传递、终端能力降级、颜色恢复及HTML对应的布局调整。主题切换同时更新实际配色，不能只凭标题名称判断颜色正确；采集和数值计算口径保持。
+正式界面面向 Ubuntu Terminal，使用全英文、等宽字体、深色背景与紧凑分区，以 Neon Grid 为视觉参考。
 
-数据流保持 `Collector → Monitor → MonitorState → TUI`。主题属于 `SessionViewActions` 持有的应用会话；不写 MonitorState、配置或文件，不触发采集，不清空历史，不改变模型选择、GPU 映射、字段或几何。不同应用实例独立；同一应用再次 run 保持选择，但每次终端 enter 都重新取得自己的配色资源。
+本模块维护主题值、颜色角色、整帧配色传递、终端能力降级与颜色恢复。模型选择、主题切换交互和服务页脚由[模型导航](navigation.md)定义；具体布局与数值由对应模块定义。主题切换同时更新实际配色，不能只凭标题名称判断颜色正确。
+
+主题由导航会话持有，生命周期见[模型导航](navigation.md)。本模块只消费主题标识，每次终端 enter 都重新取得自己的配色资源，不访问采集或状态写入接口。
 
 ## 核心接口与协作
 
@@ -84,31 +86,47 @@ classDiagram
 
 图中 module 表示真实 Python 模块，不是额外运行期类；图示协作已在当前实现接线。`ObserverApp` 的显式 `ViewActions` 注入能力保留，图中只展开默认控制器。
 
-`theme.DEFAULT_THEME = "hologram"` 是单一默认元数据，`ViewSelection.theme` 已使用此常量，现有控制器继续复用 ViewSelection。第一次 t 得到 Moonlight，第二次回到 Hologram；空列表、小窗口与 STALE 期间仍有效。下一正常绘制周期可见，遵循[应用外壳](application-shell.md)的目标60 FPS（1/60秒，约16.7ms）截止点调度，不为 t 额外采样或重建终端。
+`theme.DEFAULT_THEME = "hologram"` 是单一默认元数据，`ViewSelection.theme` 使用此常量。切换顺序和会话边界见[模型导航](navigation.md)，呈现时机见[应用外壳](application-shell.md)。
 
 `Frame.theme: str = "hologram"` 追加在现有默认字段之后，保留既有位置参数兼容。`compose_frame` 必须将本帧 `view.theme` 同时用于标题及元数据，正常和 too_small 两条返回路径都传递。终端只读取 `Frame.theme`，不解析标题文字；没有标题的小窗口也能切换背景与键位色。合法状态只取两种小写名；主题查询拒绝其他值，不容忍名称与颜色静默不一致。
+
+<a id="color-roles"></a>
 
 ## 颜色值与显示角色
 
 | 角色 | Moonlight | Hologram | 现有绘制语义 |
 | --- | --- | --- | --- |
 | background | `#080E18` | `#080E18` | 全窗口，包含空白、边框与小窗口提示背景 |
-| text | `#D4DDEB` | `#D4DDEB` | 设备标签/正文、CPU数字/RAM总量数字、Storage路径/空态/百分比、右侧WAITING标签/0、STALE、非Running生命周期、指标值 |
-| muted | `#8A9DB5` | `#8A9DB5` | `::`/系统/时钟、边框/分隔、显存/功率、CPU百分号/RAM已用与共享单位、Storage容量/中点、指标标签/caption、模型计数文字、未关联GPU填充/编号/百分比、禁用WebUI |
-| primary | `#7DDFFF` | `#7B9FFF` | Observer、Theme名称、GPU标题、关联GPU编号/条/百分比、选中模型、当前服务、键位、fresh Running |
+| text | `#D4DDEB` | `#D4DDEB` | 设备标签/正文、GPU名称/温度、CPU数字/RAM总量数字、Storage路径/空态/百分比、未选中模型名称、左栏running数字、右侧RUNNING/WAITING标签、零等待数、STALE、普通生命周期、指标值 |
+| muted | `#8A9DB5` | `#8A9DB5` | `::`/系统/时钟、边框/分隔、显存/功率、CPU百分号/RAM已用与共享单位、Storage容量/中点、MODELS标题、模型类型/端口、计数标签、四指标标签/单位、caption/历史尺度文字、未关联GPU填充/编号/百分比、禁用WebUI |
+| primary | `#7DDFFF` | `#7B9FFF` | Observer、Theme名称、GPU标题、关联GPU编号/条/百分比、选中模型名称及标记、当前服务、键位、历史柱、fresh Running |
 | secondary | `#C6A7FF` | `#E570D0` | Joi、CPU/RAM已填充段、Host/Storage/Docker/vLLM标题、模型路由 |
 | amber | `#FFA45B` | `#FFA45B` | 仅新鲜的 QUEUED 和大于 0 的等待数 |
-| track | `#3E4A5B` | `#3E4A5B` | 仅GPU/CPU/RAM条的未填充段；与填充同为▌，不替换muted的其他用途 |
+| track | `#3E4A5B` | `#3E4A5B` | 仅GPU/CPU/RAM条的未填充段；不替换muted的其他用途 |
 
-`Palette`冻结且所有RGB为tuple，标准0..255通道；在原字段末尾追加`track: RGB = (62, 74, 91)`，旧位置参数构造仍有效。`palette_for`是纯查询；未知主题、大小写变体、空白和非字符串均抛ValueError。颜色值与curses色号分离，避免控件依赖终端能力。`CursesTheme.style`保留text/muted/primary/secondary/amber并追加track，共六个前景角色；未知角色沿用正文回退，不从文本推断状态。原五个角色的目标值、色槽17～21及色对1～5保持，track使用色槽22/色对6，共用背景色槽16。
+`Palette`冻结且所有RGB为tuple，标准0..255通道。`palette_for`是纯查询；未知主题、大小写变体、空白和非字符串均抛ValueError。颜色值与curses色号分离，避免控件依赖终端能力。`CursesTheme.style`的未知角色沿用正文回退，不从文本推断状态。硬件轨道扩展、构造兼容与颜色资源编号统一见下节。
 
-`TextCell`在既有`row/column/text/role`之后追加`bold: bool = False`，保留原有位置参数和默认外观。粗体是独立字体属性，不新增颜色role或改写Palette。仅vLLM右侧RUNNING/WAITING值及历史标题上方四列指标值中的真实数字设为True，包括0、科学记数和STALE保留值；`—`、`N/A`、`…`不新增粗体。左栏计数、标签/单位、caption、标题/路由、状态、历史及其他面板保持原样；既有Moonlight低色辅色的A_BOLD近似继续保留。
+`TextCell`在既有`row/column/text/role`之后追加`bold: bool = False`，保留原有位置参数和默认外观。粗体是独立字体属性，不新增颜色role或改写Palette；哪些服务数值请求粗体由[vLLM 展示契约](vllm.md#10-展示与固定布局)统一定义。本模块负责将请求与颜色属性叠加，具体后端规则见下文。
 
-两主题共享琥珀规则；等待值未知、首次未采集、失败保留的旧正数都不用琥珀。Exited/Restarting 等是正常采集的生命周期文字，STALE 只占既有状态位；不增感叹号、错误行、告警色。映射未知的 GPU 保持 muted，不推断关联。RAM总量数字及Storage百分比的“白色”对应text角色，不另建纯白色。RAM末尾共享单位、CPU百分号用muted；GPU功率用muted并保留W前空格。Docker仅新鲜Running用primary，STALE/未知及其他生命周期用text。
+两主题共享琥珀规则；等待值未知、首次未采集、失败保留的旧正数都不用琥珀，不增感叹号或告警色。RAM总量数字及Storage百分比的“白色”对应text角色，不另建纯白色。硬件未知片段沿各字段原角色，STALE始终为text，不因故障改变数值颜色。对象状态和字段位置分别由[硬件](hardware.md)、[Docker](docker.md)及[vLLM](vllm.md)设计定义。
 
-## curses 生命周期与能力边界
+左栏与右侧等待数字均遵循上述新鲜正值规则，其他等待数字或占位用text；左栏running数字用text。Docker仅在`sampled_at`非None且`stale=False`时将Running显示为primary；其他生命周期、未采样保留值、未知及STALE均为text，Docker状态不使用amber。
 
-`CursesTheme(curses_api)` 构造只存依赖；curses 仍只在 `CursesTerminal.enter` 延迟导入。后端每次 enter 建立一个新的配色会话；首帧激活配色，随后每帧按 `Frame.theme` 激活，同主题不重复分配资源。以公开 curses 模块作为外部边界，测试可替换该模块，不需要新依赖或扩展 TerminalPort 的方法签名。
+<a id="hardware-bars"></a>
+
+## 硬件分段条、轨道与配色能力
+
+本节是硬件条字形、track角色、公开formatter兼容及终端配色降级的唯一详细契约；[硬件设计](hardware.md#硬件显示与模型关联)维护条的位置、宽度、数值精度与GPU关联匹配。
+
+GPU/CPU/RAM在`hardware_cells`绘制时，按`percentage_bar`返回的`len(filled)`和`len(empty)`各画同数量的`▌`；填充与未填充轨道字形一致，每段仍占1字符格，组合宽度仍为原width。公开`percentage_bar`继续返回`█`/`░`，百分比按ROUND_HALF_UP保留1位小数再去尾零，填充数量沿用同一舍入比例换算字符格；不乘2、不增加半格量化，不改GPU利用率文字。
+
+只有未填充段使用上表的track角色；关联GPU填充为primary，未关联GPU填充保留muted，CPU/RAM填充为secondary。0与未知均画全轨道，100%全为填充，未知数值文字仍为`—`。未关联GPU的muted填充不能替换成track；边框、其他灰色文字和vLLM竖向历史柱也不使用track。原条宽、位置、段数、百分比列与三行/四行布局保持。硬件条不设置`TextCell.bold`，低色模式由颜色能力附带的字重不改变字体元数据。
+
+`Palette`在原字段末尾追加`track: RGB = (62, 74, 91)`，旧位置参数构造仍有效。`CursesTheme.style`保留text/muted/primary/secondary/amber并追加track，共六个前景角色；原五个角色的目标值、色槽17～21及色对1～5保持，track使用色槽22/色对6，共用背景色槽16。
+
+<a id="terminal-colors"></a>
+
+### 终端能力与颜色资源
 
 | 能力 | 显示策略 | 资源约束 |
 | --- | --- | --- |
@@ -117,7 +135,13 @@ classDiagram
 | 8～255色且COLOR_PAIRS ≥ 7 | Hologram蓝/Moonlight青；Hologram辅色紫、Moonlight辅色MAGENTA加A_BOLD；正文白、muted白加A_DIM、排队黄、背景黑；track为BLACK加A_BOLD深灰近似 | 保留原角色映射；不改调色板，不承诺精确RGB |
 | 无色、少于8色或COLOR_PAIRS < 7 | 所有CursesTheme颜色属性为0，含track；独立TextCell.bold仍可请求A_BOLD | 保留文字、数值、选择与退出；不新增诊断提示 |
 
-精确模式将RGB通道转换为`(v * 1000 + 127) // 255`，遵守本地Python 3.12 curses的0..1000范围。固定色模式的标准色表为6×6×6色立方（通道0/95/135/175/215/255）及24级灰（8+10n）。track的最近色为索引239；不是更改目标色#3E4A5B。能力依据运行时报告，不能仅凭TERM字符串认定支持精确RGB。用户当前TERM=xterm保持不变；基础色track的BLACK|A_BOLD及Moonlight辅色MAGENTA|A_BOLD分别是深灰/亮紫近似，实际亮度、字重和RGB由终端ANSI调色板及bold处理决定。程序不修改TERM，也不要求用户切到256色类型；上述信息不构成服务器连接或运行状态结论。
+精确模式将RGB通道转换为`(v * 1000 + 127) // 255`，遵守本地Python 3.12 curses的0..1000范围。固定色模式的标准色表为6×6×6色立方（通道0/95/135/175/215/255）及24级灰（8+10n）；近似映射不改变上表的目标RGB。能力依据运行时报告，不能仅凭TERM字符串认定支持精确RGB。基础色的实际亮度、字重和RGB由终端ANSI调色板及bold处理决定。程序不修改用户当前TERM=xterm，也不要求切换终端类型；上述信息不构成服务器连接或运行状态结论。
+
+<a id="font-rendering"></a>
+
+## curses 生命周期与字体属性
+
+`CursesTheme(curses_api)` 构造只存依赖；curses 仍只在 `CursesTerminal.enter` 延迟导入。后端每次 enter 建立一个新的配色会话；首帧激活配色，随后每帧按 `Frame.theme` 激活，同主题不重复分配资源。以公开 curses 模块作为外部边界，测试可替换该模块，不需要新依赖或扩展 TerminalPort 的方法签名。
 
 `activate`首先校验主题，首次有色初始化调用start_color；同主题重复激活和切换复用有限色槽/色对，不持续分配编号。精确muted不叠加A_DIM，精确及固定256色track不额外叠加A_BOLD，以免实际颜色偏离各自目标。COLOR_PAIRS包含保留的色对0，因此六个可初始化色对要求COLOR_PAIRS至少7；色对0不用于初始化。
 
@@ -129,9 +153,9 @@ classDiagram
 
 ## 布局复用与视觉验收
 
-沿用已实现的 [应用外壳容量契约](application-shell.md)：120 列基础宽度；H 行时下半 H//2、上半 H-H//2，header 两行计入上半。0～4 GPU 最小 120×36，5 GPU 120×37；Docker 数量不抬高最小高度。上半水平接近3:2；右侧Host为6行，CPU/RAM各两行，紧接Storage的6行且内容固定3行，再隔1行到Docker。Host多出的行使用原Host/Storage间距，Docker仍占原余高。下半服务窗口、服务切换位、键位恰好合计半页，不加新主题专用行。
+全页区域、最低尺寸与各面板容量统一见[应用外壳容量契约](application-shell.md#可验证的字符容量)；页眉内容与本机发行版本读取见[HTML 对齐的字符适配](application-shell.md#html-对齐的字符适配)。主题不增加专用行或改变区域预算。
 
-硬件分段条、路由、三类模型字段与历史继续使用现有控件。历史保留原竖向块字符柱状图，不采用点阵或面积图；固定60秒横轴、稳定时间桶及纵轴迟降详见[vLLM历史设计](vllm.md#101-稳定柱状历史与显示尺度)。GPU分段宽约为内宽一半，百分比紧随末端；CPU/RAM的标签与右侧数值同行，条在下一行，数值口径不变，填充与track按上表分色。长名称按字符显示宽截断，不能侵入状态或指标槽；正常→失败→恢复、模型类型切换、主题切换均不移动分区或历史槽位。
+硬件内部坐标、容量与百分比精度、Storage 状态汇总及GPU匹配统一见[硬件显示设计](hardware.md#硬件显示与模型关联)；模型栏、服务详情、数字强调与留白见[vLLM 展示契约](vllm.md#10-展示与固定布局)；历史算法见[vLLM 历史设计](vllm.md#101-稳定柱状历史与显示尺度)。本节仅追踪HTML元素与这些正式契约的对应关系。
 
 `joi-observer.html` 的初始 Neon Grid 已改为 Hologram，仍是可交互的设计预览；预览的鼠标、模拟数据和保存状态不构成正式 TUI 功能，正式键位、默认行为和新增排版验收以需求v1.15为准。
 
@@ -139,39 +163,39 @@ classDiagram
 
 本表仅对照HTML的Neon Grid，不将Amber Relay/Vector Matrix的控件或文案带入。每项都说明采用方式；“适配/保留”不等于声称终端无法实现原稿。
 
-| HTML元素 / CSS入口 | 正式终端目标 | 契约 / 黑盒入口 |
+| HTML元素 / CSS入口 | 对应正式内容 / 契约 | 黑盒入口 |
 | --- | --- | --- |
-| mast / brand | Joi辅色、::灰、Observer主色；固定首行 | layout注释；theme_view、html_shell_layout |
-| theme-switch | 两主题名称都贴同一右缘C，主色，保留[t]；仅键盘切换 | application-shell、layout；html_shell_layout、navigation_pty |
-| hostline | 固定H3C R5300 G6设备标签正文，斜线分隔/本地Ubuntu发行版本/时间灰；墙钟使用实际本机时区，右端固定C | application-shell、layout；html_shell_layout |
-| fieldset / legend | GPU标题主色，其余Host/Storage/Docker/vLLM辅色；字符边框muted | application-shell、layout；html_shell_layout |
-| neon-top / host-stack | 约3:2分区；Host四内容行、Storage三内容行、Docker余高 | application-shell、hardware；tui、html_hardware_layout |
-| gpu-name / gpu-memory | 编号/型号左、显存中间区右对齐，共享单位且灰色 | widgets/hardware；html_hardware_layout |
-| gpu-metric | 温度正文靠右，下一行功率灰色、W前空格，同一右边缘 | widgets/hardware；html_hardware_layout、hardware_pty |
-| gpu-gauge | 半内宽条，填充/轨道同为▌且各占原1格，百分比紧随；关联填充primary、未关联填充muted，所有轨道track深灰，原段数不变 | widgets/hardware；hardware_view、theme_view |
-| resource CPU | 标签左，固定1位百分比数字正文/%灰靠右，如30.0%；下一行secondary填充/track轨道同为▌，原段数、采样与比例口径不变 | widgets/hardware；html_hardware_layout |
-| resource RAM | GiB/TiB容量从原始字节直接ROUND_HALF_UP为整数；已用/分隔灰、总量数字正文、共享单位灰，整体靠右；下一行secondary填充/track轨道同为▌，不添加百分比文字 | widgets/hardware；html_hardware_layout |
-| storage kvline | 路径及空配置文案正文、容量/‘ · ’灰，固定1位百分比正文且贴内容右缘，如25.0%；GiB直接从字节ROUND_HALF_UP为整数，TiB保留1位；前3挂载任一stale仅在标题右上角汇总STALE | widgets/hardware；html_hardware_layout、hardware_view |
-| docker-row | 名称左，生命周期/—/STALE均贴共同右缘；fresh Running主色 | docker/application-shell/layout；html_shell_layout、docker_integration |
-| rail-title / service-buttons | MODELS标题、24列模型栏，名称/状态、类型/端口、计数三层 | view-contract/vllm/navigation；vllm_view、navigation |
-| counts | 左‘3 running’左齐，右‘7 waiting’右齐；数字与文字分色，0/未知正确 | view-contract/vllm；vllm_view |
-| neon-detail-heading / route | 名称左/状态六格靠右，下一行真实URL及箭头 | view-contract/vllm；vllm_view、navigation_pty |
-| neon-queues | 两统计组，标签左/数值右；仅真实数字加粗、原颜色不变；Total、Avg queue或单位分别归属各组且不新增粗体 | view-contract/vllm；vllm_view |
-| queue / divider | +4/+8横线、+6/+7中竖线muted；右详情+1/+5/+11留白，外层模型分隔固定c+27，左栏不动 | view-contract/layout/vllm；vllm_view、tui |
-| neon-metrics | 四列灰色标签/单位在上、正文数值在下；仅真实数字加粗，占位普通，所有类型固定位置 | view-contract/vllm；vllm_view、theme_view |
-| history-block | 保留原柱图、固定60秒轴与尺度标签；零/缺口与真实数据相符 | vllm/history；history_presentation、vllm_view/pty |
-| neon-service-tabs / keybar | 当前vLLM主色、WebUI(disabled)灰，单行服务位和主色英文键位 | navigation/services/layout；service_footer、navigation_app |
-| resize / long text / partial values | 固定半页、状态槽保护；长名称裁切、长数字有界且不伪装小数值 | 以上各接口；html_hardware_layout、vllm_view、html_shell_layout、tui |
+| mast / brand | [品牌与页眉](application-shell.md#html-对齐的字符适配)、[颜色角色](#color-roles) | theme_view、html_shell_layout |
+| theme-switch | [页眉位置](application-shell.md#html-对齐的字符适配)、[主题交互](navigation.md) | html_shell_layout、navigation_pty |
+| hostline | [设备、发行版本与时钟](application-shell.md#html-对齐的字符适配) | html_shell_layout |
+| fieldset / legend | [区域外壳](application-shell.md#可验证的字符容量)、[颜色角色](#color-roles) | html_shell_layout |
+| neon-top / host-stack | [上半区分配](application-shell.md#可验证的字符容量) | tui、html_hardware_layout |
+| gpu-name / gpu-memory | [GPU名称和容量](hardware.md#硬件显示与模型关联) | html_hardware_layout |
+| gpu-metric | [GPU温度与功率](hardware.md#硬件显示与模型关联) | html_hardware_layout、hardware_pty |
+| gpu-gauge | [条与轨道](#hardware-bars)、[位置及关联](hardware.md#硬件显示与模型关联) | hardware_view、theme_view |
+| resource CPU | [CPU呈现](hardware.md#硬件显示与模型关联)、[条与轨道](#hardware-bars) | html_hardware_layout |
+| resource RAM | [RAM呈现](hardware.md#硬件显示与模型关联)、[条与轨道](#hardware-bars) | html_hardware_layout |
+| storage kvline | [Storage数值、精度与状态](hardware.md#硬件显示与模型关联) | html_hardware_layout、hardware_view |
+| docker-row | [Docker条目](docker.md#docker-row) | html_shell_layout、docker_integration |
+| rail-title / service-buttons | [模型栏](vllm.md#10-展示与固定布局)、[选择窗口](navigation.md) | vllm_view、navigation |
+| counts | [模型负载计数](vllm.md#10-展示与固定布局) | vllm_view |
+| neon-detail-heading / route | [详情标题与路由](vllm.md#10-展示与固定布局) | vllm_view、navigation_pty |
+| neon-queues | [运行/等待统计](vllm.md#10-展示与固定布局) | vllm_view |
+| queue / divider | [分隔线与留白](vllm.md#10-展示与固定布局) | vllm_view、tui |
+| neon-metrics | [类型字段、数值强调与槽位](vllm.md#10-展示与固定布局) | vllm_view、theme_view |
+| history-block | [历史显示与尺度](vllm.md#101-稳定柱状历史与显示尺度) | history_presentation、vllm_view/pty |
+| neon-service-tabs / keybar | [服务入口与键位](navigation.md#服务入口与键位呈现) | service_footer、navigation_app |
+| resize / long text / partial values | [整页边界](application-shell.md#可验证的字符容量)、[硬件裁切](hardware.md#硬件显示与模型关联)、[服务裁切](vllm.md#10-展示与固定布局) | html_hardware_layout、vllm_view、html_shell_layout、tui |
 
 ### 明确保留的取舍与范围
 
-- 字符格近似像素间距；3:2近似HTML的1.55:1，统一字体大小；Host借用原间距以保持半页/最小尺寸。真实状态保留在固定槽，Storage按用户GUI修订汇总到标题右上角；不能为模仿紧凑样稿而删掉STALE。
-- 继续采用统一背景，保留原五种文字role并新增仅供硬件未填充段使用的track。HTML的surface/选中底色、独立line颜色仍不引入；边框与分隔继续muted，不改用track。选中模型采用›＋主色，不增加按钮外框占行，服务项沿用REQ-005明确的单行文案，不模拟浏览器按钮/下划线。
-- 标题保留正式名称GPU、Host Resources、Storage、Docker、vLLM；HTML的NEON GRID概念标记、GPU FABRIC命名及固定5 DEVICES、静态GPU分组/TP/EP/SHARED等没有批准的可靠呈现来源，不硬编码。设备标签H3C R5300 G6由用户在v1.19明确指定为固定展示文本，不作DMI或远端探测；Ubuntu发行版本从本地os-release取得。完整GPU列表顺序和显式关联高亮继续有效。
-- 日期时间沿用真实带时区墙钟的YYYY-MM-DD HH:MM:SS，不复制CST。鼠标切主题与HTML状态保存不属于正式交互；WebUI禁用。pooling使用可靠seq/s，不沿用模拟req/s/请求上限。
-- 历史沿用已确认的固定−60s/0s及Scale标签；HTML的NOW值已有上方指标承载，不重复增加字段。只读快照、未知/0/N/A、缺口及采样独立性优先于模拟显示。
+- 字符格近似像素间距并使用统一字体大小；区域与状态槽按上述正式设计适配，不能为了紧凑而删掉真实状态。
+- 继续采用统一背景。HTML的surface/选中底色、独立line颜色仍不引入；边框与分隔采用颜色表中的muted。模型选中标记、服务项与键位采用[导航设计](navigation.md)，不模拟浏览器按钮外框或下划线。
+- 标题保留正式名称GPU、Host Resources、Storage、Docker、vLLM；HTML的NEON GRID概念标记、GPU FABRIC命名及固定5 DEVICES、静态GPU分组/TP/EP/SHARED等没有批准的可靠呈现来源，不硬编码。设备与系统信息采用[应用外壳](application-shell.md#html-对齐的字符适配)的独立契约。
+- 预览的鼠标交互、状态保存、模拟时区、req/s及请求上限不能作为正式行为或数据来源；分别以导航、应用外壳和vLLM设计为准。
+- HTML的NOW值已有上方指标承载，不重复增加字段。历史和数值的真实含义以[vLLM设计](vllm.md)为准。
 
-视觉验证须区分Frame/静态预览、真实终端截图和用户观感确认；单元/PTY通过不代替实际字体与整体观感。R2核对保留其当时的目标契约与失败基线；当前验证见R4/R5交接。旧GUI-006-001的确认只覆盖其当时版本，不代表当前深灰轨道、后续显示变化或GUI可见60FPS已确认。按用户当前指令，本轮不生成或重建离线包、不刷新既有GUI/回放入口；这些旧产物不包含本轮track变化，不能作为新界面证据。
+视觉验证须区分Frame/静态预览、真实终端截图和用户观感确认；单元/PTY通过不代替实际字体与整体观感。R2核对保留其当时的目标契约与失败基线；当前验证见R4/R5交接。GUI确认、安装包和回放只证明各自产物对应版本，不能自动覆盖之后的显示变化。
 
 ## 接口与验证依据
 

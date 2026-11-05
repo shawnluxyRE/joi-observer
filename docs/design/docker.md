@@ -1,15 +1,15 @@
 # Docker 容器采集模块设计
 
 - 关联需求：dev-0 / REQ-003、REQ-006，requirements.md v1.16，AC-301～304及HTML外壳排版；依赖 REQ-001 的配置、调度、状态、日志与布局。
-- 修订：v1.2，2026-11-04；补齐展示状态槽右对齐与新鲜Running主色；采集/调度行为及既有执行体保留。
+- 修订：v1.3，2026-11-05；保留采集身份、命令边界和逐行显示契约，公共结果、全页容量与配色改为引用所属模块；行为不变。
 - 相关代码：`src/joi_observer/collectors/docker.py`、`config.py::ContainerConfig`、`cli.py::ApplicationRuntime`。
 - 关联模块：[配置](configuration.md)、[Monitor / State](monitor-state.md)、[错误日志](error-logging.md)、[应用外壳](application-shell.md)。
 
 ## 职责与范围
 
-每个显式配置项独立读取一个本机容器的生命周期，输出携带平面指标的 `MetricCollectionResult`，它继承只声明 key/failure 的公共 `CollectionResult`。全量配置参与采集，显示层自行取可见前缀。模块不依赖终端，不写状态或日志，不发现其他容器，不读取资源统计、容器日志或业务负载，不执行启停、重启或权限修改。
+每个显式配置项独立读取一个本机容器的生命周期，输出 `MetricCollectionResult`；公共结果分型由[Monitor / State](monitor-state.md#collection-results)定义。全量配置参与采集，显示层使用[应用外壳容量规则](application-shell.md#可验证的字符容量)。模块不依赖终端，不写状态或日志，不发现其他容器，不读取资源统计、容器日志或业务负载，不执行启停、重启或权限修改。
 
-REQ-001公共外壳、REQ-003容器采集及REQ-004/005服务采集与导航均已合并。本轮仅为REQ-006同步Docker展示契约，不修改命令端口、采集算法、状态派生或组合根；新排版与颜色接线留R4。原REQ-003 R2/R4/R5交接保留为历史记录。
+本文维护 Docker 专属的读取、身份匹配、取消和逐行展示规则；配置输入校验、通用状态与日志、全页布局和主题分别引用对应模块。
 
 ## 类图
 
@@ -81,13 +81,15 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 `LocalDockerCommand.run` 只接受上述形状、模板和非空目标，其他操作或远端 host 在创建子进程前拒绝。子进程环境复制当前环境后删除所有 `DOCKER_*`，设置 `LC_ALL=C`、`LANG=C`，不改变父环境；这样配置 context、host、TLS 或 API 版本变量不改变本机目标。stdin 为 DEVNULL，stdout/stderr 为 PIPE，禁止继承终端输出。即便目标字符串含 shell 元字符，也只是 `--` 后的单个参数，不拼接执行。
 
-本期固定常规本机 `/var/run/docker.sock`，不自动查找 rootless socket、不回退到 context、不执行 sudo。无 CLI、无 socket、权限不足均通过采集失败链路报告，不能阻断其他来源。CLI、模板与权限在真实部署中尚未验证；这是一项待 R4 完成的本地适配契约，不是已经读取过实际 Docker 的证据。
+本期固定常规本机 `/var/run/docker.sock`，不自动查找 rootless socket、不回退到 context、不执行 sudo。无 CLI、无 socket、权限不足均通过采集失败链路报告，不能阻断其他来源。CLI、模板与权限在真实部署中尚未验证；本地适配契约不代表已经读取过实际 Docker。
 
 每次 collect 只发起一次命令，不重试、不缓存永久失败、不持久缓存解析后的 ID。标准输出和错误输出分别最多 65,536 字节；两条流须并发限量读取。恰好上限可接受，超过即终止、回收进程并抛 `DockerOutputLimitError`，不能依赖无界 `communicate()` 收完才检查。CLI 格式本身避免输出环境变量、挂载、healthcheck 结果等不需要的内容。
 
+<a id="docker-identity"></a>
+
 ## 身份与结果契约
 
-`ContainerConfig.id` 是应用内身份；状态 key 恒为 `ObjectKey("docker", id)`。`name` 是 Docker 查询目标，同时沿用配置文字作为行名称。配置层继续允许其原有可打印字符范围，不在加载阶段访问 Docker或收紧为部署存在性校验。不同配置 id 指向同一目标时分别保留、分别采集。
+状态 key 恒为 `ObjectKey("docker", ContainerConfig.id)`，查询目标为 `ContainerConfig.name`，不同配置 id 指向同一目标时分别保留、分别采集。字段输入校验见[配置契约](configuration.md#configuration-fields)，实际对象身份在以下响应解析阶段核验。
 
 成功输出必须是严格 UTF-8 的单个 JSON 对象，允许前后空白；拒绝数组、多个对象、重复 JSON key、缺失/类型错误字段及无效状态。`Id` 必须是 64 位小写十六进制；`Name` 必须只有一个前导 `/`，后面为非空、无空白/控制字符且不再包含 `/` 的可打印名称。
 
@@ -96,7 +98,7 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 - Docker 接受短 ID 前缀不代表本工具接受；只有响应名称确实等于该短字符串时才算名称匹配。配置带前导 `/` 不自动归一化。
 - 名称目标每次重新查询，因此可以跟随同名重建的新 ID；完整 ID 目标不能跟随重建改绑。合法响应不匹配配置身份，按对象未找到处理。
 
-`State.Status` 仅接受下列精确小写值，成功结果为 `MetricCollectionResult(key, (Metric("state", value),))`，指标无单位；初始 spec 为相同字段且值 `None`。普通 ObjectSpec 与 MetricCollectionResult 匹配，不能接收 vLLM 专用结果；Collector 协议与 Monitor/State 参数仍使用公共 CollectionResult 类型。
+`State.Status` 仅接受下列精确小写值，成功结果为 `MetricCollectionResult(key, (Metric("state", value),))`，指标无单位；初始 ObjectSpec 为相同字段且值 `None`。结果与 spec 的匹配统一遵守[公共结果契约](monitor-state.md#collection-results)。
 
 | 原始值 | 展示值 |
 | --- | --- |
@@ -112,7 +114,7 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 ## 失败、恢复与取消
 
-所有预期失败返回 `MetricCollectionResult(key, failure=...)`，metrics 默认空 tuple，Failure 使用既有目录；failure 只接受关键字参数。Monitor 自身超时/未知异常可产生无载荷公共 `CollectionResult(key, failure=...)`，同样可用于此普通 spec；成功公共基类无效。固定受控 reason 不含原始 stdout/stderr/异常。保留最后有效值和历史缺口由 MonitorState 实现，TUI 复用状态栏位置显示 `STALE`。成功后正常清除 STALE，由 Monitor 通知日志模块结束故障轮次。
+所有预期失败返回 `MetricCollectionResult(key, failure=...)`，Failure 使用下列目录，固定受控 reason 不含原始 stdout/stderr/异常。公共失败、保值、历史缺口与恢复通知由[Monitor / State](monitor-state.md#collection-results)负责；本模块不重复实现这些行为。TUI 状态优先级见[逐行展示](#docker-row)。
 
 | 输入或事件 | kind / code |
 | --- | --- |
@@ -127,17 +129,21 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 每个来源独立受 `collection_timeout` 约束，默认 3 秒；底层端口也收到该有限正超时值（int/float，拒绝 bool）。Monitor 的超时到达后取消仍应传播，不能包装成权限或不可用。底层超时、取消、流超限和 close 必须停止并 await 回收在途进程，取消/close 清理预算 250 ms；不使用无限阻塞线程，清理不打印、不追加采集错误。close 主动取消在途 run，其调用方收到 CancelledError，close 返回前完成进程和读取任务清理，不返回终止退出码作为新采样。close 幂等，关闭后 run 拒绝；Monitor 保证同一采集器无重叠调用，端口无需支持多个同时命令。
 
-## 生产组装与展示复用
+## 生产组装
 
 `build_docker_collectors(containers, timeout=..., command_factory=...)` 按完整配置顺序创建独立采集器，空配置返回空 tuple 且不创建端口。默认工厂创建 LocalDockerCommand；工厂、采集器构造与 prepare_log 都不执行命令。
 
 `ApplicationRuntime._components()`已调用该工厂，以全部spec替换Docker静态模板，并把全部采集器交给同一个Monitor；硬件、Docker与已合并的vLLM共享唯一State/Log和只读reader。传入RuntimeComponents时沿用注入组件，不创建额外采集器。`docker_command_factory`只隔离外部命令，不能替换采集结果或另建一套状态。
 
-`compose_frame` 已按内容容量显示配置前缀，每项一行，失败不补位。未配置时仅在有内容行的区域显示 `No containers configured`；容量为 0 时不绘制条目或空态。配置 10 项、容量 4→6→3 时仅改变可见项，不影响采集、对象顺序、最小终端尺寸或下半区高度。隐藏项真实失败仍按既有 ERROR 规则记录；单纯隐藏不记错。无需新增滚动、分页、更多提示或展示类。
+<a id="docker-row"></a>
 
-REQ-006展示目标：内容左端`L=region.column+2`、右端`R=region.column+region.width-2`（不含R）。状态固定占`[R-14,R)`，Created/Running/Paused/Restarting/Removing/Exited/Dead、未知`—`和`STALE`均按文字宽度右对齐到R。名称在`[L,R-15)`内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长Unicode名不能覆盖状态。状态变化、失败恢复及resize不会重排配置前缀或增加行。
+## 逐行展示
 
-仅已采样且非stale的Running使用primary；其余生命周期、未采样保留值、未知及STALE使用text，任何Docker状态均不用amber。STALE优先替换旧生命周期，只有该状态文字，无错误原因或时间。初始无对象/无状态使用`—`；成功Exited/Dead仍是生命周期，不误报采集失败。完整行列预算复用[应用外壳](application-shell.md)，本轮只写目标注释和黑盒。
+面板容量、可见前缀、空配置/零容量以及缩放行为统一见[应用外壳](application-shell.md#可验证的字符容量)。每个可见容器占一行，名称沿用 `ContainerConfig.name`；有可用内容行且未配置容器时，空态文案为 `No containers configured`。
+
+内容左端 `L=region.column+2`、右端 `R=region.column+region.width-2`（不含 R）。状态固定占 `[R-14,R)`，全部生命周期、未知 `—` 和 `STALE` 均按文字宽度右对齐到 R。名称在 `[L,R-15)` 内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长 Unicode 名不能覆盖状态。状态变化、失败恢复及 resize 不会重排配置前缀或增加行。
+
+STALE 优先替换旧生命周期，只显示该状态文字，无错误原因或时间；初始无对象/无状态使用 `—`。成功 Exited/Dead 仍显示生命周期，不误报采集失败。状态新鲜性及颜色角色统一遵守[主题角色表](theme.md#color-roles)，本模块不维护另一份颜色映射。
 
 ## 接口与验证依据
 
@@ -147,12 +153,12 @@ REQ-006展示目标：内容左端`L=region.column+2`、右端`R=region.column+r
 | DockerCollector / build_docker_collectors | 同上 | 固定单次只读命令、全量顺序、重复目标不同 id、无 IO 构造、失败恢复、取消、关闭 |
 | LocalDockerCommand | `tests/test_docker_command.py` | 仅替换 asyncio 子进程创建端口；参数/环境、原始字节、并发排空、两流上限、超时/取消/close 回收 |
 | Collector→Monitor→State→Frame/Log | `tests/test_docker_integration.py` | 真实采集业务入口与离线命令样本；隐藏项采样/日志、容量变化、恢复及错误净化 |
-| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 全7种生命周期、初始未知、STALE、长名称、两主题、多宽、14格槽内统一右对齐；新鲜Running主色，其余正文，容量规则不变 |
+| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 全7种生命周期、初始未知、STALE、长名称、两主题、多宽、14格槽内统一右对齐；核对主题角色和外壳容量契约 |
 | ApplicationRuntime | 同上 | 用fake命令与终端运行真实生产组装，验证全部容器实际采样及隔离、恢复、退出清理 |
 | 配置与容量 | `tests/test_config.py`、`test_config_boundaries.py`、`test_tui.py`、`test_integration.py` | 复用 REQ-001 的 1/5/6/10 项完整保留、空态、0 容量、半页、配置不修改等测试 |
 
 运行入口：`python -m pytest tests/test_docker.py tests/test_docker_command.py tests/test_docker_integration.py`，以及全量 `python -m pytest`。所有 Docker IO 使用离线替身；不运行实际 docker、不访问 Unix socket 或网络。现有两个生产首帧测试增加 pending command 工厂，保持首次采样前的断言，并为 R4 接入后继续隔离真实 IO。
 
-测试不以NotImplementedError为成功条件。REQ-003最初R2的业务骨架/未接线失败是历史基线，实际命令与当时结果见[历史R2交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)；采集与运行期接线现已合并。本轮REQ-006只修订Docker状态的呈现位置和角色，新增失败记录在REQ-006交接，不当作导入/环境错误。
+测试不以 NotImplementedError 为成功条件。REQ-003 最初 R2 的业务骨架/未接线失败是历史基线，实际命令与当时结果见[历史R2交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)；当前验证分别覆盖采集、运行期接线及本节逐行展示契约，不把业务失败当作导入/环境错误。
 
 后续集成待验证：真实 Docker CLI 与模板、Unix socket 权限和错误文案、真实进程取消的时限。当前仅验证离线协议和本地公共 TUI；不得将样本结果表述为实机验证，也不因交接自动获得服务器连接授权。

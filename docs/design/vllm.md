@@ -1,9 +1,9 @@
 # vLLM 多类型模型负载与历史设计
 
 - 关联需求：dev-0 / REQ-004、REQ-006，`requirements.md` v1.24，AC-401～412、AC-609～616；依赖 REQ-001，复用 REQ-002、REQ-003 运行基础。
-- 修订：v1.12，2026-11-05。按用户要求在右侧模型名、运行/等待统计及DECODE HISTORY/RATE HISTORY标题上方各留1行；左栏及服务外矩形不变，最小16行服务区留1行柱图；数值粗体、字段、颜色、60FPS与采样/历史算法保持。REQ-004 已随 `83aad39` 合并并通过 R5；以下关于骨架/待实现的叙述保留原设计阶段背景，完整阶段结果见 [`handoff-r5.md`](../dev-workflow/dev-0/REQ-004/handoff-r5.md)。
+- 修订：v1.13，2026-11-05。服务窗口展示契约集中到第10节；配置、公共状态、主题及全页布局改为引用各自模块。行为与接口保持，REQ-004 已随 `83aad39` 合并并通过 R5；历史阶段结果见 [`handoff-r5.md`](../dev-workflow/dev-0/REQ-004/handoff-r5.md)。
 - 范围：冻结模块职责、数据和接口契约，提供可加载的接口骨架及离线黑盒测试。业务入口留待 R4 实现，不能把导入成功或预期的 `NotImplementedError` 解释为功能已完成。
-- 关联文档：[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)、[视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
+- 关联文档：[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)、[应用外壳](application-shell.md)、[主题](theme.md)、[错误日志](error-logging.md)。原[视图契约路径](../dev-workflow/dev-0/REQ-004/view-contract.md)保留为第10节的兼容入口。
 
 ## 1. 证据、兼容性与范围
 
@@ -42,13 +42,7 @@ classDiagram
         +close() None
     }
     class AsyncHttpClient
-    class CollectionResult {
-        +key ObjectKey
-        +failure Failure[0..1]
-    }
-    class MetricCollectionResult {
-        +metrics tuple
-    }
+    class CollectionResult
     class VllmCollectionResult {
         +observation VllmObservation[0..1]
     }
@@ -98,7 +92,6 @@ classDiagram
     Collector <|.. VllmCollector
     HttpPort <|.. AsyncHttpClient
     ObjectSpec <|-- VllmSpec
-    CollectionResult <|-- MetricCollectionResult
     CollectionResult <|-- VllmCollectionResult
     EngineSample <|-- ChatEngineSample
     EngineSample <|-- PoolingEngineSample
@@ -120,7 +113,7 @@ classDiagram
     VllmView ..> StateSnapshot
 ```
 
-类图使用 UML 实现、继承、关联、组合和依赖关系，箭头不表示运行时数据流。按已确认的图面偏好，不画 Monitor/MonitorState 到 CollectionResult 的依赖线，也不在连线上加说明文字。公共结果只声明 key/failure；具体子类分别持有平面指标或类型化观测。VllmCollectionResult 与观测使用普通关联：观测是可共享不可变值，不要求与单个结果独占生命周期。
+类图使用 UML 实现、继承、关联、组合和依赖关系，箭头不表示运行时数据流。按已确认的图面偏好，不画 Monitor/MonitorState 到 CollectionResult 的依赖线，也不在连线上加说明文字。公共结果体系见[Monitor / State](monitor-state.md#collection-results)。VllmCollectionResult 与观测使用普通关联：观测是可共享不可变值，不要求与单个结果独占生命周期。
 
 EngineSample 只提供三种模型共有的身份、运行/等待数量和排队延迟。VllmObservation 到 EngineSample 的关联表示使用该继承体系，实际 engines 必须全是与 model_type 匹配的同一种具体子类；裸基类、混合子类及错类型在消费边界拒绝。Embedding 与 Reranker 共享 PoolingEngineSample，不各建一个同结构的类。
 
@@ -128,11 +121,11 @@ EngineSample 只提供三种模型共有的身份、运行/等待数量和排队
 
 ## 3. 配置、身份与版本
 
-`ModelConfig` 保留 `id/type/name/base_url/gpu_ids`，支持可选 `served_model_name`。`name` 始终用于左侧模型列表和右侧详情标题；期望服务身份为显式 `served_model_name`，省略时回退到 `name`，兼容原有配置。需求v1.17根据用户GUI复核明确可将展示名配置为`Flash-Next`、`Embedding`、`Reranker`，同时显式保留对应真实`served_model_name`；不新增仅左侧别名字段，也不按类型覆盖配置名称。显式字段沿用名称的 1～128 个可打印字符、无首尾空白和控制字符约束，不接受 null 或空串。配置加载只作本地校验，不探测服务。
+`ModelConfig` 的字段合法性、展示名称与期望服务身份的区分、`served_model_name` 回退及 URL 约束统一见[配置字段契约](configuration.md#configuration-fields)。采集器使用解析后的期望身份执行下述响应核对，不重复配置校验或猜测部署信息。
 
 每次采样依次读取 `/version`、`/v1/models`、`/metrics`，不永久缓存版本或身份。要求版本精确为 `0.31.0`；期望身份必须同时出现在 models 的 `data[].id` 及所用 metrics 的 `model_name` 标签中。只作完整精确匹配，不按子串、GPU、端口或模型类型猜测；同名不同端点不合并，报告身份改变不改绑配置 id。
 
-`base_url` 沿用已验证的 HTTP/HTTPS origin，不接受 userinfo、查询、片段或 `/v1` 等路径。无模型配置时保留空态，工厂不创建端口、不发请求。模型路由展示使用配置事实，未知并发/总请求上限、TP/EP、量化或上下文参数不显示；不从设计稿填入模拟分母。
+无模型配置时工厂不创建端口、不发请求；空态及路由呈现见[第10节](#10-展示与固定布局)。
 
 ## 4. 冻结的公开接口
 
@@ -146,9 +139,7 @@ EngineSample 只提供三种模型共有的身份、运行/等待数量和排队
 | 同上 | `VllmObservation(model_type, model_name, engines, process_started_at=None)` | engines 为同类非空 `tuple[ChatEngineSample, ...]` 或 `tuple[PoolingEngineSample, ...]`，按 model_type 匹配，engine_id 唯一；不含速率、均值或 UI 状态 |
 | 同上 | `VllmSpec(ObjectSpec)` | 增加模型类型及期望服务身份，不通过 Metric 排列猜测类型 |
 | 同上 | `make_vllm_spec(config)` | 静态创建 key、模板与类型；无 I/O |
-| `data/models.py` | `CollectionResult(key, *, failure=None)` | 公共冻结基类，只有 key/failure；无具体载荷的公共失败可用于任意 spec，成功基类结果无效 |
-| 同上 | `MetricCollectionResult(key, metrics=(), *, failure=None)` | 继承公共基类，只增加平面 metrics；硬件、Docker 与普通 ObjectSpec 使用 |
-| `data/vllm.py` | `VllmCollectionResult(key, observation=None, *, failure=None)` | 继承公共基类，只增加 VllmObservation；vLLM 与 VllmSpec 使用 |
+| `data/vllm.py` | `VllmCollectionResult(key, observation=None, *, failure=None)` | vLLM 专属观测载荷；公共结果构造与 spec 匹配规则见[Monitor / State](monitor-state.md#collection-results) |
 | `collectors/vllm.py` | `parse_scrape(config, *, version: bytes, models: bytes, metrics: bytes)` | 纯解析为 VllmCollectionResult；不访问网络、不计算窗口、不打印/写日志 |
 | 同上 | `HttpPort.get(url, *, timeout, max_bytes)` / `close()` | 返回 HttpResponse(status, body)；每模型独占，可取消、有界、幂等关闭 |
 | 同上 | `AsyncHttpClient(client_factory=None)` | HTTPX 适配骨架；首次请求才创建 client，支持完全离线 factory 替身 |
@@ -158,15 +149,13 @@ EngineSample 只提供三种模型共有的身份、运行/等待数量和排队
 | 同上 | `accept(result, *, sampled_at) -> tuple[Metric, ...]` | 原子验证并消费一次结果，返回完整显示字段；非法输入抛 ValueError 且不改状态 |
 | 同上 | `metrics(*, now) -> tuple[Metric, ...]` | 纯只读投影，按当前时刻计算过期窗口，不采集、不修改 revision 或历史 |
 | `data/vllm_window.py` | `counter_rate(...)` / `weighted_latency(...)` | 无状态、精确计数差分和窗口加权数学 |
-| `tui/vllm.py` | `vllm_cells(snapshot, config, region, view, *, now)` | 返回 `tuple[TextCell, ...]`；只读、固定槽位、不触发采集 |
+| `tui/vllm.py` | `vllm_cells(snapshot, config, region, view, *, now, history_scales=None)` | 返回 `tuple[TextCell, ...]`；输入与呈现契约见[第10节](#10-展示与固定布局) |
 
 公共 `EngineSample` 只保留 `engine_id/running/waiting/queue`。`ChatEngineSample` 继承公共字段并增加 `kv_cache_fraction/prompt_tokens/generation_tokens/ttft`；`PoolingEngineSample` 只增加 `completed_sequences/latency`，其中 completed_sequences 只含正常 STOP 完成量，延迟各带自身 count。Chat 类没有 pooling 专用字段，pooling 类没有 Chat 专用字段，不用 None 为不适用的原始字段占位。
 
 这些原始观测类中的指标字段为 None 仅表示适用字段本次未取得；是否为实际失败仍由 `CollectionResult.failure` 表达，不能从 None 自动推导错误。成功的零观测延迟以合法 `LatencySample(0, 0)` 表达；成功结果必须提供全部适用指标，部分字段未取得的 observation 只能随带 failure 的部分结果提交。类型不适用性仍在最终显示 Metric 模板用 `applicable=False` 表达，原有 N/A、字段槽位及显示规则不变。
 
-Collector 协议的返回类型及 Monitor/MonitorState 的接受类型仍为公共 `CollectionResult`。实际硬件、Docker 返回 `MetricCollectionResult`；vLLM parser/collector 返回 `VllmCollectionResult`。`failure` 在基类和两个子类中均为仅关键字参数，避免位置参数与各自载荷混淆；公共 `data/models.py` 不引用 vLLM 观测类型。
-
-State 按 spec 与具体结果类型分支：普通 ObjectSpec 接受 MetricCollectionResult，VllmSpec 接受 VllmCollectionResult；不能只按 key 命名空间切换分支，既有普通 vllm 命名空间声明仍属于普通分支。成功或携带部分结果的具体类型必须与 spec 匹配；纯公共 `CollectionResult(key, failure=...)` 没有载荷，可由 Monitor 用于任意 spec 的超时/未知异常。基类 failure=None 不代表成功结果，应原子拒绝。
+Collector、Monitor 与 State 的公共类型边界、无载荷失败和具体结果匹配规则统一见[Monitor / State](monitor-state.md#collection-results)；本模块仅扩展 VllmSpec 对应的语义观测与 accumulator。
 
 VllmSpec 专支由 accumulator 生成展示字段，不将 observation 放入 ObjectSnapshot。Chat observation 的 engines 只接受 ChatEngineSample；Embedding/Reranker 只接受 PoolingEngineSample，且每份 tuple 非空、同类、标识唯一。裸 EngineSample、混合子类、与 model_type 不匹配的子类，以及结果类型、模型类型、身份或 key 不匹配均在消费边界原子拒绝。成功 observation 必须包含每个引擎所有适用字段，缺值只能作为有 failure 的局部失败。快照仍只有既有 Metric、stale、采样时间及 HistoryPoint；错误原因仍只交日志链路。本轮只修订观测类型、接口契约与测试，vLLM accumulator、状态专支及组合接线仍留待 R4 实现；不改变 VllmSpec 默认字段或 Metric 模板。
 
@@ -202,11 +191,13 @@ TTFT 和 Avg latency 沿用来源内部请求 `arrival_time` 到相关输出处�
 
 计数使用精确十进制语义解析，允许整数值科学记数法，不先经过 float；拒绝负值、非整数、bool、NaN/Infinity。延迟总秒数及创建时间有限非负，KV 比例有限且处于合法范围；`le="+Inf"` 是 histogram 标签，不等于允许非有限业务值。bucket 不相加，也不代替 count。
 
-成功结果为 `VllmCollectionResult(key, observation)`。本应支持的字段缺失或非法为局部 `response.invalid`，以 `VllmCollectionResult(key, observation, failure=...)` 保留其他有效原始字段，坏字段为 None；sum/count 任一缺失或非法则整组失效。身份、版本、JSON、整体 exposition、超限等全对象失败返回 `VllmCollectionResult(key, failure=...)`，observation=None。公共基类没有 metrics 或 observation 字段，不再采用单个结果载体中两种可选载荷互斥的策略。
+成功结果为 `VllmCollectionResult(key, observation)`。本应支持的字段缺失或非法为局部 `response.invalid`，以 `VllmCollectionResult(key, observation, failure=...)` 保留其他有效原始字段，坏字段为 None；sum/count 任一缺失或非法则整组失效。身份、版本、JSON、整体 exposition、超限等全对象失败返回 `VllmCollectionResult(key, failure=...)`，observation=None。
 
 parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；成功和部分失败都保持该具体类型。来源中出现的类型不适用指标不加入原始观测，也不因为对应字段不属于该类而报缺失。消费边界仍独立核验具体子类与 model_type，不能仅依赖 parser 或类型注解保证合法性。
 
 `process_start_time_seconds` 和各目标指标 `_created` 可选；缺失本身不是失败，存在则校验。非法 process marker 属于整体结构失败，非法 `_created` 使所属组局部失败。创建标记不是累计计数，也不是完整 engine 生命周期证明。
+
+<a id="vllm-windows"></a>
 
 ## 7. 基线、窗口与原子状态更新
 
@@ -242,7 +233,7 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 
 每个延迟组同时按时间和点数有界，默认 `history_seconds=60`、`max_intervals=602`。State 继续维护有界 HistoryPoint，单份差分基线不构成持久化历史。所有监控数据仅在内存，日志只记录采集失败。
 
-`metrics(now)` 对过期窗口只作读取时投影，不改变基线、区间、revision 或旧快照。State 的只读 snapshot 同样不能触发采集或写入；UI 选择、主题变化、缩放不重置模型历史。
+`metrics(now)` 对过期窗口只作读取时投影，不改变基线、区间、revision 或旧快照；State的接合及只读snapshot规则见[状态投影](monitor-state.md#vllm-state)。
 
 ## 8. 失败、保值与历史缺口
 
@@ -265,38 +256,80 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 - 按解压后的流式字节检查上限，即使无 Content-Length 也受限；达到上限合法，超过立即中止并关闭流，不先读完无限正文。client 的 stream/response/aclose 接口允许离线替身观察调用与释放行为。
 - HTTP 401/403 → `permission/access.denied`，404 → `not_found/object.not_found`；其余非 200，包括 3xx → `unavailable/source.unavailable`。非法状态/载荷与响应超限 → `parse/response.invalid`；TimeoutError → `collection.timeout`，网络/TLS/依赖不可用 → `source.unavailable`。本轮任一请求失败后停止剩余请求。
 - CancelledError 是关闭控制流，清理后传播，不变成 CollectionResult failure。get/close 清理遵守 250ms 预算；同实例 get 不重入，close 幂等，关闭后 get 抛 RuntimeError。Monitor 继续执行每对象不重叠、忙时跳过采样槽、统一外层超时与全局退出预算，不留迟到提交。
-- Monitor 仅依赖公共 key/failure；超时或未知异常可生成无载荷的 `CollectionResult(key, failure=...)`，不需要知道或伪造具体子类。State 按目标 spec 对该公共失败执行保值、断基线与 gap 处理。
+- Monitor超时/未知异常的公共失败路径遵守[公共结果契约](monitor-state.md#collection-results)，模型基线及历史按[第8节](#8-失败保值与历史缺口)处理。
 - 组合根新增 vLLM 工厂依赖注入并调用 `build_vllm_collectors`，与硬件、Docker 交给同一个 Monitor/State。替换旧手工 vLLM 占位 spec，避免重复注册；所有模型持续采集，视图选择不创建请求。
 
 本轮公共结果类型拆分及已有硬件/Docker/普通 State 路径仅作类型迁移，保持原业务行为；vLLM 部分继续只提供依赖声明、字段、接口签名、完整注释及 NotImplementedError 骨架。真实 client、配置解析、vLLM State 专支、组合根和呈现行为由 R4 实现。当前环境不安装或连接服务来掩盖未实现基线。R4 需在本地 Ubuntu/WSL、具备目标依赖后验证真实 HTTPX adapter；本轮 fake client 测试不能替代真实库兼容验证。
 
+<a id="vllm-view"></a>
+
 ## 10. 展示与固定布局
 
-完整内部坐标、裁切、图表和 TextCell 契约见[视图契约](../dev-workflow/dev-0/REQ-004/view-contract.md)。视图在既有 service Region 内绘制，服务窗口、切换位、键位提示共同占整页下半区；不因模型类型、故障或模型数量增加最小终端高度，不侵占上半区。
+本节是服务窗口内部呈现的唯一契约。外部 Region、半页预算、最低终端尺寸及帧调度由[应用外壳](application-shell.md)维护；选择、按键和服务入口由[导航](navigation.md)维护；所有颜色角色、主题默认值及终端字体实现由[主题](theme.md)维护。
 
-左侧采用固定24列模型栏，每项名称/状态、类型/明确端口、运行/等待三层，项间一行留白；顶部MODELS标题。右侧名称左/状态右、下一行真实路由；RUNNING/WAITING为左右统计块，标签在左、数值组内右对齐，Total在运行块下方，Chat的Avg queue在等待块下方。四列指标统一标签/单位在上、数值在下，后接原柱状历史。三类型及故障共用槽位，左栏仍逐模型保留状态；长名称优先裁切不覆盖状态或数值。完整坐标与字段选择在视图契约中维护。左栏计数正常为左侧“3 running”和右侧“7 waiting”，文字灰、数字按负载角色；统计caption/分隔、四指标标签灰，四指标值正文。最新数值和计数过长时有界科学记数、保留指数，必要时缩短左栏run/wait文案，仍不足才用明确省略符，不能截取数字前缀伪造较小完整值；这不修改原始Metric和公共format_metric的精确格式。
+### 职责与输入
 
-| 状态/字段 | 展示规则 |
+`vllm_cells(snapshot, config, region, view, *, now, history_scales=None)` 返回服务区内容 `tuple[TextCell, ...]`。只读取 `ObjectKey("vllm", model.id)`，不持有采集器、Monitor 或状态写接口，不计算计数差分、延迟窗口或跨采样 Total。选择、主题和调用次数不会影响采集、历史或快照 revision。
+
+`now` 是与历史点同域的有限非负单调秒数，不能由页眉 datetime 墙钟转换。`compose_frame(..., monotonic_now=None)` 的显式值用于离线时钟，缺省生产路径取 `time.monotonic()` 后传入；应用如何共用帧时刻与冻结尺度见[帧时钟和尺度接线](application-shell.md#帧时钟和尺度接线)。
+
+<a id="vllm-layout"></a>
+
+### 固定槽位
+
+输入 `Region("service", row, column, width, height)` 包含外边框。本函数只写内部，外框和 `column+27` 的栏间分隔由外层绘制；该分隔仅覆盖服务内部行。服务类型、失败、恢复和空字段变化均不改变 Region 或下表槽位。所有文字按终端字符单元宽度裁切，控制字符变为空白，不能跨内部分区或覆盖外边框。
+
+左模型栏内容为 `[column+2, column+26)`，固定24列；右详情为 `[L,R)`，其中 `L=column+30`、`R=column+width-2`。120列服务区对应88列图区。长名称优先裁短，不能覆盖状态或单位。
+
+| 区域 / 相对行 | 内容 |
 | --- | --- |
-| 初始未知 | 数值 `—`，不标 STALE，不因缺队列数据默认为 READY |
-| READY | 对象新鲜，必要负载字段有效且 WAITING=0 |
-| QUEUED | 对象本次无 failure 且有效 WAITING>0；只有 QUEUED 与新鲜正等待数用琥珀 |
-| STALE | 任一实际字段/对象失败时覆盖原状态位；旧正等待数不继续显示当前 QUEUED |
-| WAITING 标签与 0 | 使用普通正文色，不加感叹号 |
-| Chat 详情 | 四列为DECODE / tok/s、PREFILL / tok/s、TTFT / s、KV CACHE / %；数值单独下一行；Avg queue在等待块下方 |
-| pooling 详情 | 四列为RATE / seq/s、Avg queue / s、Avg latency / s、KV CACHE / %；KV值为N/A，不套用生成吞吐或TTFT；等待块下方注明Unit: seq |
-| 历史 | Chat 为 DECODE HISTORY，pooling 为 RATE HISTORY；单位匹配主吞吐，空缺与有效 0 区分 |
-| 路由/上限 | 只展示配置或可靠来源；未知上限不显示分母，不使用设计稿模拟值 |
+| 左 `+1` | `MODELS / n`；n为配置模型总数 |
+| 左第i个可见项 `+2+4i` | `column+2`为选中`›`，名称从`column+4`开始且末端不超过`column+19`；状态槽从`column+20`起占6列，文字右对齐到`column+26` |
+| 左名称下一行 | 大写类型和URL显式端口，如`CHAT / :8000`；未写端口则只显示类型，不猜80/443 |
+| 左名称后两行 | 左槽`[column+2,column+14)`的`3 running`左齐；空1格；右槽`[column+15,column+26)`的`7 waiting`右齐；数字与标签分别生成cell |
+| 左名称后三行 | 分隔留白，不增加独立行框或将三行合为一行 |
+| 右 `+1`、`+5`、`+11` | 空行，分别位于模型名、RUNNING/WAITING统计及历史标题上方 |
+| 右 `+2` | 模型名左，状态槽`[R-6,R)`右对齐且无尾空格；不重复左栏已有类型 |
+| 右 `+3` | `↳ `加配置的真实直接服务URL |
+| 右 `+4`、`+8` | `[L,R)`横向分隔线 |
+| 右 `+6` | RUNNING / WAITING 两统计组：标签组内左对齐，至少留1空格，纯数值组内右对齐；无ASCII大数字、分母或Total第三组 |
+| 右 `+7` | 左从L起`Total {state.total} seq`；右从`S+2`起Chat的`Avg queue {seconds}s`或pooling的`Unit: seq`；caption限于各自统计组 |
+| 右 `+9` | 四列指标标签及单位，具体文案见下节 |
+| 右 `+10` | 对应的纯数值，不重复单位、不越列 |
+| 右 `+12` | Chat为`DECODE HISTORY / tok/s`，pooling为`RATE HISTORY / seq/s`；同一行右端为尺度标签 |
+| 右 `+13 ... height-3` | 竖柱图区，高度`height-15`；服务高度16时为1行，增高仅扩充此区 |
+| 右 `height-2` | 相对时间轴，语义与文案见[历史显示](#vllm-history) |
 
-当前显示仅在右侧RUNNING/WAITING数值和历史标题上方四指标的真实数字cell设置`bold=True`；三类型一致，包含有效0、有界科学记数及STALE保留数字。`—`、`N/A`、无法容纳的`…`保持普通标记，pooling的KV N/A不加粗。左侧模型计数、各标签/单位、Total/Avg queue/Unit caption、标题/路由/状态及历史柱和尺度文本不新增粗体。原text/amber角色与新鲜正等待规则保持，字体属性独立于颜色，该粗体规则不另改字段、原始值或横向槽宽；既有低色Moonlight辅色近似仍沿用主题设计。
+两统计组中间分隔为 `S=L+(R-L)//2`；左组`[L,S-1)`，右组`[S+2,R)`，分隔线位于S列，仅覆盖统计与caption两行。数值不得跨过各组右缘。120列服务区对应L=30、S=74、右组起76、R=118。
 
-右详情在相对+1/+5/+11保留三条空行，分别位于模型名、RUNNING/WAITING统计和历史标题上方。对应模型名/状态+2、路由+3、横线+4、统计+6、caption+7、横线+8、四指标标签+9/数值+10、历史标题+12；第三处留白位于DECODE HISTORY/RATE HISTORY前，四指标标签直接跟随+8分隔线。左栏全部行位/容量不变，轴仍为height−2，柱图区改为+13..height−3；原服务预算内减少3行图高，最低height16保留1行。三类型、未知及失败/恢复共用这些行位。
+四指标列可用宽为`R-L-3`；前三列宽`q=(R-L-3)//4`，每列间留一空格，最后一列接收余数。列起点为`L+i*(q+1)`；120列对应30、52、74、96。标题和数值各自只占固定一行。
 
-不显示错误原因、最后成功时间、距今时长、异常堆栈、窗口不足或模拟标记。历史轴固定表示最近60秒观察窗口，空白表示该位置没有可绘制观测，不声称已采满整个窗口。服务切换位保留 vLLM/WebUI，WebUI 禁用；不新增推理、告警或服务管理操作。
+左栏容量为`(height-2)//4`。按配置顺序取包含选中项的连续窗口：首项为`max(0, selected_index-capacity+1)`，末端不超过模型总数。窗口不保存滚动偏移；选择靠前可显示更多后续项，靠后可留白，不增加分页、循环、更多标记或滚动条。未知选中id或None回退首模型；无配置只显示一次`No models configured`，不绘制伪造指标或历史。逐模型状态槽必须保留，不能因窄栏隐藏未选中模型的STALE。模型数量不改变外壳的尺寸要求。
+
+<a id="vllm-values"></a>
+
+### 指标和状态
+
+仅呈现[第5节](#5-指标投影和类型适用性)定义的字段与单位，不输出原始字段名或任意附加Metric。显示标签与字段名分离：
+
+| 类型 | 第一列 | 第二列 | 第三列 | 第四列 |
+| --- | --- | --- | --- | --- |
+| Chat | `DECODE / tok/s` | `PREFILL / tok/s` | `TTFT / s` | `KV CACHE / %` |
+| Embedding / Reranker | `RATE / seq/s` | `Avg queue / s` | `Avg latency / s` | `KV CACHE / %`，值为N/A |
+
+None显示`—`，有效0正常显示0，不适用为N/A。仅模型已采样、非stale且RUNNING/WAITING均有效时显示READY/QUEUED：等待大于0为QUEUED，否则READY。首次未采集或缺队列值时状态为`—`，不默认READY；任一实际失败以STALE覆盖状态。状态、标签及新鲜/保留数值的颜色统一见[主题角色规则](theme.md#color-roles)，不从状态名推断额外告警行为。
+
+仅右侧RUNNING/WAITING及四指标的六个数值槽中，真实数字cell设置`bold=True`，包含0、科学记数和STALE保留值。`—`、`N/A`、`…`均不设置；左栏数字、标签/单位、caption、标题/路由/状态、历史柱/尺度和其他面板不新增粗体。三类型共用规则，字体不改变角色、格式或槽宽。TextCell兼容性和终端字体叠加由[主题字体属性](theme.md#font-rendering)维护。
+
+数值超宽时先用最多3有效数字的科学记数，保留完整指数；不得截取十进制前缀伪装较小完整值。左栏数值加标签仍放不下时，`running/waiting`可缩为`run/wait`；仍不足则数值用明确`…`，不覆盖标签和邻槽。该规则适用于最新统计、指标及caption，不修改原始Metric或公共`format_metric`。正常、0与未知值保持原文案；未知queue caption为`Avg queue —`，不追加虚假的秒数或单位后缀。
+
+Total直接读取状态层按[指标投影](#5-指标投影和类型适用性)计算的字段，不在视图重算。路由仅用配置事实；未知并发/总请求上限不显示分母，不推断TP/EP、量化或上下文参数，不复制设计稿模拟值。不显示样本时间、错误原因、故障持续时间、最后成功时间、异常堆栈、窗口不足或模拟标记，不增加推理、告警或服务管理操作。
+
+<a id="vllm-history"></a>
 
 ### 10.1 稳定柱状历史与显示尺度
 
-本节是REQ-006对REQ-004历史显示的修订，覆盖原“从最早样本到now铺满横轴、按每帧峰值拉满高度”规则。保留竖向 `▁▂▃▄▅▆▇█` 柱、基线零值 `·`和主题主色，不改为点阵、折线或面积图。当前图高按用户新增留白后的固定服务预算取height−15，最小为1行；这是行位调整，不改变历史计算。Chat仍绘decode_rate / tok/s，pooling绘rate / seq/s；最新指标、延迟计算及原始HistoryPoint不受显示尺度影响。
+本节是REQ-006对REQ-004历史显示的修订，覆盖原“从最早样本到now铺满横轴、按每帧峰值拉满高度”规则。保留竖向 `▁▂▃▄▅▆▇█` 柱与基线零值 `·`，不改为点阵、折线或面积图。图高由前文[固定槽位](#vllm-layout)决定，颜色引用[主题设计](theme.md)。Chat绘decode_rate / tok/s，pooling绘rate / seq/s；最新指标、延迟计算及原始HistoryPoint不受显示尺度影响。
 
 **固定窗口与稳定时间桶**
 
@@ -314,7 +347,7 @@ bucket b = [b × Δ, (b + 1) × Δ)
 
 先做真实时间窗过滤的点在数学上必落入0..W−1。左右端都是可能只覆盖一部分的桶；`−60s` / `0s` 表示真实窗口边界，不声称格子中心是样本精确时刻。边界计算应避免浮点取整导致合法端点被丢弃；不得将未通过真实窗口过滤的旧点/未来点夹入图区，也不能以结果为−1/W而丢掉已通过过滤的端点。
 
-同一W和B内，旧点横坐标保持不变；B前进一步，存量桶统一左移一列。最早点过期只移除该点/重算其桶，不重新铺开其他点。当前桶立即接收新观测，不为等待完整桶额外延迟。窗口宽度变化才重新分桶；扩大/缩小不修改原始历史或采样节奏。60 FPS（每1/60秒，约16.7ms）更新显示机会，不意味柱图每帧都必须移动。
+同一W和B内，旧点横坐标保持不变；B前进一步，存量桶统一左移一列。最早点过期只移除该点/重算其桶，不重新铺开其他点。当前桶立即接收新观测，不为等待完整桶额外延迟。窗口宽度变化才重新分桶；扩大/缩小不修改原始历史或采样节奏。显示机会由[应用帧调度](application-shell.md#帧截止点与终端写入)提供，不意味柱图每帧都必须移动。
 
 同桶有效值取最大值；若桶内有failure/未知主字段，则整个桶留白，且该桶所有数值不参与显示峰值。无点桶留白，有效0画基线点；不跨缺口连线、补零、复制或插值生成新吞吐。失败点过期后，该桶剩余的有效点可重新可见。稳定桶不改变已有缺口优先原则。
 
@@ -325,9 +358,9 @@ bucket b = [b × Δ, (b + 1) × Δ)
 - T高于当前上限：本次绘制立即升到T，不裁掉新峰值，清除迟降计时。
 - T等于当前上限：保持，并清除迟降计时。
 - T低于当前上限：开始/延续连续低档计时；达到 **5秒** 后降到当时T。期间T在更低档位之间变化不重启计时；达到当前档、升档或没有有效桶时清零。时间按单调秒数，不按帧数计算。
-- 每根柱仍按真实桶值/当前上限换算高度；仅顶端使用现有1/8字符精度。不对样本值做平滑，也不为升/降档生成过渡吞吐。比例上限使用历史标题行现有空余位置显示 `Scale ≤ {upper} {unit}`，用muted，右对齐；不新增行、不挤占柱图、不会与现有历史标题重叠。最新数值仍保留自身精度。
+- 每根柱仍按真实桶值/当前上限换算高度；仅顶端使用现有1/8字符精度。不对样本值做平滑，也不为升/降档生成过渡吞吐。比例上限标签为 `Scale ≤ {upper} {unit}`，使用前文固定槽位，不与历史标题重叠；颜色见[主题角色](theme.md#color-roles)。最新数值仍保留自身精度。
 
-尺度属于展示会话，不放入MonitorState、配置或文件。由UI从同一只读快照推进各配置模型的尺度，未选中模型也保持自己的历史和尺度计时；主题切换、resize、小窗口、再次显示某模型不重建尺度。一次快照重复绘制不能每帧重新启动低档计时。快照/分桶/过期点/5秒截止点不变时可复用呈现结果，避免60FPS重复计算整段历史。
+尺度属于展示会话，不放入MonitorState、配置或文件。由UI从同一只读快照推进各配置模型的尺度，未选中模型也保持自己的历史和尺度计时；主题切换、resize、小窗口、再次显示某模型不重建尺度。一次快照重复绘制不能每帧重新启动低档计时。快照/分桶/过期点/5秒截止点不变时可复用呈现结果，避免普通刷新重复计算整段历史。
 
 纯渲染保持无副作用：应用持有尺度状态并将解析后的不可变尺度值显式传给compose_frame/vllm_cells；不能让现有纯函数通过模块全局字典或隐式读取MonitorState实现迟降。目标协作的类型、参数、骨架及黑盒现已声明，执行体尚未接线，不能将导入或冻结元组构造通过视为5秒迟降已实现。
 
@@ -373,9 +406,11 @@ tests/test_vllm_view.py的短轴、共享桶和“峰值填满”断言、test_v
 | `tests/test_vllm_state.py` | 观测子类/model_type 匹配、裸基类/混合/错类型原子拒绝、非空同类 tuple、既有 Metric 模板、group 独立基线、重置/epoch、部分失败保值与整点 gap、恢复、只读过期、精确 Total、KV 均值、有界窗口 | AC-401～407、409～411 |
 | `tests/test_vllm_config.py` | served_model_name 可选回退、明确展示名/身份、非法字段、无 I/O | AC-401、408、412 |
 | `tests/test_vllm_integration.py` | 三模型全部注册/持续采集、仅配置 vLLM 地址、同名不合并、单模型故障隔离、组合根与退出清理 | AC-401、406～408、412 |
-| `tests/test_vllm_view.py` | 三类型字段和单位、选择映射、READY/QUEUED/STALE、有效零/未知/N/A、历史缺口、固定槽位与路由裁切 | AC-401、405～411 |
+| `tests/test_vllm_view.py` | 三类型字段和单位、选择映射、READY/QUEUED/STALE、有效零/未知/N/A、Total不重算与未知上限、历史缺口、Unicode裁切与固定槽位、配置顺序窗口、只读输入和路由 | AC-401、404～411，共同展示约束 |
 
 既有硬件、Docker、Monitor、配置和 TUI 回归用于确认扩展不会破坏已合并能力。数学、parser、State 和 view 使用合成离线值及有来源记录的必要实采摘录，不联网、不发推理请求；`tests/fixtures/vllm/0.31.0/provenance.json` 区分原始正文哈希、保留行号及 fixture 哈希。摘录保留目标模型名称、标签和值，边界变体另行构造；包内源码仅作为文本证据，不导入执行。
+
+`test_vllm_pty.py`和`test_navigation_pty.py`通过本地Ubuntu/WSL真实PTY观察字形、颜色与交互；完成q退出和模式恢复后再执行业务断言。PTY仅在非POSIX环境按平台条件跳过，不以业务未实现为跳过理由；视图测试不使用xfail，不调用真实服务。
 
 必须在本地 Ubuntu/WSL Ubuntu 执行所需验证。R2 记录实际导入、测试计数及失败分类：业务未实现、真实契约/回归问题、环境/依赖问题分开；完整结果与命令由交接单引用。真实服务联调、多 engine 实采和不可见重启检验不属于本轮已完成证据。
 
