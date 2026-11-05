@@ -97,7 +97,7 @@ def test_full_page_halves_include_header_switch_footer_and_gaps(height, upper, l
     assert set(regions) == {"header", "gpu", "host", "storage", "docker", "service", "service_switch", "footer"}
     assert (regions["header"].row, regions["header"].height) == (0, 2)
     assert (regions["gpu"].row, regions["gpu"].height) == (2, upper - 2)
-    assert (regions["host"].row, regions["host"].height) == (2, 5)
+    assert (regions["host"].row, regions["host"].height) == (2, 6)
     assert (regions["storage"].row, regions["storage"].height) == (8, 6)
     assert (regions["docker"].row, regions["docker"].height) == (15, upper - 15)
     assert (regions["service"].row, regions["service"].height) == (upper, lower - 2)
@@ -109,6 +109,34 @@ def test_full_page_halves_include_header_switch_footer_and_gaps(height, upper, l
                if name in {"header", "gpu", "host", "storage", "docker"})
 
 
+@pytest.mark.parametrize("columns,gpu_width,right_column,right_width", (
+    (120, 71, 72, 48), (121, 72, 73, 48), (140, 83, 84, 56), (200, 119, 120, 80),
+))
+def test_neon_top_widths_and_four_host_content_rows_preserve_half_page_budget(
+    columns, gpu_width, right_column, right_width,
+):
+    frame = compose_frame(StateSnapshot(()), AppConfig(), TerminalSize(columns, 44), HOST, NOW)
+    regions = {region.name: region for region in frame.regions}
+    assert regions["gpu"].width == gpu_width
+    for name in ("host", "storage", "docker"):
+        assert (regions[name].column, regions[name].width) == (right_column, right_width)
+    assert (regions["host"].row, regions["host"].height) == (2, 6)
+    assert regions["host"].row + regions["host"].height == regions["storage"].row == 8
+    assert (regions["storage"].height, regions["docker"].row, regions["docker"].height) == (6, 15, 7)
+    assert (regions["service"].row, regions["service"].height) == (22, 20)
+    assert frame.minimum_size == TerminalSize(120, 36)
+
+
+@pytest.mark.parametrize("height", (36, 48))
+def test_fixed_model_rail_separator_uses_only_service_interior_rows(height):
+    frame = compose_frame(StateSnapshot(()), AppConfig(), TerminalSize(120, height), HOST, NOW)
+    service = next(region for region in frame.regions if region.name == "service")
+    separator = [cell for cell in frame.cells if cell.column == service.column + 27 and cell.text == "│"]
+    assert [(cell.row, cell.role) for cell in separator] == [
+        (row, "muted") for row in range(service.row + 1, service.row + service.height - 1)
+    ]
+
+
 @pytest.mark.parametrize("mounts", [(), ("/",), ("/", "/data"), ("/", "/data", "/cache")])
 def test_storage_has_three_content_rows_at_every_window_height(mounts):
     config = AppConfig(mount_points=mounts)
@@ -117,7 +145,7 @@ def test_storage_has_three_content_rows_at_every_window_height(mounts):
         storage = next(region for region in frame.regions if region.name == "storage")
         assert (storage.row, storage.height) == (8, 6)
         for index, mount in enumerate(mounts):
-            cells = [cell for cell in frame.cells if cell.text.startswith(mount + "  ")]
+            cells = [cell for cell in frame.cells if cell.text == mount or cell.text.startswith(mount + "  ")]
             assert len(cells) == 1 and cells[0].row == 10 + index
         if not mounts:
             assert any("No mount points configured" in cell.text and 10 <= cell.row <= 12 for cell in frame.cells)
@@ -130,10 +158,11 @@ def test_storage_ignores_fourth_mount_without_replacing_failed_first_item():
                                              (Metric("used", index, "GiB"),), stale=index == 0)
                                for index, mount in enumerate(mounts)))
     frame = compose_frame(data, config, TerminalSize(120, 44), HOST, NOW)
-    labels = [cell for cell in frame.cells if any(cell.text.startswith(mount + "  ") for mount in mounts)]
+    labels = [cell for cell in frame.cells if any(cell.text == mount or cell.text.startswith(mount + "  ") for mount in mounts)]
     assert [cell.text.split("  ", 1)[0] for cell in labels] == ["/", "/data", "/cache"]
     assert [cell.row for cell in labels] == [10, 11, 12]
-    assert any(cell.text == "STALE" and cell.row == 10 for cell in frame.cells)
+    assert any(cell.text == "STALE" and cell.row == 8 for cell in frame.cells)
+    assert not any(cell.text == "STALE" and cell.row in (10, 11, 12) for cell in frame.cells)
     assert "/ignored" not in text(frame)
 
 

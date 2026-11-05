@@ -1,7 +1,7 @@
 # Configuration 模块设计
 
 - 关联需求：dev-0 / REQ-001，AC-105、AC-106、AC-107、AC-109、AC-113；为 REQ-002～REQ-005 提供配置载体，并衔接 AC-207、AC-301、AC-304。
-- 修订：v1.2，2026-10-30；依据 requirements.md v1.12，补充 REQ-002 硬件配置消费契约和 REQ-003 容器精确身份边界。
+- 修订：v1.4，2026-11-05；依据requirements.md v1.19，将随包containers改为一条可加载的显式示例并提示替换实际名称；解析器缺省空列表、字段结构和采集边界不变。
 - 相关代码：`src/joi_observer/config.py`、`src/joi_observer/examples/config.yaml`。
 - 关联模块：启动与终端、采样调度、采集错误日志。
 
@@ -46,7 +46,7 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 | `collection_timeout` | `3.0` | 同上；可大于间隔，同一对象由调度器保证不重叠 |
 | `mount_points` | `["/", "/data"]` | 仅前 3 项校验并纳入：有序、互异的 POSIX 绝对路径，禁止 `..`、控制字符和首尾空白；其余忽略应用层语义，完整 YAML 校验仍覆盖；`[]` 为关闭挂载项 |
 | `containers` | `[]` | 不设固定数量上限；所有项逐项验证并完整保留，每项必填 `id`、`name`；显示容量不影响采集对象列表，不修改源文件 |
-| `models` | `[]` | 有序模型列表；每项必填 `id`、`type`、`name`、`base_url`，可选 `gpu_ids`；REQ-004设计增加可选 `served_model_name`，解析待R4接入 |
+| `models` | `[]` | 有序模型列表；每项必填 `id`、`type`、`name`、`base_url`，可选 `gpu_ids`、`served_model_name`；后者已由REQ-004实现并验收 |
 | `logging.directory` | `~/.joi-observer` | 运行平台绝对路径或 `~`、`~/...`；展开后返回 Path，不创建；不展开环境变量或 `~other` |
 | `logging.max_bytes` | `10000000` | 整数且至少 1024 字节；十进制 10 MB 默认阈值，保证可容纳一条有界日志 |
 | `logging.backup_count` | `3` | 正整数，禁止 0，确保轮转始终有界 |
@@ -63,9 +63,9 @@ REQ-002组装来源时将有效挂载项按原顺序命名为`storage/mount-0..2
 
 ## 示例来源与使用
 
-示例随 wheel 包含于 `joi_observer/examples/config.yaml`。用户可通过 CLI 报告的绝对示例位置手工复制到 `~/.joi-observer/config.yaml` 或自己的工作目录，然后编辑。示例注释说明挂载点仅前三项、容器全部采集但显示受面板容量限制；本次不更改示例监控目标。不会自动安装驱动、更改 Docker 权限或创建监控服务。
+示例随 wheel 包含于 `joi_observer/examples/config.yaml`。用户可通过 CLI 报告的绝对示例位置手工复制到 `~/.joi-observer/config.yaml` 或自己的工作目录，然后编辑。示例注释说明挂载点仅前三项、容器全部采集但显示受面板容量限制；containers现提供一条有效YAML示例`id: chat-container`、`name: flash-next-vllm`，须替换为真实容器名称或完整ID；不监控时显式使用`containers: []`。这仅改变示例内容，解析器省略containers的默认值仍为[]。不会自动安装驱动、更改 Docker 权限或创建监控服务。
 
-三个模型名和回环端口来自本地 `D:\Documents\llm_server\Ubuntu_Server_03_显卡驱动.md` 的 8.2、9.3 节；`Ubuntu_Server_04_服务部署.md` 的 3.3 节仅交叉核对路由，不采用 LiteLLM 作为采集入口。上述资料只读查看，未访问 URL、执行部署命令或确认服务在线。容器默认留空，用户按真实部署填写。
+三个模型名和回环端口来自本地 `D:\Documents\llm_server\Ubuntu_Server_03_显卡驱动.md` 的 8.2、9.3 节；`Ubuntu_Server_04_服务部署.md` 的 3.3 节仅交叉核对路由，不采用 LiteLLM 作为采集入口。上述资料只读查看，未访问 URL、执行部署命令或确认服务在线。容器示例名称用于演示配置结构，不代表自动发现或已确认存在；用户按实际部署替换。
 
 ## 接口与验证依据
 
@@ -86,12 +86,14 @@ REQ-002组装来源时将有效挂载项按原顺序命名为`storage/mount-0..2
 
 ## 修订说明
 
+v1.4按用户要求补入非空容器示例；示例仍需复制修改，缺配置不能自动启用示例，不更改用户已有配置或解析器默认值。
+
 v1.1 根据需求 v1.12 将挂载点纳入范围固定为前 3 项，将容器改为完整保留及校验，明确配置/采集范围与显示容量分离；保留全部 YAML 安全边界，并把忽略尾项回归扩展到挂载点。公开 API、默认采样/超时、用户配置查找、日志配置及三类模型配置结构均保持不变；现有业务逻辑留待 R4 同步。
 
 v1.2 在REQ-001完成v1.12验收后衔接REQ-002：补充GPU映射的精确匹配、挂载序号身份、前三项组装及timeout传递，不改变配置解析实现或示例目标。
 
-## REQ-004 服务身份扩展（设计已定，解析待实现）
+## REQ-004 服务身份扩展（已实现）
 
-`ModelConfig` 已声明可选 `served_model_name: str | None = None`。YAML省略时使用`name`作为期望身份；显式给出时必须为1～128个可打印字符、无首尾空白/控制字符，不接受null、空串或非字符串。允许模型身份中存在`/`，不按本地路径解释。`name`继续用于展示，`id`继续用于状态身份。
+`ModelConfig` 支持可选 `served_model_name: str | None = None`。YAML省略时使用`name`作为期望身份；显式给出时必须为1～128个可打印字符、无首尾空白/控制字符，不接受null、空串或非字符串。允许模型身份中存在`/`，不按本地路径解释。`name`同时用于左侧模型列表与右侧详情，`id`继续用于状态身份。按REQ-006用户GUI复核，展示名可配`Flash-Next`、`Embedding`、`Reranker`，并用`served_model_name`保留对应真实服务名称；不新增仅左侧别名字段，不根据模型类型强行覆盖用户name。
 
-该字段只能由配置显式指定，不自动读取Compose、环境变量或LiteLLM。vLLM采集器在每轮只读响应中精确验证该身份；配置加载不访问服务。当前`load_config`仍未接入新键，待R4实现；`tests/test_vllm_config.py`的有效新字段用例因此是预期失败基线。具体指标与身份策略见[vLLM设计](vllm.md)。原配置、其他字段与默认值保持兼容。
+该字段只能由配置显式指定，不自动读取Compose、环境变量或LiteLLM。vLLM采集器在每轮只读响应中精确验证该身份；配置加载不访问服务。`load_config`与`tests/test_vllm_config.py`已在REQ-004完成实现及离线验证，阶段结果见[REQ-004 R5交接](../dev-workflow/dev-0/REQ-004/handoff-r5.md)。具体指标与身份策略见[vLLM设计](vllm.md)。原配置、其他字段与默认值保持兼容。

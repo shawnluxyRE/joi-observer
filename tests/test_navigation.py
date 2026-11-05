@@ -36,7 +36,7 @@ def models():
 def test_default_selection_uses_first_configured_id_and_session_theme(count):
     configured = models()[:count]
     actions = SessionViewActions(configured)
-    expected = ViewSelection(configured[0].id if configured else None, "moonlight")
+    expected = ViewSelection(configured[0].id if configured else None, "hologram")
     assert actions.selection() == expected
     assert actions.selection() == expected
 
@@ -50,7 +50,7 @@ def test_arrows_traverse_configuration_order_and_stop_at_both_ends():
     )
     for key, identifier in expected:
         actions.on_key(key)
-        assert actions.selection() == ViewSelection(identifier, "moonlight")
+        assert actions.selection() == ViewSelection(identifier, "hologram")
 
 
 @pytest.mark.parametrize("second_url", ("http://offline.invalid:8001", "http://offline.invalid:8000"),
@@ -75,15 +75,16 @@ def test_empty_and_single_model_lists_accept_arrows_and_theme(count):
     expected_id = configured[0].id if configured else None
     for key in ("up", "down", "left", "right") * 3:
         actions.on_key(key)
-        assert actions.selection() == ViewSelection(expected_id, "moonlight")
-    actions.on_key("t")
-    assert actions.selection() == ViewSelection(expected_id, "hologram")
+        assert actions.selection() == ViewSelection(expected_id, "hologram")
     actions.on_key("t")
     assert actions.selection() == ViewSelection(expected_id, "moonlight")
+    actions.on_key("t")
+    assert actions.selection() == ViewSelection(expected_id, "hologram")
 
 
 @pytest.mark.parametrize("key", (
     "left", "right", "enter", "p", "tab", "q", "interrupt", "T", "Q", "unknown", "", "\x1b[B",
+    "mouse", "KEY_MOUSE",
 ))
 def test_non_action_keys_do_not_change_selection_or_theme(key):
     actions = SessionViewActions(models())
@@ -91,7 +92,7 @@ def test_non_action_keys_do_not_change_selection_or_theme(key):
     actions.on_key("t")
     before = actions.selection()
     actions.on_key(key)
-    assert actions.selection() == before == ViewSelection("first", "hologram")
+    assert actions.selection() == before == ViewSelection("first", "moonlight")
 
 
 def test_returned_selection_is_immutable_and_old_values_survive_later_actions():
@@ -102,9 +103,9 @@ def test_returned_selection_is_immutable_and_old_values_survive_later_actions():
     actions.on_key("down")
     moved = actions.selection()
     actions.on_key("t")
-    assert original == ViewSelection("middle", "moonlight")
-    assert moved == ViewSelection("first", "moonlight")
-    assert actions.selection() == ViewSelection("first", "hologram")
+    assert original == ViewSelection("middle", "hologram")
+    assert moved == ViewSelection("first", "hologram")
+    assert actions.selection() == ViewSelection("first", "moonlight")
 
 
 def test_sessions_do_not_share_selection_theme_or_modify_configuration():
@@ -113,9 +114,9 @@ def test_sessions_do_not_share_selection_theme_or_modify_configuration():
     first, second = SessionViewActions(configured), SessionViewActions(configured)
     first.on_key("down")
     first.on_key("t")
-    assert first.selection() == ViewSelection("first", "hologram")
-    assert second.selection() == ViewSelection("middle", "moonlight")
-    assert SessionViewActions(configured).selection() == ViewSelection("middle", "moonlight")
+    assert first.selection() == ViewSelection("first", "moonlight")
+    assert second.selection() == ViewSelection("middle", "hologram")
+    assert SessionViewActions(configured).selection() == ViewSelection("middle", "hologram")
     assert configured == before
 
 
@@ -131,7 +132,7 @@ def test_construct_read_and_keys_do_not_access_files_or_launch_processes(monkeyp
         for key in ("down", "t", "left", "right", "enter", "p", "up"):
             actions.on_key(key)
             actions.selection()
-        assert actions.selection() == ViewSelection("middle", "hologram")
+        assert actions.selection() == ViewSelection("middle", "moonlight")
 
 
 def sample_for_navigation():
@@ -180,23 +181,31 @@ def test_navigation_updates_type_units_history_and_gpu_roles_together():
         frames.append(frame)
         service = next(region for region in frame.regions if region.name == "service")
         right = [cell for cell in frame.cells if service.row < cell.row < service.row + service.height - 1
-                 and cell.column >= service.column + service.width // 3 + 2]
+                 and service.column + 30 <= cell.column < service.column + service.width - 2]
         detail = " ".join(cell.text for cell in right)
         assert model.name in detail and model.base_url in detail
         if model.type == ModelType.CHAT:
-            assert all(label in detail for label in ("DECODE: 10tok/s", "TTFT: 0.25s", "DECODE HISTORY / tok/s"))
+            assert all(label in detail for label in ("DECODE / tok/s", "TTFT / s", "DECODE HISTORY / tok/s"))
+            assert [cell.text for cell in right if cell.row == service.row + 10] == ["10", "20", "0.25", "25"]
             assert "Avg latency" not in detail and "RATE HISTORY" not in detail
         else:
-            assert all(label in detail for label in ("RATE: 0seq/s", "Avg latency: 0.75s", "RATE HISTORY / seq/s"))
-            assert "TTFT" not in detail and "DECODE" not in detail and "KV CACHE" not in detail
+            assert all(label in detail for label in ("RATE / seq/s", "Avg latency / s", "RATE HISTORY / seq/s"))
+            assert [cell.text for cell in right if cell.row == service.row + 10] == ["0", "0.5", "0.75", "N/A"]
+            assert "TTFT" not in detail and "DECODE" not in detail
         labels = [(cell.text, cell.role) for cell in frame.cells if cell.text in {"GPU 0", "GPU 1"}]
         expected_roles = (("primary", "muted"), ("muted", "primary"), ("muted", "muted"))[index]
         assert labels == list(zip(("GPU 0", "GPU 1"), expected_roles))
-        history = [cell for cell in right if service.row + 10 <= cell.row <= service.row + service.height - 3]
+        history = [cell for cell in right if service.row + 13 <= cell.row <= service.row + service.height - 3]
         zeros = [cell.column for cell in history if cell.text == "·"]
-        assert zeros == ([42] if index == 0 else [117])
+        assert zeros == ([30] if index == 0 else [117])
         bars = [cell.column for cell in history if cell.text in "▁▂▃▄▅▆▇█"]
-        assert set(bars) == ({117} if index == 0 else {42} if index == 1 else set())
+        assert set(bars) == ({117} if index == 0 else {30} if index == 1 else set())
+        axis = [(cell.column, cell.text) for cell in right
+                if cell.row == service.row + service.height - 2
+                and cell.column < service.column + service.width - 2]
+        assert axis == [(30, "-60s"), (116, "0s")]
+        unit = "tok/s" if model.type == ModelType.CHAT else "seq/s"
+        assert f"Scale ≤ {(10, 5, 1)[index]} {unit}" in detail
     assert all(frame.regions == frames[0].regions for frame in frames)
     assert all([(cell.row, cell.column, cell.text) for cell in frame.cells if cell.text in {"GPU 0", "GPU 1"}]
                == [(3, 2, "GPU 0"), (6, 2, "GPU 1")] for frame in frames)
@@ -220,10 +229,10 @@ def test_refresh_missing_data_failure_and_recovery_do_not_move_selection():
         frame = render(snapshot, config, actions)
         service = next(region for region in frame.regions if region.name == "service")
         detail = [cell for cell in frame.cells if service.row < cell.row < service.row + service.height - 1
-                  and cell.column >= 42]
-        assert selected.base_url in {cell.text for cell in detail}
+                  and service.column + 30 <= cell.column < service.column + service.width - 2]
+        assert "↳ " + selected.base_url in {cell.text for cell in detail}
         assert ("STALE" in {cell.text for cell in detail}) is (snapshot is failed)
-        assert actions.selection() == ViewSelection("embedding", "moonlight")
+        assert actions.selection() == ViewSelection("embedding", "hologram")
         baseline_regions = baseline_regions or frame.regions
         assert frame.regions == baseline_regions
     actions.on_key("down")
@@ -243,7 +252,7 @@ def test_long_list_selection_stays_visible_through_navigation_and_resize():
         service = next(region for region in frame.regions if region.name == "service")
         selected = next(model for model in configured if model.id == actions.selection().model_id)
         left_names = [cell for cell in frame.cells if service.row < cell.row < service.row + service.height - 1
-                      and cell.column < service.width // 3 and cell.text == selected.name]
+                      and cell.column < service.column + 27 and cell.text == selected.name]
         assert len(left_names) == 1 and left_names[0].role == "primary"
         assert frame.minimum_size == TerminalSize(120, 36)
         assert service.row == size.rows - size.rows // 2

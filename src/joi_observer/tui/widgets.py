@@ -1,4 +1,4 @@
-"""REQ-002 硬件纯展示入口；复用Frame的区域和语义颜色。
+"""硬件纯展示入口；复用Frame的区域和语义颜色。
 
 无采集器、日志或可变State引用；只接受不可变值。所有行沿用layout.py既定
 Region，不改变最小尺寸、半页分界、Storage三行、Docker剩余高度。
@@ -113,22 +113,55 @@ def hardware_cells(
 ) -> tuple[TextCell, ...]:
     """生成GPU/Host/Storage内部内容及预留状态，不画边框、不触碰其他区域。
 
-    GPU每槽3行：row+1+3*i为GPU编号/裁切名称/STALE；下一行分段条与紧邻百分比；
-    第三行显存已用/总量、温度、功耗。内容内宽=region.width-4，条宽=floor(内宽/2)。
-    名称截断不能挤占编号与5字符状态槽。未知身份用GPU —，不拿UUID假装编号。
+    区域由布局传入并遵守以下几何：
+    全屏GPU宽floor((columns-1)*3/5)，一列间隔，右侧使用余宽；Host外壳6行，
+    Storage外壳6行且内容3行。最小高度、GPU槽数预算与下半页分界不变。
+
+    每个区域内容边界L=column+2，R=column+width-2（不含R）。GPU每槽3行，
+    首行row+1+3*i：编号最多10格；显存槽[L+12,R-12)，温度槽[R-10,R)，
+    数值均右对齐。编号后至少一空格，名称只占显存之前的余位，可为空；
+    有名称时和编号/显存至少各隔一空格，不能覆盖显存或温度。
+    次行：GPU条从L起，占floor((width-4)/2)格，百分比紧随条后的一格空白；
+    功率在同一[R-10,R)组右对齐，条/百分比不可碰该组。第三行只在[R-5,R)
+    保留五格STALE，健康留空；不将状态挤入设备首行。未知身份用GPU —，
+    不拿UUID假装编号。极长编号只裁自身10格；数值按下述有界显示规则处理。
     只有关联卡的编号/填充条/百分比用primary，其余同位置muted；名称text，
-    显存muted，温度功耗text，轨道muted。没有模型映射时全部取消关联高亮。
+    显存/功率muted，温度text，轨道track。功率的正常文本为数值+' W'，
+    温度仍紧接°C；未知独立显示—。没有模型映射时全部取消关联高亮。
+    GPU/CPU/RAM条仅在呈现层统一用▌显示填充段和轨道，每字形仍占1字符列；
+    半块自带半格空隙，轨道使用独立深灰track，与未关联GPU的muted填充区分。
+    段数、总宽、填充角色和数字位置沿用percentage_bar的返回长度，公开█/░格式与算法不变。
     inventory首次未采集显示—；成功0卡且会话无槽显示No NVIDIA GPUs；失败在
     面板标题原状态槽显示STALE，无槽时内容仍—，不能把失败显示成成功无卡。
 
-    Host保留3个内部行：CPU条/百分比，RAM条/百分比，RAM已用/总量；条用secondary，
-    轨道muted，RAM已用muted、总量text。cpu/ram任一失败令标题固定槽STALE。
+    Host内部4行：row+1为CPU标签（L）与百分比（右端R），row+2为CPU条；
+    row+3为RAM标签（L）与紧凑容量（右端R），row+4为RAM条。两条都从L起，
+    宽floor((width-4)/2)，填充secondary、轨道track，不在条旁重复百分比。
+    Host数值槽[L+4,R)，不挤占左侧CPU/RAM标签。CPU百分比固定1位小数，
+    数字text、%为muted，
+    未知—为text；只有进度条使用secondary。RAM已用/分隔符/末尾共享单位
+    muted、总量数字text；未知值沿所属数字片段角色。cpu/ram任一失败令标题
+    [R-5,R)固定槽STALE。未知比例保留空轨道，未知值不能伪装为0。
+    GPU/RAM容量组合共享末尾单位；GPU保留1位，RAM的GiB/TiB均从原始字节
+    ROUND_HALF_UP为整数，例如'4 / 16 GiB'、'— / 16 GiB'、'4 / — GiB'；
+    双未知为'— / —'。RAM不增加百分比文字。capacity_text接口仍返回各自带单位
+    的1位小数值，仅私有展示改变精度与组合，不修改原始指标。
     Storage在row+2..+4恰好3行，按config前3项匹配storage/mount-0..2，原路径单行
-    截断并给容量/百分比/STALE留位；无配置在这三行内显示No mount points configured。
-    兼容REQ-001通用快照：无index字段的旧GPU对象/纯十进制空槽保留GPU {key}标签
-    及通用name: value指标，host/local保留通用字段和STALE；有index模板即走新契约，
+    靠L绘制；容量与百分比槽[L+2,R)，整体贴内容右缘，内容行不占状态槽。
+    前3个配置挂载点任一STALE时仅在标题[R-5,R)显示一次STALE，角色text。
+    Storage的GiB数值从原始字节ROUND_HALF_UP为整数，TiB仍保留1位小数；
+    不先按1位小数格式化再整数舍入。组文本例如'1 / 4 GiB · 25.0%'，全未知为
+    '— / — · —'；路径text，容量/中点分隔muted，百分比固定1位小数、含%为text。路径只裁剩余宽度，
+    和数值至少隔一格；未配置及第4个起的挂载点不参与面板状态。
+    无配置在这三行内以text显示No mount points configured。
+    其他数值格式不变。数值组过宽时先采用最多3位有效数字的科学记数，
+    保留指数和单位，不修改原始指标或capacity_text返回值；仍放不下时，
+    只在该槽显示明确的…，不能截成看似较小的完整数或冒充—/0/N/A。
+    先保留身份/标签/状态及分隔，再安排数值槽；巨大整数不得先转float溢出。
+    兼容原通用快照：无index字段的旧GPU对象/纯十进制空槽保留GPU {key}标签
+    及次行通用name: value指标、首行旧状态槽，host/local保留通用字段和STALE；有index模板即走新契约，
     即使其值None也不能退回UUID标签。旧路径key兼容读取（序号key优先）。这些兼容
-    不创建生产来源，生产仅生成REQ-002新schema，不能将无UUID的卡作为新发现设备。
+    不创建生产来源，生产仅生成具名指标schema，不能将无UUID的卡作为新发现设备。
     不支持字段显示—；失败仅状态位STALE、保留已有值，不添加时间/原因/诊断。
     所有TextCell须限制在所属Region内，颜色仅语义role，无amber或ANSI转义。
     """
@@ -150,11 +183,31 @@ def hardware_cells(
         put(region, row, region.column + region.width - 7, "STALE" if stale else "     ", width=5)
 
     def bar(region: Region, row: int, column: int, value: float | None, role: str,
-            width: int) -> None:
+            width: int, *, show_value: bool = True) -> None:
         display = percentage_bar(value, width)
-        put(region, row, column, display.filled, role, width)
-        put(region, row, column + len(display.filled), display.empty, "muted", width - len(display.filled))
-        put(region, row, column + width + 1, display.text, role, region.width - 4 - width - (column - region.column - 2) - 1)
+        put(region, row, column, "▌" * len(display.filled), role, width)
+        put(region, row, column + len(display.filled), "▌" * len(display.empty), "track", width - len(display.filled))
+        if show_value:
+            put(region, row, column + width + 1, display.text, role,
+                max(0, region.column + region.width - 12 - column - width - 1))
+
+    def right_parts(region: Region, row: int, end: int,
+                    parts: tuple[tuple[str, str], ...]) -> int:
+        """Draw pre-bounded spans without losing per-part semantic colors."""
+        column = end - sum(_width(text) for text, _ in parts)
+        start = column
+        spans: list[tuple[str, str]] = []
+        for text, role in parts:
+            if not text:
+                continue
+            if spans and spans[-1][1] == role:
+                spans[-1] = (spans[-1][0] + text, role)
+            else:
+                spans.append((text, role))
+        for text, role in spans:
+            put(region, row, column, text, role, _width(text))
+            column += _width(text)
+        return start
 
     gpu = by_region.get("gpu")
     if gpu is not None:
@@ -177,24 +230,27 @@ def hardware_cells(
             if legacy:
                 put(gpu, row, gpu.column + 2, f"GPU {object_id}", role, gpu.width - 11)
                 put(gpu, row + 1, gpu.column + 2, _generic_metrics(obj), "muted", gpu.width - 4)
+                status(gpu, row, bool(obj and obj.stale))
             else:
+                left, right = gpu.column + 2, gpu.column + gpu.width - 2
                 number = format_metric(metrics.get("index", Metric("index", None)))
-                label = f"GPU {number}"
-                put(gpu, row, gpu.column + 2, label, role, gpu.width - 11)
-                name_column = gpu.column + 2 + _width(label) + 2
-                put(gpu, row, name_column, format_metric(metrics.get("name", Metric("name", None))),
-                    "text", max(0, gpu.column + gpu.width - 8 - name_column))
-                bar(gpu, row + 1, gpu.column + 2, _value(obj, "utilization_percent"), role,
+                label = _clip(f"GPU {number}", 10)
+                put(gpu, row, left, label, role, 10)
+                memory_parts = _capacity_parts(_value(obj, "memory_used_bytes"),
+                                               _value(obj, "memory_total_bytes"),
+                                               max(0, right - left - 24))
+                memory_start = right_parts(gpu, row, right - 12, memory_parts)
+                name_column = left + _width(label) + 1
+                put(gpu, row, name_column,
+                    format_metric(metrics.get("name", Metric("name", None))),
+                    "text", max(0, memory_start - name_column - 1))
+                bar(gpu, row + 1, left, _value(obj, "utilization_percent"), role,
                     max(1, (gpu.width - 4) // 2))
-                used, total = capacity_text(_value(obj, "memory_used_bytes"), _value(obj, "memory_total_bytes"))
-                memory = f"{used} / {total}"
-                put(gpu, row + 2, gpu.column + 2, memory, "muted", gpu.width - 4)
-                details_column = gpu.column + 2 + _width(memory) + 2
-                temperature = format_metric(Metric("temperature", _value(obj, "temperature_c"), "°C"))
-                power = format_metric(Metric("power", _value(obj, "power_w"), "W"))
-                put(gpu, row + 2, details_column, f"{temperature}  {power}", "text",
-                    max(0, gpu.column + gpu.width - 2 - details_column))
-            status(gpu, row, bool(obj and obj.stale))
+                temperature = _bounded_number(_value(obj, "temperature_c"), "°C", 10)
+                power = _bounded_number(_value(obj, "power_w"), " W", 10)
+                right_parts(gpu, row, right, ((temperature, "text"),))
+                right_parts(gpu, row + 1, right, ((power, "muted"),))
+                status(gpu, row + 2, bool(obj and obj.stale))
 
     host = by_region.get("host")
     if host is not None:
@@ -207,36 +263,41 @@ def hardware_cells(
                 value = f"{metric.name}: {format_metric(metric)}" if metric else f"{label}: —"
                 put(host, host.row + 1 + index, host.column + 2, value, width=host.width - 4)
         else:
+            left, right = host.column + 2, host.column + host.width - 2
             for index, (label, obj, field) in enumerate((("CPU", cpu, "cpu_percent"), ("RAM", ram, "ram_percent"))):
-                row = host.row + 1 + index
-                put(host, row, host.column + 2, label, width=3)
-                bar(host, row, host.column + 6, _value(obj, field), "secondary", max(1, (host.width - 8) // 2))
-            used, total = capacity_text(_value(ram, "ram_used_bytes"), _value(ram, "ram_total_bytes"))
-            put(host, host.row + 3, host.column + 6, used, "muted", host.width - 8)
-            total_column = host.column + 6 + _width(used)
-            put(host, host.row + 3, total_column, " / ", "muted", host.width - 2 - (total_column - host.column))
-            put(host, host.row + 3, total_column + 3, total, "text", max(0, host.width - 5 - (total_column - host.column)))
+                row = host.row + 1 + index * 2
+                put(host, row, left, label, width=3)
+                bar(host, row + 1, left, _value(obj, field), "secondary",
+                    max(1, (host.width - 4) // 2), show_value=False)
+            percent = _fixed_percentage(_value(cpu, "cpu_percent"))
+            percent_parts = ((percent[:-1], "text"), ("%", "muted")) if percent.endswith("%") else ((percent, "text"),)
+            right_parts(host, host.row + 1, right, percent_parts)
+            right_parts(host, host.row + 3, right,
+                        _capacity_parts(_value(ram, "ram_used_bytes"), _value(ram, "ram_total_bytes"),
+                                        max(0, right - left - 4), total_role="text",
+                                        integer_units=("GiB", "TiB")))
 
     storage = by_region.get("storage")
     if storage is not None:
+        visible = tuple((mount, objects.get(("storage", f"mount-{index}"),
+                                            objects.get(("storage", mount))))
+                        for index, mount in enumerate(config.mount_points[:3]))
+        status(storage, storage.row, any(obj is not None and obj.stale for _, obj in visible))
         if not config.mount_points:
-            put(storage, storage.row + 2, storage.column + 2, "No mount points configured", "muted", storage.width - 4)
-        for index, mount in enumerate(config.mount_points[:3]):
+            put(storage, storage.row + 2, storage.column + 2, "No mount points configured", "text", storage.width - 4)
+        for index, (mount, obj) in enumerate(visible):
             row = storage.row + 2 + index
-            obj = objects.get(("storage", f"mount-{index}"), objects.get(("storage", mount)))
             metric_names = {metric.name for metric in obj.metrics} if obj else set()
             if obj is not None and not metric_names.intersection({"used_bytes", "total_bytes", "used_percent"}):
-                put(storage, row, storage.column + 2, f"{mount}  {_generic_metrics(obj)}", width=storage.width - 11)
+                put(storage, row, storage.column + 2, f"{mount}  {_generic_metrics(obj)}", width=storage.width - 4)
             else:
-                used, total = capacity_text(_value(obj, "used_bytes"), _value(obj, "total_bytes"))
-                percent = percentage_bar(_value(obj, "used_percent"), 1).text
-                values = f"{used} / {total}  {percent}"
-                # Keep a gap before the fixed state slot; clip names before capacity.
-                available = storage.width - 11
-                path_width = max(0, available - _width(values) - 2)
-                path = _clip(mount, path_width)
-                put(storage, row, storage.column + 2, f"{path}  {values}", width=available)
-            status(storage, row, bool(obj and obj.stale))
+                left, right = storage.column + 2, storage.column + storage.width - 2
+                percent = _fixed_percentage(_value(obj, "used_percent"))
+                parts = _capacity_parts(_value(obj, "used_bytes"), _value(obj, "total_bytes"),
+                                        max(0, right - left - 2), integer_units=("GiB",),
+                                        suffix=((" · ", "muted"), (percent, "text")))
+                values_start = right_parts(storage, row, right, parts)
+                put(storage, row, left, mount, "text", max(0, values_start - left - 1))
     return tuple(cells)
 
 
@@ -257,3 +318,62 @@ def _generic_metrics(obj: ObjectSnapshot | None) -> str:
 def _width(value: str) -> int:
     return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
                for char in value)
+
+
+def _scientific(number: str) -> str:
+    """At most three significant digits; Decimal never narrows huge ints to float."""
+    value = Decimal(number)
+    if not value:
+        return "0"
+    mantissa, exponent = format(value, ".2E").split("E")
+    return mantissa.rstrip("0").rstrip(".") + "e" + str(int(exponent))
+
+
+def _bounded_number(value: int | float | None, unit: str, width: int) -> str:
+    """Keep a whole value and unit, or explicitly mark a slot that cannot fit."""
+    number = format_metric(Metric("value", value))
+    text = number if value is None else number + unit
+    if _width(text) <= width:
+        return text
+    compressed = _scientific(number) + unit
+    return compressed if _width(compressed) <= width else "…"
+
+
+def _fixed_percentage(value: float | None) -> str:
+    """Retain the public bar's rounding while displaying one decimal place."""
+    text = percentage_bar(value, 1).text
+    return text if value is None else format(Decimal(text[:-1]), ".1f") + "%"
+
+
+def _capacity_parts(
+    used: int | None, total: int | None, width: int, *, total_role: str = "muted",
+    integer_units: tuple[str, ...] = (),
+    suffix: tuple[tuple[str, str], ...] = (),
+) -> tuple[tuple[str, str], ...]:
+    """Share the existing formatter's unit, then bound the complete numeric group."""
+    used_text, total_text = capacity_text(used, total)
+    unit = next((text.rsplit(" ", 1)[1] for text in (total_text, used_text) if " " in text), "")
+    left, right = used_text.split(" ", 1)[0], total_text.split(" ", 1)[0]
+    if unit in integer_units:
+        # Round raw bytes once. Rounding capacity_text's tenths again would
+        # incorrectly turn, for example, 1.49 GiB into 2 GiB.
+        divisor = 2**40 if unit == "TiB" else 2**30
+
+        def whole(value: int | None) -> str:
+            if value is None:
+                return "—"
+            number, remainder = divmod(value, divisor)
+            return format(Decimal(number + (remainder * 2 >= divisor)), "f")
+
+        left, right = whole(used), whole(total)
+
+    def parts() -> tuple[tuple[str, str], ...]:
+        return ((left + " / ", "muted"), (right, total_role),
+                ((" " + unit) if unit else "", "muted"), *suffix)
+
+    result = parts()
+    if sum(_width(text) for text, _ in result) > width:
+        left = _scientific(left) if used is not None else left
+        right = _scientific(right) if total is not None else right
+        result = parts()
+    return result if sum(_width(text) for text, _ in result) <= width else (("…", "muted"),)

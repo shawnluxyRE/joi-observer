@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
 import subprocess
 
@@ -11,6 +12,7 @@ from joi_observer import cli
 from joi_observer.collectors import docker, hardware
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig
 from joi_observer.tui.layout import TerminalSize
+from test_hardware_view import pixels
 
 
 GPU_UUIDS = tuple(f"GPU-00000000-0000-0000-0000-{index + 1:012d}" for index in range(5))
@@ -52,10 +54,19 @@ class RecordingTerminal:
 
 
 def region_text(frame, name):
+    """Read rendered cells spatially; adjacent color spans add no text spaces."""
     region = next(region for region in frame.regions if region.name == name)
-    return " ".join(cell.text for cell in frame.cells
-                    if region.row <= cell.row < region.row + region.height
-                    and region.column <= cell.column < region.column + region.width)
+    grid = pixels(frame.cells)
+    text = "\n".join("".join(grid.get((row, column), (" ", "text"))[0]
+                            for column in range(region.column, region.column + region.width))
+                     for row in range(region.row, region.row + region.height))
+    return " ".join(text.split())
+
+
+def has_capacity_numbers(text, *numbers):
+    """Readiness depends on sampled values, not the old repeated-unit layout."""
+    return "GiB" in text and all(re.search(rf"(?<![\d.]){re.escape(number)}(?![\d.])", text)
+                                for number in numbers)
 
 
 def hardware_is_visible(frame):
@@ -63,10 +74,8 @@ def hardware_is_visible(frame):
         return False
     gpu, host, storage = (region_text(frame, name) for name in ("gpu", "host", "storage"))
     return (all(f"Offline GPU {index}" in gpu for index in range(5))
-            and "50%" in host and "4.0 GiB" in host and "16.0 GiB" in host
-            and "25.0 GiB" in storage and "100.0 GiB" in storage
-            and "50.0 GiB" in storage and "200.0 GiB" in storage
-            and "75.0 GiB" in storage and "300.0 GiB" in storage)
+            and "50.0%" in host and has_capacity_numbers(host, "4", "16")
+            and has_capacity_numbers(storage, "25", "100", "50", "200", "75", "300"))
 
 
 def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp_path, monkeypatch, capsys):
@@ -168,7 +177,10 @@ def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp
         assert frame.minimum_size == TerminalSize(120, 37) and not frame.too_small
         gpu_text = region_text(frame, "gpu")
         assert all(f"GPU {index}" in gpu_text for index in range(5))
-        assert "8.0 GiB" in gpu_text and "16.0 GiB" in gpu_text and "60°C" in gpu_text
+        assert "8.0 / 16.0 GiB" in gpu_text and "60°C" in gpu_text
+        assert "4 / 16 GiB" in region_text(frame, "host")
+        assert all(value in region_text(frame, "storage") for value in (
+            "25 / 100 GiB · 25.0%", "50 / 200 GiB · 25.0%", "75 / 300 GiB · 25.0%"))
         assert "gpu_inventory" not in gpu_text and "STALE" not in " ".join(cell.text for cell in frame.cells)
         assert {path for operation, path in calls if operation == "statvfs"} == {"/", "/data", "/archive"}
         assert "/ignored" not in region_text(frame, "storage")
@@ -244,19 +256,19 @@ def test_production_runtime_isolates_hardware_failures_and_recovers_empty_invent
             failed = await wait_frame(lambda frame:
                 "STALE" in region_text(frame, "gpu")
                 and "STALE" in region_text(frame, "host")
-                and "4.0 GiB" in region_text(frame, "host")
-                and "25.0 GiB" in region_text(frame, "storage"))
+                and has_capacity_numbers(region_text(frame, "host"), "4", "16")
+                and has_capacity_numbers(region_text(frame, "storage"), "25", "100"))
             assert "No NVIDIA GPUs" not in region_text(failed, "gpu")
             assert "STALE" not in region_text(failed, "storage")
             host = next(region for region in failed.regions if region.name == "host")
             cpu_text = " ".join(cell.text for cell in failed.cells if cell.row == host.row + 1
                                 and host.column <= cell.column < host.column + host.width)
-            assert "—" in cpu_text and "0%" not in cpu_text
+            assert "—" in cpu_text and "0.0%" not in cpu_text
             phase["healthy"] = True
             recovered = await wait_frame(lambda frame:
                 "No NVIDIA GPUs" in region_text(frame, "gpu")
                 and "STALE" not in region_text(frame, "host")
-                and "8.0 GiB" in region_text(frame, "host"))
+                and has_capacity_numbers(region_text(frame, "host"), "8", "16"))
             assert "STALE" not in region_text(recovered, "gpu")
             assert failed.regions == recovered.regions
             assert failed.minimum_size == recovered.minimum_size == TerminalSize(120, 36)
@@ -274,6 +286,8 @@ def test_production_runtime_isolates_hardware_failures_and_recovers_empty_invent
         assert all("PRIVATE" not in record for record in records)
         assert instances and all(instance.closed for instance in instances)
         assert terminal.restored
+        assert "4 / 16 GiB" in region_text(failed, "host")
+        assert "8 / 16 GiB" in region_text(recovered, "host")
 
     asyncio.run(scenario())
 
@@ -420,8 +434,8 @@ def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_
             await until(lambda: set(objects()) == expected
                         and all(len(item.history) >= 2 for item in objects().values()))
             await until(lambda: terminal.frames and "Joint GPU" in region_text(terminal.frames[-1], "gpu")
-                        and "50%" in region_text(terminal.frames[-1], "host")
-                        and "25.0 GiB" in region_text(terminal.frames[-1], "storage")
+                        and "50.0%" in region_text(terminal.frames[-1], "host")
+                        and has_capacity_numbers(region_text(terminal.frames[-1], "storage"), "25", "100")
                         and "Running" in region_text(terminal.frames[-1], "docker"))
             initial = terminal.frames[-1]
             assert "hidden-container" not in region_text(initial, "docker")
@@ -479,6 +493,7 @@ def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_
         assert all("PRIVATE" not in cell.text for frame in terminal.frames for cell in frame.cells)
         assert all("PRIVATE" not in json.dumps(entry) for entry in records)
         assert forbidden_calls == []
+        assert "25 / 100 GiB · 25.0%" in region_text(initial, "storage")
 
     asyncio.run(scenario())
     assert capsys.readouterr() == ("", "")

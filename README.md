@@ -8,9 +8,11 @@
 
 ## 当前阶段
 
-REQ-001 公共运行基础、REQ-002 本机硬件、REQ-003 Docker 生命周期、REQ-004 三类型 vLLM 采集与显示，以及 REQ-005 模型导航与服务入口已实现。公共能力包括严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端与终端恢复。默认选择首个配置模型，↑↓ 切换详情、单位、历史和关联 GPU 高亮，所有模型持续采集。完整双主题配色留给 REQ-006。REQ-004 已按 R2 确认将统一标签上限修订为 64，以兼容完整响应中的正常服务元数据，并通过 R5 完整响应复验；旧 7a4e950 测试包不包含此修复。REQ-004 结果见 [R4 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 和 [R5 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r5.md)。
+REQ-001 公共运行基础、REQ-002 本机硬件、REQ-003 Docker 生命周期、REQ-004 三类型 vLLM 采集与显示，以及 REQ-005 模型导航与服务入口已实现。公共能力包括严格 YAML 配置、独立异步调度、只读内存快照、有界历史、异步 ERROR 日志、全屏终端与终端恢复。默认选择首个配置模型，↑↓ 切换详情、单位、历史和关联 GPU 高亮，所有模型持续采集。REQ-006 已实现双主题、Neon Grid 字符排版、60 FPS 调度与稳定柱状历史；本轮验证和待验收项见 [REQ-006 R4 交接](docs/dev-workflow/dev-0/REQ-006/handoff-r4.md)。REQ-004 已按 R2 确认将统一标签上限修订为 64，以兼容完整响应中的正常服务元数据，并通过 R5 完整响应复验；旧 7a4e950 测试包不包含此修复。REQ-004 结果见 [R4 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r4.md) 和 [R5 交接单](docs/dev-workflow/dev-0/REQ-004/handoff-r5.md)。
 
 需求 v1.12 的配置与布局已同步：仅纳入原配置前三个挂载点，全部容器保序保留，显示数量随上半区空间变化；下半区连同服务切换位、键位提示固定占半页。REQ-001、REQ-002 和 REQ-003 均已通过各自范围的 R5 离线验收。
+
+深灰轨道源码审查阶段曾按用户要求暂不构建安装包；随后用户明确要求重建。当前源码的安装交付以 [重建验证记录](docs/dev-workflow/dev-0/REQ-006/evidence/r5-track-build/uv-install-results.json) 及对应服务器安装包为准，包含统一半块与深灰track。既有GUI启动与回放入口未随此次打包更新，仍属此前版本，不能作为当前安装包内容的依据。
 
 REQ-005 的会话控制器、默认应用接线及服务页脚已完成；直接构造应用与正式 CLI 使用相同的默认导航。已通过 R5 离线验收及代码、测试逻辑复查，WSL Ubuntu 全量 1450 项通过；验收范围与证据见 [REQ-005 R5 交接](docs/dev-workflow/dev-0/REQ-005/handoff-r5.md)，实现记录见 [R4 交接](docs/dev-workflow/dev-0/REQ-005/handoff-r4.md)，契约见 [模型导航设计](docs/design/navigation.md)。
 
@@ -18,7 +20,7 @@ REQ-005 的会话控制器、默认应用接线及服务页脚已完成；直接
 
 硬件采集在运行工具的 Ubuntu 主机本地执行。GPU 需要已安装并可查询的 `nvidia-smi`，按完整 UUID 保持设备身份；新卡追加，暂时消失的卡保留原位置并显示 STALE。发现器失败不阻断已知卡和 Host 采样；成功无卡显示 `No NVIDIA GPUs`。不会安装驱动或修改硬件。按当前选中模型计算显式 GPU 关联色，索引只使用新鲜且唯一的采样值，未知映射不猜测；导航不改变 GPU 集合、顺序或采样。
 
-CPU 使用 `/proc/stat` 的整机累计 tick 差分，首次及失败恢复后的第一轮显示 `—`。RAM 使用 `MemTotal - MemAvailable`，不以 MemFree 或 GPU 显存替代。Storage 精确验证挂载点，并在容量读取前后核对挂载身份；未挂载不回退到父文件系统，也不以第四项补位。容量使用 `f_frsize × f_blocks` 与 `f_frsize × (f_blocks - f_bfree)`，包含保留块；界面统一显示 GiB/TiB。GPU 显存按驱动 MiB 换算，功率是驱动最近测得的板卡功率，可能为一秒平均。失败只显示固定位置的 STALE，原因仅写 ERROR 日志。
+CPU 使用 `/proc/stat` 的整机累计 tick 差分，首次及失败恢复后的第一轮显示 `—`。RAM 使用 `MemTotal - MemAvailable`，不以 MemFree 或 GPU 显存替代。Storage 精确验证挂载点，并在容量读取前后核对挂载身份；未挂载不回退到父文件系统，也不以第四项补位。容量使用 `f_frsize × f_blocks` 与 `f_frsize × (f_blocks - f_bfree)`，包含保留块；界面统一显示 GiB/TiB。RAM 的 GiB/TiB 和 Storage 的 GiB 直接由原始字节四舍五入为整数（ROUND_HALF_UP），Storage 的 TiB 和 GPU 显存保留一位小数。CPU/Storage已有百分比固定显示一位小数，如 `30.0%`、`0.0%`、`100.0%`；RAM保持容量行与下行条，不添加百分比文字。显示精度不改变采样、原始比例或GPU利用率。Storage 左侧路径和空配置文字使用正文色，容量与中点分隔保持灰色、百分比保持正文色。前三个配置挂载点任一失败时，仅在 Storage 标题右上角显示一次 STALE；内容行容量和百分比仍贴右，全部恢复后清除标题状态。GPU 显存按驱动 MiB 换算，功率是驱动最近测得的板卡功率，可能为一秒平均。失败原因仅写 ERROR 日志。
 
 文件及 statvfs 读取放在可终止的包内 worker 中，NVIDIA 查询使用固定 argv 的本地子进程；两路输出各限 1 MiB。每个采集器与发现器独占 IO，超时/取消会终止并回收本端口进程。上述硬件采集不建立网络连接。目标服务器的驱动、权限、挂载及无卡输出尚未现场验证，本地离线测试不能替代部署验收。
 
@@ -61,17 +63,29 @@ WSL 中的 uv 位于 `/home/shawn/.local/bin/uv`，实测版本为 0.13.6。使�
 
 当前工作区的完整离线 wheel 集合包含 HTTPX 及其传递依赖，来源与 SHA-256 见 [REQ-005 离线包清单](docs/dev-workflow/dev-0/REQ-005/evidence/r4-offline-wheels.json)。这些包按既有清单从本地文件及 pip 缓存原样恢复，没有下载或重打包。证据与 wheel 目录均被 Git 忽略，克隆仓库时不会自动获得；须从已有交付材料另行准备。源码、wheel、真实 PTY 和工具安装验证记录在 R4 交接单。
 
-配置优先级：`joi-observer --config /absolute/path/config.yaml` → 当前目录 `config.yaml` → `~/.joi-observer/config.yaml`。指定配置缺失/非法时退出，不回退。随包示例位于 [examples/config.yaml](src/joi_observer/examples/config.yaml)，包含本地部署材料记载的三个模型；地址仅供部署参考，使用时须核对实际目标，示例不会自动用于采集。容器列表初始为空，用户填写真实名称；GPU 关联也由用户显式配置。
+配置优先级：`joi-observer --config /absolute/path/config.yaml` → 当前目录 `config.yaml` → `~/.joi-observer/config.yaml`。指定配置缺失/非法时退出，不回退。随包示例位于 [examples/config.yaml](src/joi_observer/examples/config.yaml)，包含本地部署材料记载的三个模型；地址仅供部署参考，使用时须核对实际目标，示例不会自动用于采集。随包容器示例为 `id: chat-container`、`name: flash-next-vllm`，复制后须替换为实际容器名称或完整 ID；不监控容器时设为 `containers: []`。示例名称不代表已探测到该容器；GPU 关联也由用户显式配置。
 
-默认每秒采样、每对象超时 3 秒，约 60 秒历史只保存在内存。默认错误日志为 `~/.joi-observer/error.log`，10,000,000 字节轮转、3 份备份，仅记录采集失败 ERROR；`time` 使用服务器本地 `YYYY-MM-DD HH:MM:SS`，不附带时区信息。相同对象相同错误连续发生最多每 60 秒记录一次。日志不可写时启动前提示一次并继续监控。
+默认每秒采样、每对象超时 3 秒，约 60 秒历史只保存在内存。界面按固定60 Hz节拍（每1/60秒，约16.7ms）调度，慢终端跳过过期帧，显示刷新不会增加采集频率，不新增帧率切换或配置项。原柱状历史采用固定最近60秒轴与稳定时间桶；没有样本和失败区间留白，有效0显示点标记。纵轴采用1/2/5十进制档位，超出即升档，连续低于当前档5秒后降档；每个模型独立保留尺度，切换主题/模型和缩放不清空。默认错误日志为 `~/.joi-observer/error.log`，10,000,000 字节轮转、3 份备份，仅记录采集失败 ERROR；`time` 使用服务器本地 `YYYY-MM-DD HH:MM:SS`，不附带时区信息。相同对象相同错误连续发生最多每 60 秒记录一次。日志不可写时启动前提示一次并继续监控。
 
 布局按全页高度平分：下半区包含服务窗口、服务切换及键位提示，奇数高度时多出的一行留给上半区。无 GPU 或不超过 4 个 GPU 槽时最低为 120×36；5 GPU 场景最低为 120×37，GPU 更多时按设计公式增高，容器数量不提高最低高度。Storage 固定 3 行内容，只纳入原配置前三个挂载点，前项失败不以尾项补位；整个 YAML 仍执行安全校验。Docker 全部配置项持续采集，只显示区域可容纳的前若干项，隐藏不丢失状态或改变采样。页高 44/48/42 行时分别显示前 4/6/3 个容器，36 行时容量可为零；溢出不提示、不滚动、不占用下半区，内容不足时保留空白。低于基础尺寸时显示英文放大提示，仍处理 ↑↓、t 和 q；放大后显示最新选择。具体分配见[终端设计](docs/design/application-shell.md)。
+
+页眉第二行固定使用设备标签 `H3C R5300 G6`，后接 ` / ` 和本地 Ubuntu 发行版本，右侧仍显示时间。启动时按 `/etc/os-release`、`/usr/lib/os-release` 顺序读取，使用首个读取成功文件实际提供的字段：优先非空 `PRETTY_NAME`，否则组合 `NAME` 与 `VERSION_ID`，缺失或空值分别用 `Ubuntu`、`—`。显式名称 `Linux` 正常保留；空文件、读取或编码失败显示 `Ubuntu —`，不拼接低优先级文件、不读取内核版本或探测设备型号。
+
+GPU、CPU、RAM的利用率条中，填充和未填充轨道都显示为`▌`，每段仍占原来一个字符格。轨道独立使用双主题相同的深灰track色`#3E4A5B`；关联GPU填充仍为主色，未关联GPU填充仍为原muted灰色，CPU/RAM填充仍为辅色。分段数、条宽、数字位置和百分比计算保持，不改变其他灰色文字或vLLM竖向历史柱。
 
 ## 模型导航与键位
 
 ↑↓ 按配置顺序单步选择模型，到首尾停留。同名、同类型或同端点但 id 不同的模型仍独立；模型列表较长时选中项保持可见。空配置显示英文空态，零或一个模型时方向键安全。刷新、采集失败和窗口缩放保留选择，切换模型不清空历史或暂停其他来源。
 
-底部固定显示当前 `vLLM` 和 `WebUI (disabled)`；←→ 不切换服务。Enter、p、Tab 无操作。正常尺寸下页脚为 `↑↓ Select model    t Theme    q Quit`，其中 `Select model` 来自当前服务描述。q 全局退出，t 在 Moonlight/Hologram 会话标识间切换，保持模型和历史。新启动默认 Moonlight，不保存偏好；同一个应用实例再次运行保留其会话。完整 RGB 配色和全屏双主题视觉验收属于 REQ-006，本轮只完成主题状态与名称切换。
+底部固定显示当前 `vLLM` 和 `WebUI (disabled)`；←→ 不切换服务。Enter、p、Tab 无操作。正常尺寸下页脚为 `↑↓ Select model    t Theme    q Quit`，其中 `Select model` 来自当前服务描述。q 全局退出，t 按 Hologram → Moonlight → Hologram 切换，保持模型和历史。每个新应用默认 Hologram，不保存偏好；同一个应用实例再次运行保留其选择和历史尺度。
+
+两主题同步更新文字、指标条和空白背景；仅新鲜正等待数与QUEUED使用琥珀色。支持改色的256色终端使用精确RGB，退出时恢复全部七个私有色槽；六个前景色对共用背景，需要COLOR_PAIRS至少7。固定256色终端使用最近颜色，track对应标准索引239；低色终端使用基础色，无色或颜色资源不足时保留单色操作。主题变化时整帧重绘一次，普通同主题帧仍采用差分刷新。右上角Theme仅作状态展示，不启用鼠标。硬件数值右对齐、固定24列模型栏、双统计块和四列指标保持；过宽数值保留指数/单位，无法容纳时用明确省略符。具体规则见[主题设计](docs/design/theme.md)。
+
+当前`TERM=xterm`会话保持原终端设置。基础色模式下，Moonlight辅色使用MAGENTA加A_BOLD近似亮紫，track使用BLACK加A_BOLD近似深灰；muted仍为WHITE加A_DIM。实际亮度、RGB和字重由终端ANSI调色板及bold处理决定，不保证等于精确目标色。精确RGB和固定256色模式保留各自策略；程序不修改TERM，也不要求切换终端类型。
+
+vLLM 右侧 RUNNING/WAITING 数值及历史图上方四项指标的真实数字使用粗体，包括 0、科学记数和 STALE 保留数字；`—`、`N/A`、`…`、左栏计数及标签等保持原样。颜色角色不变；终端可能将粗体同时显示为更亮的颜色，具体效果取决于终端设置。
+
+右侧模型名、RUNNING/WAITING 统计和 DECODE HISTORY/RATE HISTORY 标题上方各留一行空白。左侧模型栏及半页布局保持，历史图区在原服务预算内减少三行；最小尺寸下仍保留一行柱图，放大窗口可增加图高。
 
 ## Docker 容器配置与边界
 
@@ -97,15 +111,27 @@ containers:
 
 兼容范围固定为 vLLM **0.31.0**，三类映射已基于用户提供的采样和安装源码核对。[模块设计](docs/design/vllm.md)和[指标证据](docs/dev-workflow/dev-0/REQ-004/metric-evidence.md)记录精确映射。每个模型独立顺序读取其直接 origin 的 `/version`、`/v1/models`、`/metrics`，三次 GET 共用本轮超时，每份解压后响应最多 2 MiB。启用 HTTPS 证书验证，禁用环境代理、重定向和自动重试；不访问 LiteLLM、WebUI 或推理接口。
 
-`id` 用于独立状态身份，`name` 用于显示；可选 `served_model_name` 精确指定服务报告的模型名，省略时回退 `name`。显式值须为 1～128 个可打印字符，无首尾空白或控制字符，不能为 null。同名或同地址的不同 id 不合并。例如：
+`id` 用于独立状态身份，`name` 同时用于左侧模型列表和右侧详情标题，可配置为 `Flash-Next`、`Embedding`、`Reranker` 等短名称；不另设仅左侧的别名字段。可选 `served_model_name` 精确指定服务报告的模型名，省略时回退 `name`，所以使用短展示名时应显式保留真实服务名。显式值须为 1～128 个可打印字符，无首尾空白或控制字符，不能为 null。同名或同地址的不同 id 不合并。例如：
 
 ```yaml
 models:
+  - id: chat
+    type: chat
+    name: Flash-Next
+    served_model_name: qwen3.8-flash-next
+    base_url: http://127.0.0.1:8000
+    gpu_ids: []
   - id: embedding
     type: embedding
-    name: Embedding model
+    name: Embedding
     served_model_name: qwen3-embedding-4b
     base_url: http://127.0.0.1:8001
+    gpu_ids: []
+  - id: reranker
+    type: reranker
+    name: Reranker
+    served_model_name: qwen3-reranker-0.6b
+    base_url: http://127.0.0.1:8002
     gpu_ids: []
 ```
 
@@ -130,7 +156,7 @@ python -m pytest --collect-only -q
 python -m pytest -q --tb=short
 ```
 
-pytest 从 `pyproject.toml` 将 `src` 加入导入路径。黑盒和集成用例使用临时文件、内存终端与离线采集端口，实际运行配置解析、调度、状态、日志和屏幕生成。新增边界测试未修改既有黑盒预期，R2 的历史失败基线保留供追溯。
+pytest 从 `pyproject.toml` 将 `src` 加入导入路径。黑盒和集成用例使用临时文件、内存终端与离线采集端口，实际运行配置解析、调度、状态、日志和屏幕生成。REQ-006按需求v1.24同步默认主题、60FPS、固定历史轴/尺度、HTML对应排版，以及用户GUI复核后的Storage标题状态、RAM/Storage容量精度、CPU/Storage固定一位百分比与可配置模型展示名，以及固定设备标签、本地发行版本、Storage路径正文色、非空容器示例、低色Moonlight近似、硬件同字形分段及独立深灰track、os-release实际字段回退、右侧关键数字粗体和三处留白；RAM不新增百分比文字，其他采集/计算契约保持。R2各版历史失败基线保留供追溯，最新同步结果见REQ-006交接。
 
 真实终端用例已包含在全量测试中，也可由本地 Ubuntu 普通用户单独运行（仅本机 PTY）：
 

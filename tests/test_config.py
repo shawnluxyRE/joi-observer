@@ -303,6 +303,12 @@ def test_packaged_example_covers_three_types_and_loads_after_copy(tmp_path):
     copied = tmp_path / "config.yaml"
     copied.write_bytes(example.read_bytes())
     config = load_config(copied)
+    assert [(container.id, container.name) for container in config.containers] == [
+        ("chat-container", "flash-next-vllm"),
+    ]
     assert [m.type for m in config.models] == [ModelType.CHAT, ModelType.EMBEDDING, ModelType.RERANKER]
-    assert [m.name for m in config.models] == ["qwen3.8-flash-next", "qwen3-embedding-4b", "qwen3-reranker-0.6b"]
+    assert [m.name for m in config.models] == ["Flash-Next", "Embedding", "Reranker"]
+    assert [m.served_model_name for m in config.models] == [
+        "qwen3.8-flash-next", "qwen3-embedding-4b", "qwen3-reranker-0.6b",
+    ]
     assert [m.base_url for m in config.models] == ["http://127.0.0.1:8000", "http://127.0.0.1:8001", "http://127.0.0.1:8002"]

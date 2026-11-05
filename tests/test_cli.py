@@ -230,11 +230,25 @@ def test_restart_passes_original_three_mounts_and_complete_containers_to_runtime
     assert deps.stderr.getvalue() == ""
 
 
+@pytest.mark.parametrize("release_text,expected_system", (
+    ('PRETTY_NAME="Ubuntu 24.04.3 LTS"\nVERSION_ID="24.04"\n', "Ubuntu 24.04.3 LTS"),
+    ('NAME="Ubuntu"\nVERSION_ID="24.04"\n', "Ubuntu 24.04"),
+    (None, "Ubuntu —"),
+))
 def test_real_runtime_keeps_all_loaded_container_slots_with_only_three_mounts(
-        tmp_path, monkeypatch, pending_docker_command_factory):
+        tmp_path, monkeypatch, pending_docker_command_factory, release_text, expected_system):
     """Production assembly retains all objects even when the terminal is small."""
     from joi_observer.cli import ApplicationRuntime
-    from joi_observer.tui.layout import TerminalSize
+    from joi_observer.tui.layout import HostInfo, TerminalSize
+
+    def forbidden_kernel_version():
+        raise AssertionError("Header must use distribution metadata, not the kernel release")
+
+    release_path = tmp_path / "os-release"
+    if release_text is not None:
+        release_path.write_text(release_text, encoding="utf-8")
+    monkeypatch.setattr("joi_observer.cli._OS_RELEASE_PATHS", (release_path,))
+    monkeypatch.setattr("platform.release", forbidden_kernel_version)
 
     class QuittingTerminal:
         def __init__(self):
@@ -275,6 +289,7 @@ def test_real_runtime_keeps_all_loaded_container_slots_with_only_three_mounts(
     assert main([], dependencies=deps) == 0
     runtime = runtimes[0]
     app = runtime.components.app
+    assert app.host == HostInfo("H3C R5300 G6", expected_system)
     snapshot = app.reader.snapshot()
     objects = [item for item in snapshot.objects if item.key.collector == "docker"]
     assert [item.key.object_id for item in objects] == [f"c{i}" for i in range(10)]
@@ -284,6 +299,206 @@ def test_real_runtime_keeps_all_loaded_container_slots_with_only_three_mounts(
     assert terminal.frames and all(frame.too_small for frame in terminal.frames)
     assert terminal.restored and deps.stderr.getvalue() == ""
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("release_text,expected_system", (
+    ('NAME="Ubuntu"\nVERSION_ID="24.04"\n', "Ubuntu 24.04"),
+    ("", "Ubuntu —"),
+    ('PRETTY_NAME=""\nVERSION_ID="24.04"\n', "Ubuntu 24.04"),
+), ids=("missing-pretty-name", "empty-release-file", "empty-pretty-missing-name"))
+def test_real_runtime_os_release_text_fallback_uses_distribution_fields(
+        tmp_path, monkeypatch, release_text, expected_system):
+    """Keep real os-release text and production assembly in the startup path."""
+    import asyncio
+    import platform
+
+    from joi_observer.cli import ApplicationRuntime
+    from joi_observer.config import load_config
+    from joi_observer.tui.layout import HostInfo
+
+    release_path = tmp_path / "os-release"
+    release_path.write_text(release_text, encoding="utf-8")
+    # The source reader now preserves actual fields rather than using the
+    # stdlib's defaults. Substitute only its file location, not parsed values.
+    monkeypatch.setattr("joi_observer.cli._OS_RELEASE_PATHS", (release_path,))
+
+    def forbidden_kernel_or_hostname():
+        raise AssertionError("Header must use the fixed label and local distribution metadata")
+
+    for name in ("node", "system", "release"):
+        monkeypatch.setattr(platform, name, forbidden_kernel_or_hostname)
+    path = valid_config(tmp_path,
+        "mount_points: []\ncontainers: []\nmodels: []\n"
+        f"logging: {{directory: '{tmp_path.as_posix()}'}}\n")
+    runtime = ApplicationRuntime(load_config(path))
+    try:
+        assert runtime.prepare_log()
+        actual = runtime.components.app.host
+    finally:
+        asyncio.run(runtime.close())
+    assert actual == HostInfo("H3C R5300 G6", expected_system)
+    assert release_path.read_text(encoding="utf-8") == release_text
+
+
+@pytest.mark.parametrize("release_text,expected_system", (
+    ('PRETTY_NAME="Linux"\nNAME="Ubuntu"\nVERSION_ID="24.04"\n', "Linux"),
+    ('PRETTY_NAME=""\nNAME="Linux"\nVERSION_ID="6.8"\n', "Linux 6.8"),
+    ("PRETTY_NAME='Ubuntu 24.04 LTS'\n", "Ubuntu 24.04 LTS"),
+    (r'''PRETTY_NAME="Ubuntu \"LTS\" \\ \$VERSION \`release\`"''' + "\n",
+     'Ubuntu "LTS" \\ $VERSION `release`'),
+    ('PRETTY_NAME="Old"\nPRETTY_NAME=""\nNAME="Ubuntu"\nVERSION_ID="24.04"\n', "Ubuntu 24.04"),
+    ('PRETTY_NAME="Linux $HOME $(uname)"\n', "Linux $HOME $(uname)"),
+    ('PRETTY_NAME=""\nNAME=""\nVERSION_ID=""\n', "Ubuntu —"),
+), ids=("explicit-pretty-linux", "explicit-name-linux", "single-quotes", "escaped-literals",
+         "last-assignment-wins", "no-shell-expansion", "explicit-empty-fields"))
+def test_real_runtime_preserves_explicit_os_release_values(
+        tmp_path, monkeypatch, release_text, expected_system):
+    test_real_runtime_os_release_text_fallback_uses_distribution_fields(
+        tmp_path, monkeypatch, release_text, expected_system)
+
+
+@pytest.mark.parametrize("primary,vendor,expected_system", (
+    (b'PRETTY_NAME="Local Ubuntu"\n', b'PRETTY_NAME="Vendor Ubuntu"\n', "Local Ubuntu"),
+    (b'NAME="Ubuntu"\n', b'PRETTY_NAME="Vendor Ubuntu"\nVERSION_ID="24.04"\n', "Ubuntu —"),
+    (b"", b'PRETTY_NAME="Vendor Ubuntu"\n', "Ubuntu —"),
+    (None, b'NAME="Ubuntu"\nVERSION_ID="24.04"\n', "Ubuntu 24.04"),
+    (None, None, "Ubuntu —"),
+    (b"\xff", b'PRETTY_NAME="Vendor Ubuntu"\n', "Ubuntu —"),
+    (b'NAME="Partial"\n' + b"# padding\n" * 1024 + b"\xff", None, "Ubuntu —"),
+), ids=("primary-wins", "no-field-merging", "empty-primary-wins", "missing-primary",
+         "both-missing", "invalid-utf8", "discard-partial-decoding"))
+def test_real_runtime_os_release_reads_one_candidate_without_merging_or_partial_data(
+        tmp_path, monkeypatch, primary, vendor, expected_system):
+    import asyncio
+
+    from joi_observer.cli import ApplicationRuntime
+    from joi_observer.config import load_config
+    from joi_observer.tui.layout import HostInfo
+
+    paths = (tmp_path / "local-release", tmp_path / "vendor-release")
+    for path, contents in zip(paths, (primary, vendor)):
+        if contents is not None:
+            path.write_bytes(contents)
+    monkeypatch.setattr("joi_observer.cli._OS_RELEASE_PATHS", paths)
+    opened = []
+    real_open = Path.open
+
+    def observed_open(path, *args, **kwargs):
+        if path in paths:
+            opened.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    config = valid_config(tmp_path,
+        "mount_points: []\ncontainers: []\nmodels: []\n"
+        f"logging: {{directory: '{tmp_path.as_posix()}'}}\n")
+    runtime = ApplicationRuntime(load_config(config))
+    try:
+        assert runtime.prepare_log()
+        assert runtime.components.app.host == HostInfo("H3C R5300 G6", expected_system)
+    finally:
+        asyncio.run(runtime.close())
+    assert opened == list(paths if primary is None else paths[:1])
+    for path, contents in zip(paths, (primary, vendor)):
+        if contents is not None:
+            assert path.read_bytes() == contents
+
+
+def test_runtime_reads_release_once_but_new_runtime_observes_changed_file(tmp_path, monkeypatch):
+    import asyncio
+
+    from joi_observer.cli import ApplicationRuntime
+    from joi_observer.config import load_config
+    from joi_observer.tui.layout import HostInfo
+
+    release_path = tmp_path / "os-release"
+    release_path.write_text('PRETTY_NAME="Ubuntu first"\n', encoding="utf-8")
+    monkeypatch.setattr("joi_observer.cli._OS_RELEASE_PATHS", (release_path,))
+    opened = []
+    real_open = Path.open
+
+    def observed_open(path, *args, **kwargs):
+        mode = kwargs.get("mode", args[0] if args else "r")
+        if path == release_path and "r" in mode:
+            opened.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    config = load_config(valid_config(tmp_path,
+        "mount_points: []\ncontainers: []\nmodels: []\n"
+        f"logging: {{directory: '{tmp_path.as_posix()}'}}\n"))
+    first = ApplicationRuntime(config)
+    try:
+        assert first.prepare_log()
+        assert first.components.app.host == HostInfo("H3C R5300 G6", "Ubuntu first")
+        release_path.write_text('PRETTY_NAME="Ubuntu second"\n', encoding="utf-8")
+        assert first.prepare_log()
+        assert first.components.app.host == HostInfo("H3C R5300 G6", "Ubuntu first")
+        assert opened == [release_path]
+    finally:
+        asyncio.run(first.close())
+
+    second = ApplicationRuntime(config)
+    try:
+        assert second.prepare_log()
+        assert second.components.app.host == HostInfo("H3C R5300 G6", "Ubuntu second")
+        assert opened == [release_path, release_path]
+    finally:
+        asyncio.run(second.close())
+
+
+def test_runtime_discards_partial_release_after_read_error_before_trying_vendor(tmp_path, monkeypatch):
+    import asyncio
+
+    from joi_observer.cli import ApplicationRuntime
+    from joi_observer.config import load_config
+    from joi_observer.tui.layout import HostInfo
+
+    primary, vendor = tmp_path / "local-release", tmp_path / "vendor-release"
+    primary.write_text('NAME="Partial"\nVERSION_ID="99"\n', encoding="utf-8")
+    vendor.write_text('VERSION_ID="24.04"\n', encoding="utf-8")
+    monkeypatch.setattr("joi_observer.cli._OS_RELEASE_PATHS", (primary, vendor))
+    opened, primary_lines = [], []
+    real_open = Path.open
+
+    class FailingRead:
+        def __init__(self, source):
+            self.source = source
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.source.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if primary_lines:
+                raise OSError("Injected read failure after a partial field")
+            line = next(self.source)
+            primary_lines.append(line)
+            return line
+
+    def observed_open(path, *args, **kwargs):
+        source = real_open(path, *args, **kwargs)
+        if path in (primary, vendor):
+            opened.append(path)
+        return FailingRead(source) if path == primary else source
+
+    monkeypatch.setattr(Path, "open", observed_open)
+    config = load_config(valid_config(tmp_path,
+        "mount_points: []\ncontainers: []\nmodels: []\n"
+        f"logging: {{directory: '{tmp_path.as_posix()}'}}\n"))
+    runtime = ApplicationRuntime(config)
+    try:
+        assert runtime.prepare_log()
+        assert runtime.components.app.host == HostInfo("H3C R5300 G6", "Ubuntu 24.04")
+        assert opened == [primary, vendor]
+        assert primary_lines == ['NAME="Partial"\n']
+    finally:
+        asyncio.run(runtime.close())
 
 
 @pytest.mark.parametrize("content,field", [
