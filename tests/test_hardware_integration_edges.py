@@ -127,14 +127,18 @@ def test_gpu_partial_failure_and_index_change_update_frame_mapping_without_extra
                                     HostInfo("offline", "Linux"), datetime.now(timezone.utc),
                                     gpu_slots=(UUIDS[0],), view=ViewSelection("selected"))
             frames.append(current)
-            label = next(cell for cell in current.cells if cell.row == 3 and cell.column == 2)
-            filled = next(cell for cell in current.cells if cell.row == 4 and cell.column == 2 and "▌" in cell.text)
-            percent = next(cell for cell in current.cells if cell.row == 4 and "%" in cell.text)
-            assert label.text == ("GPU 0" if index == 0 else "GPU 1")
+            gpu = next(region for region in current.regions if region.name == "gpu")
+            info_row = gpu.row + (3 if role == "primary" else 1)
+            label = next(cell for cell in current.cells if cell.row == info_row and cell.column == 2)
+            filled = next(cell for cell in current.cells if cell.row == info_row + 1
+                          and cell.column == 2 and "▌" in cell.text)
+            percent = next(cell for cell in current.cells if cell.row == info_row + 1
+                           and cell.column < gpu.width and "%" in cell.text)
+            assert label.text == ("[0]" if index == 0 else "[1]")
             assert (label.role, filled.role, percent.role) == (role, role, role)
             assert percent.text == ("25%", "75%", "50%")[index]
             assert any(cell.text == "STALE" for cell in current.cells) == (index == 1)
-            temperature = next(cell for cell in current.cells if cell.row == 3 and "°C" in cell.text)
+            temperature = next(cell for cell in current.cells if cell.row == info_row and "°C" in cell.text)
             assert temperature.text == ("61°C" if index < 2 else "65°C")
             assert temperature.column + len(temperature.text) == 69 and temperature.role == "text"
             assert "Unknown Error" not in " ".join(cell.text for cell in current.cells)
@@ -144,7 +148,7 @@ def test_gpu_partial_failure_and_index_change_update_frame_mapping_without_extra
             unlinked = compose_frame(snapshot, config, TerminalSize(120, 36),
                                      HostInfo("offline", "Linux"), datetime.now(timezone.utc),
                                      gpu_slots=(UUIDS[0],), view=ViewSelection("missing"))
-            assert next(cell for cell in unlinked.cells if cell.row == 3 and cell.column == 2).role == "muted"
+            assert next(cell for cell in unlinked.cells if cell.row == info_row and cell.column == 2).role == "muted"
             assert state.snapshot() == snapshot and len(io.calls) == index + 1
 
         assert frames[0].regions == frames[1].regions == frames[2].regions

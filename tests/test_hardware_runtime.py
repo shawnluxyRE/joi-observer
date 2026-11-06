@@ -27,7 +27,8 @@ MOUNTINFO = (
 class RecordingTerminal:
     """记录真实 compose_frame 的输出，通过真实应用读键路径退出。"""
 
-    def __init__(self):
+    def __init__(self, rows=37):
+        self.rows = rows
         self.frames = []
         self.keys = asyncio.Queue()
         self.entered = False
@@ -40,8 +41,7 @@ class RecordingTerminal:
         self.restored = True
 
     def size(self):
-        # 五卡恰需37行；若把inventory当成第六卡，会错误触发43行放大提示。
-        return TerminalSize(120, 37)
+        return TerminalSize(120, self.rows)
 
     def render(self, frame):
         self.frames.append(frame)
@@ -143,7 +143,8 @@ def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp
             async def close(self):
                 self.closed = True
 
-        terminal = RecordingTerminal()
+        # 五卡恰需39行；误将inventory计为第六卡会触发45行放大提示。
+        terminal = RecordingTerminal(rows=39)
         monkeypatch.setattr(cli, "CursesTerminal", lambda: terminal)
         monkeypatch.setattr(hardware, "LocalHardwareIO", RawLocalIO)
         config = AppConfig(sample_interval=0.1, collection_timeout=0.2,
@@ -174,9 +175,9 @@ def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp
             "Production runtime did not present collected GPU, CPU, RAM and Storage values."
         )
         frame = next(frame for frame in reversed(terminal.frames) if hardware_is_visible(frame))
-        assert frame.minimum_size == TerminalSize(120, 37) and not frame.too_small
+        assert frame.minimum_size == TerminalSize(120, 39) and not frame.too_small
         gpu_text = region_text(frame, "gpu")
-        assert all(f"GPU {index}" in gpu_text for index in range(5))
+        assert all(f"[{index}]" in gpu_text for index in range(5))
         assert "8.0 / 16.0 GiB" in gpu_text and "60°C" in gpu_text
         assert "4 / 16 GiB" in region_text(frame, "host")
         assert all(value in region_text(frame, "storage") for value in (

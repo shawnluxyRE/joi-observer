@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 import math
+import os
 import sys
 from typing import Protocol
 
@@ -14,6 +15,43 @@ from joi_observer.tui.layout import Frame, HostInfo, TerminalSize, ViewSelection
 from joi_observer.tui.navigation import SessionViewActions
 from joi_observer.tui.theme import CursesTheme
 from joi_observer.tui.timing import FrameSchedule
+from joi_observer.tui.widgets import resolve_gpu_groups
+
+
+def _create_screen(curses_api, fd: int):
+    """Use extended colors for xterm sessions without changing their environment.
+
+    MobaXterm can advertise plain xterm while supporting indexed 256 colors.
+    initscr reads TERM itself, so setupterm alone does not select the profile.
+    Keep the override inside this synchronous call; collectors and callers see
+    the original TERM even if screen initialization fails.
+    """
+    original_term = os.environ.get("TERM")
+    if original_term != "xterm":
+        return curses_api.initscr()
+
+    try:
+        cached_colors = curses_api.tigetnum("colors")
+    except curses_api.error:
+        pass  # No terminal description has been initialized yet.
+    else:
+        if cached_colors < 256:
+            # setupterm can silently reuse an earlier description. Do not let
+            # that cache masquerade as a successful extended-profile check.
+            return curses_api.initscr()
+
+    profile = "xterm-256color"
+    try:
+        curses_api.setupterm(term=profile, fd=fd)
+    except curses_api.error:
+        # A minimal terminfo installation may only contain the original entry.
+        return curses_api.initscr()
+
+    os.environ["TERM"] = profile
+    try:
+        return curses_api.initscr()
+    finally:
+        os.environ["TERM"] = original_term
 
 
 class SnapshotReader(Protocol):
@@ -102,7 +140,8 @@ class CursesTerminal:
     主题变化时强制重绘物理画面，避免只更新色表而留下终端已缓存的旧色；
     同主题普通帧继续使用curses差分，成功refresh后才记录已显示主题。
     同一帧背景、角色与主题名一致，不启用鼠标；无色/低色终端仍可操作。
-    restore 在 endwin 前归还配色资源且不妨碍其他恢复；再次 enter 重新探测。
+    xterm会话仅在初始化期间使用进程内256色描述，随后立即还原TERM；
+    不更改Shell或终端设置。配色使用固定色表，restore不改写终端调色板。
     不把全屏异常送到 logging 或 stderr。
     """
 
@@ -132,7 +171,7 @@ class CursesTerminal:
         self._cursor = None
         self._fd = sys.stdin.fileno()
         self._terminal_mode = termios.tcgetattr(self._fd)
-        self._screen = curses.initscr()
+        self._screen = _create_screen(curses, self._fd)
         curses.noecho()
         curses.cbreak()
         # nodelay does not disable ncurses' separate ESCDELAY wait when keypad
@@ -207,9 +246,8 @@ class CursesTerminal:
         before = self.size()
         self._theme.activate(frame.theme)
         if self._rendered_theme is not None and frame.theme != self._rendered_theme:
-            # Reusing color-pair indices can leave ncurses' physical-screen
-            # cache unchanged. Repaint after the palette update so terminals
-            # that resolve indexed colors when writing also receive new cells.
+            # Color-pair IDs are reused across themes. Repaint existing cells
+            # when those IDs select different fixed colors.
             self._screen.clearok(True)
         self._screen.bkgd(" ", self._theme.style("text"))
         self._screen.erase()
@@ -385,15 +423,18 @@ class ObserverApp:
                         if obj.key.collector == "gpu" and obj.key.object_id not in gpu_slots:
                             gpu_slots.append(obj.key.object_id)
                     view = self.actions.selection()
+                    slots = tuple(gpu_slots)
+                    groups = resolve_gpu_groups(snapshot, self.config, slots, view)
                     minimum = required_size(gpu_count=len(gpu_slots),
                                             mount_count=len(self.config.mount_points),
-                                            container_count=len(self.config.containers))
+                                            container_count=len(self.config.containers),
+                                            gpu_group_count=len(groups.headers))
                     if size.columns >= minimum.columns and size.rows >= minimum.rows:
                         self._history_columns = size.columns - 32
                     scales = self._history_scales.update(snapshot, now=now,
                                                          columns=self._history_columns)
                     frame = compose_frame(snapshot, self.config, size, self.host, self.wall_clock(),
-                                          gpu_slots=tuple(gpu_slots), view=view,
+                                          gpu_slots=slots, view=view, gpu_groups=groups,
                                           monotonic_now=now, history_scales=scales)
                     self.terminal.render(frame)
                     drew_frame = True

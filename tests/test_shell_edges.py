@@ -106,7 +106,7 @@ def test_gpu_slots_survive_disappearance_without_capacity_shrinking():
 
     class TwoFrameTerminal(Terminal):
         def size(self):
-            return TerminalSize(120, 44)
+            return TerminalSize(120, 45)
 
         async def read_key(self, timeout):
             await asyncio.sleep(timeout)
@@ -115,7 +115,7 @@ def test_gpu_slots_survive_disappearance_without_capacity_shrinking():
     terminal = TwoFrameTerminal()
     asyncio.run(make_app(terminal, Reader()).run())
     assert len(terminal.frames) >= 2
-    assert terminal.frames[0].minimum_size == terminal.frames[1].minimum_size == TerminalSize(120, 43)
+    assert terminal.frames[0].minimum_size == terminal.frames[1].minimum_size == TerminalSize(120, 45)
     assert not terminal.frames[0].too_small and terminal.frames[0].regions
     assert terminal.frames[0].regions == terminal.frames[1].regions
 

@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+from test_theme_pty import sgr_at
+
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Requires a local Unix PTY; verified in WSL")
 
@@ -25,7 +27,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from joi_observer.config import AppConfig, ModelConfig, ModelType
-from joi_observer.data.models import ObjectSnapshot, StateSnapshot
+from joi_observer.data.models import Metric, ObjectKey, ObjectSnapshot, StateSnapshot
 from joi_observer.data.vllm import make_vllm_spec
 from joi_observer.tui.app import CursesTerminal, ObserverApp
 from joi_observer.tui.layout import HostInfo
@@ -39,9 +41,17 @@ def forbidden(*args, **kwargs):
 
 socket.getaddrinfo = socket.create_connection = forbidden
 socket.socket.connect = socket.socket.connect_ex = forbidden
-models = tuple(ModelConfig(kind.value, kind, kind.value.upper(), 'http://offline.invalid:8000')
-               for kind in ModelType)
-objects = []
+
+def forbidden_palette_write(*args, **kwargs):
+    raise AssertionError('Fixed palettes must not redefine terminal colors')
+curses.init_color = forbidden_palette_write
+
+models = tuple(ModelConfig(kind.value, kind, kind.value.upper(), f'http://offline.invalid:{8000 + index}',
+                           ('0', '1', '2', '3') if kind == ModelType.CHAT else ('4',))
+               for index, kind in enumerate(ModelType))
+objects = [ObjectSnapshot(ObjectKey('gpu', f'GPU-00000000-0000-0000-0000-{index:012d}'),
+                          (Metric('index', index), Metric('name', 'NVIDIA GeForce RTX')),
+                          sampled_at=time.monotonic()) for index in range(5)]
 for model in models:
     spec = make_vllm_spec(model)
     values = dict(running=3, waiting=0, total=3, decode_rate=100, prefill_rate=500,
@@ -84,25 +94,14 @@ class ObservedTerminal:
         self.terminal.render(frame)
         if self.pending is None:
             return
-        # Observe the real ncurses screen after rendering. Labels locate cells;
-        # inch/pair_content/color_content supply their actual RGBs.
-        def screen_colors(row, column):
-            attribute = self.terminal._screen.inch(row, column)
-            foreground, background = curses.pair_content(curses.pair_number(attribute))
-            return {
-                'character': attribute & curses.A_CHARTEXT,
-                'foreground': None if foreground == -1 else curses.color_content(foreground),
-                'background': None if background == -1 else curses.color_content(background),
-                'dim': bool(attribute & curses.A_DIM),
-            }
-
-        colors = {}
-        for role, label in (('primary', 'Observer'), ('secondary', 'Joi'), ('muted', '::')):
-            cell = next(cell for cell in frame.cells if cell.text == label)
-            colors[role] = screen_colors(cell.row, cell.column)
-        # Between the brand and theme label, this cell is deliberately blank.
-        colors['blank'] = screen_colors(0, 20)
+        # Read the visible Unicode glyphs. inch() mixes a multibyte glyph with
+        # its attributes, so the parent checks their colors in the emitted SGR.
+        screen = self.terminal._screen
+        glyphs = [screen.instr(row, column, 3).decode('utf-8') for row, column in
+                  ((0, 1), (0, 4), (1, 14), (1, 16), (0, 18))]
+        blank = screen.inch(0, 70)
         service = next(region for region in frame.regions if region.name == 'service')
+        gpu = next(region for region in frame.regions if region.name == 'gpu')
         divider = service.column + 27
         names = {model.name for model in models}
         right = [cell for cell in frame.cells
@@ -121,8 +120,16 @@ class ObservedTerminal:
             'list_type': [cell.text for cell in frame.cells if cell.column < divider
                           and cell.row - 1 in selected_rows and ' / :' in cell.text],
             'detail': ' '.join(cell.text for cell in right),
+            'detail_port': screen.instr(service.row + 3, service.column + 30).decode().rstrip(' │'),
+            'gpu_rows': [screen.instr(row, gpu.column + 2).decode()[:gpu.width - 4]
+                         for row in range(gpu.row + 1, gpu.row + gpu.height - 1)],
+            'gpu_muted_rules': [cell.row - (gpu.row + 1) for cell in frame.cells
+                                if gpu.row < cell.row < gpu.row + gpu.height - 1
+                                and cell.column == gpu.column + 2 and cell.role == 'muted'
+                                and cell.text == '─' * (gpu.width - 4)],
             'theme': [cell.text for cell in frame.cells if cell.text.startswith('Theme:')],
-            'colors': colors,
+            'brand_glyphs': glyphs,
+            'blank': [blank & curses.A_CHARTEXT, curses.pair_content(curses.pair_number(blank))[1]],
             'switch': [cell.text for cell in frame.cells
                        if cell.row == next(region.row for region in frame.regions
                                            if region.name == 'service_switch')],
@@ -159,8 +166,9 @@ finally:
 '''
 
 
-@pytest.mark.parametrize("checks", ("navigation", "theme-name", "colors"))
-def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_path, checks):
+@pytest.mark.parametrize("checks,height", [("navigation", 45), ("theme-name", 48), ("colors", 45)],
+                         ids=("navigation", "theme-name", "colors"))
+def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_path, checks, height):
     import fcntl
     import pty
     import select
@@ -169,7 +177,7 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
 
     report = tmp_path / "report.json"
     master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", height, 120, 0, 0))
     original = termios.tcgetattr(slave)
     env = dict(os.environ, TERM="xterm-256color", LANG="C.UTF-8")
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
@@ -182,6 +190,7 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
             captured.extend(os.read(master, 65536))
 
     def wait_for_ack(step):
+        start = len(captured)
         deadline = time.monotonic() + 5
         acknowledgement = tmp_path / f"ack-{step}"
         while not acknowledgement.exists() and child.poll() is None and time.monotonic() < deadline:
@@ -189,15 +198,16 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
                 drain()
         assert acknowledgement.exists(), (step, child.poll(), bytes(captured))
         drain()
+        return bytes(captured[start:])
 
     try:
-        wait_for_ack(0)
+        output_by_step = [wait_for_ack(0)]
         # Both standard CSI and application-mode SS3 arrows reach real ncurses.
         inputs = (b"\x1b[B", b"\x1bOB", b"\x1b[D", b"\x1bOC",
                   b"\x1bOA", b"t", b"t", b"\r", b"p")
         for step, sequence in enumerate(inputs, 1):
             os.write(master, sequence)
-            wait_for_ack(step)
+            output_by_step.append(wait_for_ack(step))
         os.write(master, b"q")
         child.wait(timeout=5)
         drain()
@@ -212,6 +222,9 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
         assert result["keys"] == ["down", "down", "left", "right", "up", "t", "t", "enter", "p", "q"]
         assert b"\x1b[?1049h" in captured and b"\x1b[?1049l" in captured
         assert b"\x1b[?25l" in captured and b"\x1b[?25h" in captured
+        assert b"\x1b]4;" not in captured
+        assert b"\x1b[38;5;111m" in captured and b"\x1b[38;5;117m" in captured
+        assert b"\x1b[48;5;233m" in captured
         mouse_modes = {b"1000", b"1002", b"1003", b"1006"}
         assert not any(mouse_modes.intersection(parameters.split(b";"))
                        for parameters in re.findall(rb"\x1b\[\?([0-9;]+)h", captured))
@@ -222,27 +235,39 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
                     "embedding", "embedding", "embedding", "embedding", "embedding"]
         assert [frame["selected"] for frame in frames] == [[kind.upper()] for kind in expected]
         for step, (frame, kind) in enumerate(zip(frames, expected)):
+            gpu_rows = frame["gpu_rows"]
+            main = gpu_rows[0]
+            assert main.startswith("GPU 0–3") and main.endswith("TP 4")
+            assert main[len("GPU 0–3"):-len("TP 4")].isspace()
+            assert gpu_rows[1] == " " * len(main)
+            assert gpu_rows[2].startswith("[0] NVIDIA GeForce RTX ")
+            shared_row, = (row for row, line in enumerate(gpu_rows) if line.startswith("GPU 4"))
+            shared = gpu_rows[shared_row]
+            assert shared.endswith("SHARED") and shared[len("GPU 4"):-len("SHARED")].isspace()
+            assert [row for row, line in enumerate(gpu_rows) if line == "─" * len(main)] == [shared_row - 1]
+            assert frame["gpu_muted_rules"] == [shared_row - 1]
+            assert gpu_rows[shared_row + 1] == " " * len(main)
+            assert gpu_rows[shared_row + 2].startswith("[4] NVIDIA GeForce RTX ")
+            port = {"chat": 8000, "embedding": 8001, "reranker": 8002}[kind]
+            assert frame["detail_port"] == f":{port}"
             if checks == "theme-name":
                 assert frame["theme"] == [f"Theme: {'Moonlight' if step == 6 else 'Hologram'} [t]"]
                 continue
             if checks == "colors":
-                # Requirement RGBs expressed literally on ncurses' 0..1000 scale:
-                # #7DDFFF/#C6A7FF or #7B9FFF/#E570D0; common #8A9DB5/#080E18.
-                accents = {"primary": [490, 875, 1000], "secondary": [776, 655, 1000]} if step == 6 else {
-                    "primary": [482, 624, 1000], "secondary": [898, 439, 816],
-                }
-                for role, character in (("primary", "O"), ("secondary", "J"), ("muted", ":")):
-                    color = frame["colors"][role]
-                    assert color["character"] == ord(character)
-                    assert color["foreground"] == (accents[role] if role in accents else [541, 616, 710])
-                    assert color["background"] == [31, 55, 94]
-                    assert color["dim"] is False
-                assert frame["colors"]["blank"]["character"] == ord(" ")
-                assert frame["colors"]["blank"]["background"] == [31, 55, 94]
+                assert frame["brand_glyphs"] == ["▀", "╷", "▀", "▀", "▄"]
+                assert frame["blank"] == [ord(" "), 233]
+                if step in (0, 6, 7):  # First paint and both theme changes.
+                    primary, secondary = (117, 183) if step == 6 else (111, 170)
+                    output = output_by_step[step]
+                    for glyphs, foreground, count in (("▀▀█", secondary, 1), ("▄▀▀▄", primary, 1),
+                                                     ("▀", 247, 2), ("╷", 243, 1)):
+                        attributes = [sgr_at(output, match.start()) for match in
+                                      re.finditer(re.escape(glyphs.encode()), output)]
+                        assert attributes.count((False, False, foreground, 233)) >= count, (glyphs, output)
                 continue
             assert frame["detail_name"] == [kind.upper()]
             assert frame["detail_type"] == []
-            assert frame["list_type"] == [f"{kind.upper()} / :8000"]
+            assert frame["list_type"] == [f"{kind.upper()} / :{port}"]
             assert "DECODE HISTORY / tok/s" in frame["detail"] if kind == "chat" else "RATE HISTORY / seq/s" in frame["detail"]
             assert "TTFT" in frame["detail"] if kind == "chat" else "Avg latency" in frame["detail"]
             assert frame["theme"] == [f"Theme: {'Moonlight' if step == 6 else 'Hologram'} [t]"]

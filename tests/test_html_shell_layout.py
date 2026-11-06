@@ -56,27 +56,35 @@ def draw(*, theme="hologram", columns=120, height=44, config=None, snapshot=None
 
 @pytest.mark.parametrize("columns", (120, 121, 160))
 @pytest.mark.parametrize("theme", THEMES)
-def test_header_theme_and_local_clock_share_the_right_edge_and_roles(columns, theme):
-    frame = draw(theme=theme, columns=columns)
+@pytest.mark.parametrize("height,host_row", [(40, 1), (41, 4)])
+def test_header_theme_and_local_clock_share_the_right_edge_and_roles(columns, theme, height, host_row):
+    frame = draw(theme=theme, columns=columns, height=height)
     label = f"Theme: {theme.title()} [t]"
     assert segment(frame, 0, columns - len(label), columns) == label
-    assert segment(frame, 1, columns - 19, columns) == "2026-11-04 12:34:56"
+    assert segment(frame, host_row, columns - 19, columns) == "2026-11-04 12:34:56"
     grid = pixels(frame.cells)
     assert {grid[0, columns - len(label) + index][1] for index, char in enumerate(label)
             if not char.isspace()} == {"primary"}
-    assert {grid[1, columns - 19 + index][1] for index, char in enumerate("2026-11-04 12:34:56")
+    assert {grid[host_row, columns - 19 + index][1] for index, char in enumerate("2026-11-04 12:34:56")
             if not char.isspace()} == {"muted"}
-    assert segment(frame, 0, 0, 13) == "Joi::Observer"
-    for start, end, role in ((0, 3, "secondary"), (3, 5, "muted"), (5, 13, "primary")):
-        assert {grid[0, column][1] for column in range(start, end)} == {role}
+    if host_row == 1:
+        assert segment(frame, 0, 0, 13) == "Joi::Observer"
+        for start, end, role in ((0, 3, "secondary"), (3, 5, "muted"), (5, 13, "primary")):
+            assert {grid[0, column][1] for column in range(start, end)} == {role}
+    else:
+        assert grid[0, 1] == ("▀", "secondary")
+        assert grid[1, 14] == grid[1, 16] == ("▀", "muted")
+        assert grid[0, 18] == ("▄", "primary")
+        assert grid[3, 1] == ("╶", "brand_shadow")
     host_text = "H3C R5300 G6 / Ubuntu 24.04"
-    assert segment(frame, 1, 0, len(host_text)) == host_text
-    assert {grid[1, column][1] for column in range(len(HOST.hostname))} == {"text"}
-    assert grid[1, len(HOST.hostname) + 1] == ("/", "muted")
-    assert {grid[1, len(HOST.hostname) + 3 + index][1] for index, char in enumerate("Ubuntu 24.04")
+    assert segment(frame, host_row, 0, len(host_text)) == host_text
+    assert {grid[host_row, column][1] for column in range(len(HOST.hostname))} == {"text"}
+    assert grid[host_row, len(HOST.hostname) + 1] == ("/", "muted")
+    assert {grid[host_row, len(HOST.hostname) + 3 + index][1] for index, char in enumerate("Ubuntu 24.04")
             if not char.isspace()} == {"muted"}
-    assert segment(frame, 1, columns - 21, columns - 19) == "  "
-    assert next(region for region in frame.regions if region.name == "header").height == 2
+    assert segment(frame, host_row, columns - 21, columns - 19) == "  "
+    assert next(region for region in frame.regions if region.name == "header").height == host_row + 2
+    assert [grid[host_row + 1, column] for column in range(columns)] == [("─", "muted")] * columns
     assert all(token not in " ".join(cell.text for cell in frame.cells)
                for token in ("CST", "UTC", "Details", "Pause", "NEON GRID"))
 
@@ -85,7 +93,7 @@ def test_header_theme_and_local_clock_share_the_right_edge_and_roles(columns, th
 def test_clock_uses_supplied_aware_local_time_without_utc_conversion(offset):
     local = datetime(2026, 11, 4, 0, 1, 2, tzinfo=timezone(timedelta(hours=offset)))
     frame = draw(now=local)
-    assert segment(frame, 1, 101, 120) == "2026-11-04 00:01:02"
+    assert segment(frame, 4, 101, 120) == "2026-11-04 00:01:02"
     assert local.strftime("%Y-%m-%d %H:%M:%S") != local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -98,12 +106,12 @@ def test_clock_uses_supplied_aware_local_time_without_utc_conversion(offset):
 def test_long_host_fields_preserve_clock_gap_and_strip_terminal_controls(host, columns):
     frame = draw(host=host, columns=columns)
     clock = "2026-11-04 12:34:56"
-    assert segment(frame, 1, columns - 19, columns) == clock
-    assert segment(frame, 1, columns - 21, columns - 19) == "  "
+    assert segment(frame, 4, columns - 19, columns) == clock
+    assert segment(frame, 4, columns - 21, columns - 19) == "  "
     for cell in frame.cells:
         assert all(not unicodedata.category(char).startswith("C")
                    and char not in "\u2028\u2029" for char in cell.text)
-        if cell.row == 1 and cell.text != clock:
+        if cell.row == 4 and cell.text != clock:
             assert cell.column + width(cell.text) <= columns - 21
     # Text cannot activate reverse-video or alter the meaning of the clock.
     assert "\x1b" not in "".join(cell.text for cell in frame.cells)
@@ -145,8 +153,8 @@ def test_all_docker_lifecycle_unknown_and_stale_values_end_at_the_same_reserved_
                     for index, (state, stale, sampled_at, _, _) in enumerate(cases))
     data = StateSnapshot(objects, 4)
     before = deepcopy((config, data))
-    # 56 rows leave ten Docker content rows, enough to observe every case.
-    frame = draw(theme=theme, columns=columns, height=56, config=config, snapshot=data)
+    # At this height ten Docker content rows fit below the full header.
+    frame = draw(theme=theme, columns=columns, height=62, config=config, snapshot=data)
     area = next(region for region in frame.regions if region.name == "docker")
     right = area.column + area.width - 2
     for index, (_, _, _, expected, role) in enumerate(cases):
@@ -181,15 +189,18 @@ def test_docker_long_unicode_name_keeps_fixed_slot_across_failure_and_recovery(c
         frames[1], row, area.column + 2, right - 15)
 
 
-@pytest.mark.parametrize("height,count,visible", ((36, 0, 0), (36, 10, 0), (37, 0, 0), (37, 10, 1), (48, 10, 6)))
-def test_shell_changes_preserve_docker_capacity_empty_state_and_configuration(height, count, visible):
+@pytest.mark.parametrize("height,count,capacity", (
+    (36, 0, 0), (36, 10, 0), (37, 0, 1), (37, 10, 1),
+    (40, 10, 2), (41, 0, 0), (41, 10, 0), (43, 0, 1), (48, 10, 3),
+))
+def test_shell_changes_preserve_docker_capacity_empty_state_and_configuration(height, count, capacity):
     config = AppConfig(mount_points=(), containers=tuple(ContainerConfig(f"c{i}", f"Container-{i}")
                                                         for i in range(count)))
     before = deepcopy(config)
     frame = draw(height=height, config=config)
     names = [cell.text for cell in frame.cells if cell.text.startswith("Container-")]
-    assert names == [f"Container-{index}" for index in range(visible)]
+    assert names == [f"Container-{index}" for index in range(min(count, capacity))]
     empty = [cell for cell in frame.cells if cell.text == "No containers configured"]
-    assert bool(empty) is (count == 0 and height > 36)
+    assert bool(empty) is (count == 0 and capacity > 0)
     assert config == before and frame.minimum_size == TerminalSize(120, 36)
     assert not frame.too_small

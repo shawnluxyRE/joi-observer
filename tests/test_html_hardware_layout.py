@@ -25,7 +25,7 @@ def regions_for(gpu_width=71, right_column=72, right_width=48):
 
 
 def draw(sample, config=None, *, regions=None):
-    return hardware_cells(sample, config or configured(("/",)), regions or regions_for(),
+    return hardware_cells(sample, config or AppConfig(mount_points=("/",)), regions or regions_for(),
                           gpu_slots=(UUIDS[0],), view=ViewSelection("A", "hologram"))
 
 
@@ -64,10 +64,10 @@ def test_top_regions_use_three_to_two_columns_and_six_line_host(columns, gpu_wid
     frame = compose_frame(StateSnapshot(()), AppConfig(), TerminalSize(columns, 44),
                           HostInfo("offline", "Ubuntu"), NOW, gpu_slots=(UUIDS[0],))
     areas = {region.name: region for region in frame.regions}
-    assert areas["gpu"] == Region("gpu", 2, 0, gpu_width, 20)
-    assert areas["host"] == Region("host", 2, right_column, right_width, 6)
-    assert areas["storage"] == Region("storage", 8, right_column, right_width, 6)
-    assert areas["docker"] == Region("docker", 15, right_column, right_width, 7)
+    assert areas["gpu"] == Region("gpu", 6, 0, gpu_width, 16)
+    assert areas["host"] == Region("host", 6, right_column, right_width, 6)
+    assert areas["storage"] == Region("storage", 12, right_column, right_width, 6)
+    assert areas["docker"] == Region("docker", 18, right_column, right_width, 4)
     assert areas["service"].row == 22
     assert frame.minimum_size == TerminalSize(120, 36)
 
@@ -83,8 +83,8 @@ def test_gpu_memory_temperature_power_and_status_keep_separate_right_edges(
     data = StateSnapshot((gpu(0, stale=stale),))
     cells = draw(data, regions=areas)
     right = gpu_width - 2
-    assert text_at(cells, 3, 2, 7) == "GPU 0"
-    assert "Device-0" in text_at(cells, 3, 8, right - 12)
+    assert text_at(cells, 3, 2, 6) == "[0] "
+    assert "Device-0" in text_at(cells, 3, 6, right - 12)
     assert_right_aligned(cells, 3, "1.0 / 16.0 GiB", right - 12, "muted")
     assert_right_aligned(cells, 3, "60°C", right, "text")
     assert_right_aligned(cells, 4, "100 W", right, "muted")
@@ -122,8 +122,7 @@ def test_gpu_wide_name_cannot_overwrite_memory_or_temperature_and_status_uses_th
     data, config = StateSnapshot((card,)), configured(("/",))
     before = deepcopy((data, config))
     cells = draw(data, config)
-    assert text_at(cells, 3, 2, 7) == "GPU 0"
-    assert text_at(cells, 3, 7, 8) == " "
+    assert text_at(cells, 3, 2, 6) == "[0] "
     assert_right_aligned(cells, 3, "1.0 / 16.0 GiB", 57, "muted")
     assert text_at(cells, 3, 42, 43) == " "
     assert_right_aligned(cells, 3, "60°C", 69, "text")
@@ -222,7 +221,7 @@ def test_legacy_generic_gpu_keeps_original_status_and_metric_rows():
     legacy = ObjectSnapshot(ObjectKey("gpu", "0"), (Metric("usage", 25, "%"),), stale=True)
     cells = hardware_cells(StateSnapshot((legacy,)), AppConfig(mount_points=()), regions_for(),
                            gpu_slots=("0",), view=ViewSelection())
-    assert text_at(cells, 3, 2, 7) == "GPU 0"
+    assert text_at(cells, 3, 2, 5) == "[0]"
     assert text_at(cells, 3, 64, 69) == "STALE"
     assert "usage: 25%" in text_at(cells, 4, 2, 69)
 
@@ -322,7 +321,7 @@ def test_extreme_gpu_temperature_and_power_keep_exponent_units_and_right_hand_sl
     assert scientific_number(power[:-2]).adjusted() == 300
     assert_roles(cells, 3, 59, 69, "text")
     assert_roles(cells, 4, 59, 69, "muted")
-    assert text_at(cells, 3, 2, 7) == "GPU 0"
+    assert text_at(cells, 3, 2, 6) == "[0] "
     assert_right_aligned(cells, 3, "1.0 / 16.0 GiB", 57, "muted")
     assert_right_aligned(cells, 5, "STALE", 69, "text")
     assert_no_overlaps(cells)
@@ -360,7 +359,7 @@ def test_extreme_capacity_groups_stay_readable_without_covering_identity_labels_
         assert scientific_number(used).adjusted() == 4987
         assert scientific_number(total).adjusted() == 4988
         assert "…" not in group and "—" not in group and "N/A" not in group
-    assert text_at(cells, 3, 2, 7) == "GPU 0"
+    assert text_at(cells, 3, 2, 6) == "[0] "
     assert text_at(cells, 5, 74, 77) == "RAM"
     assert text_at(cells, 10, 74, 75) == "/"
     assert_right_aligned(cells, 5, "STALE", 69, "text")

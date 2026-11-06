@@ -32,7 +32,7 @@ def text(frame):
     return " ".join(cell.text for cell in frame.cells)
 
 
-@pytest.mark.parametrize("gpu,mount,docker,expected_rows", [(5, 2, 5, 37), (6, 2, 5, 43), (10, 2, 5, 67), (5, 10, 10, 37), (0, 0, 0, 36), (0, 3, 100, 36)])
+@pytest.mark.parametrize("gpu,mount,docker,expected_rows", [(5, 2, 5, 39), (6, 2, 5, 45), (10, 2, 5, 69), (5, 10, 10, 39), (0, 0, 0, 36), (0, 3, 100, 36)])
 def test_capacity_uses_character_counts(gpu, mount, docker, expected_rows):
     assert required_size(gpu_count=gpu, mount_count=mount, container_count=docker) == TerminalSize(120, expected_rows)
 
@@ -49,7 +49,7 @@ def test_value_states_do_not_confuse_unknown_with_zero(metric, expected):
 
 
 def test_initial_frame_has_title_host_time_and_unknown_values():
-    frame = compose_frame(snapshot(), config_with_containers(), TerminalSize(120, 38), HOST, NOW, gpu_slots=("0", "1", "2", "3", "4"))
+    frame = compose_frame(snapshot(), config_with_containers(), TerminalSize(120, 39), HOST, NOW, gpu_slots=("0", "1", "2", "3", "4"))
     combined = "".join(cell.text for cell in frame.cells)
     assert "Joi::Observer" in combined
     assert HOST.hostname in combined and HOST.system in combined
@@ -61,7 +61,7 @@ def test_initial_frame_has_title_host_time_and_unknown_values():
 
 
 def test_failure_reuses_status_slot_without_timestamp_or_layout_change():
-    options = (config_with_containers(), TerminalSize(120, 38), HOST, NOW)
+    options = (config_with_containers(), TerminalSize(120, 39), HOST, NOW)
     initial = compose_frame(snapshot(), *options, gpu_slots=("0", "1", "2", "3", "4"))
     failed = compose_frame(snapshot(stale=True, sampled_at=987654321.25), *options, gpu_slots=("0", "1", "2", "3", "4"))
     recovered = compose_frame(snapshot(stale=False), *options, gpu_slots=("0", "1", "2", "3", "4"))
@@ -71,12 +71,12 @@ def test_failure_reuses_status_slot_without_timestamp_or_layout_change():
     assert "last success" not in text(failed).lower()
 
 
-@pytest.mark.parametrize("size", [TerminalSize(119, 37), TerminalSize(120, 36), TerminalSize(80, 24)])
+@pytest.mark.parametrize("size", [TerminalSize(119, 39), TerminalSize(120, 38), TerminalSize(80, 24)])
 def test_small_window_gets_single_enlarge_view(size):
     frame = compose_frame(snapshot(), config_with_containers(), size, HOST, NOW, gpu_slots=("0", "1", "2", "3", "4"))
     assert frame.too_small
-    assert frame.minimum_size == TerminalSize(120, 37)
-    assert "Enlarge terminal to at least 120x37" in text(frame)
+    assert frame.minimum_size == TerminalSize(120, 39)
+    assert "Enlarge terminal to at least 120x39" in text(frame)
     assert "q Quit" in text(frame)
     assert frame.regions == ()
 
@@ -86,20 +86,26 @@ def test_docker_height_uses_remaining_space_independent_of_configured_count():
               for count in (0, 1, 5, 6, 10)]
     assert all(not frame.too_small for frame in frames)
     assert all(frame.regions == frames[0].regions for frame in frames)
-    assert all(next(r for r in frame.regions if r.name == "docker").height == 7 for frame in frames)
+    assert all(next(r for r in frame.regions if r.name == "docker").height == 4 for frame in frames)
 
 
-@pytest.mark.parametrize("height,upper,lower", [(36, 18, 18), (37, 19, 18), (38, 19, 19), (44, 22, 22), (45, 23, 22), (48, 24, 24)])
-def test_full_page_halves_include_header_switch_footer_and_gaps(height, upper, lower):
-    frame = compose_frame(snapshot(), config_with_containers(1), TerminalSize(120, height), HOST, NOW)
+@pytest.mark.parametrize("height,upper,lower,header,docker_rows", [
+    (36, 18, 18, 3, 0), (37, 19, 18, 3, 1), (38, 19, 19, 3, 1),
+    (40, 20, 20, 3, 2), (41, 21, 20, 6, 0), (42, 21, 21, 6, 0),
+    (44, 22, 22, 6, 1), (45, 23, 22, 6, 2), (48, 24, 24, 6, 3),
+])
+def test_full_page_halves_include_header_switch_footer_and_gaps(height, upper, lower, header, docker_rows):
+    frame = compose_frame(snapshot(), config_with_containers(10), TerminalSize(120, height), HOST, NOW)
     assert not frame.too_small
     regions = {region.name: region for region in frame.regions}
     assert set(regions) == {"header", "gpu", "host", "storage", "docker", "service", "service_switch", "footer"}
-    assert (regions["header"].row, regions["header"].height) == (0, 2)
-    assert (regions["gpu"].row, regions["gpu"].height) == (2, upper - 2)
-    assert (regions["host"].row, regions["host"].height) == (2, 6)
-    assert (regions["storage"].row, regions["storage"].height) == (8, 6)
-    assert (regions["docker"].row, regions["docker"].height) == (15, upper - 15)
+    assert (regions["header"].row, regions["header"].height) == (0, header)
+    assert (regions["gpu"].row, regions["gpu"].height) == (header, upper - header)
+    assert (regions["host"].row, regions["host"].height) == (header, 6)
+    assert (regions["storage"].row, regions["storage"].height) == (header + 6, 6)
+    assert (regions["docker"].row, regions["docker"].height) == (header + 12, docker_rows + 3)
+    assert regions["storage"].row + regions["storage"].height == regions["docker"].row
+    assert visible_container_names(frame) == [f"container-{i}" for i in range(docker_rows)]
     assert (regions["service"].row, regions["service"].height) == (upper, lower - 2)
     assert (regions["service_switch"].row, regions["service_switch"].height) == (height - 2, 1)
     assert (regions["footer"].row, regions["footer"].height) == (height - 1, 1)
@@ -120,9 +126,9 @@ def test_neon_top_widths_and_four_host_content_rows_preserve_half_page_budget(
     assert regions["gpu"].width == gpu_width
     for name in ("host", "storage", "docker"):
         assert (regions[name].column, regions[name].width) == (right_column, right_width)
-    assert (regions["host"].row, regions["host"].height) == (2, 6)
-    assert regions["host"].row + regions["host"].height == regions["storage"].row == 8
-    assert (regions["storage"].height, regions["docker"].row, regions["docker"].height) == (6, 15, 7)
+    assert (regions["host"].row, regions["host"].height) == (6, 6)
+    assert regions["host"].row + regions["host"].height == regions["storage"].row == 12
+    assert (regions["storage"].height, regions["docker"].row, regions["docker"].height) == (6, 18, 4)
     assert (regions["service"].row, regions["service"].height) == (22, 20)
     assert frame.minimum_size == TerminalSize(120, 36)
 
@@ -131,7 +137,9 @@ def test_neon_top_widths_and_four_host_content_rows_preserve_half_page_budget(
 def test_fixed_model_rail_separator_uses_only_service_interior_rows(height):
     frame = compose_frame(StateSnapshot(()), AppConfig(), TerminalSize(120, height), HOST, NOW)
     service = next(region for region in frame.regions if region.name == "service")
-    separator = [cell for cell in frame.cells if cell.column == service.column + 27 and cell.text == "│"]
+    separator = [cell for cell in frame.cells
+                 if service.row <= cell.row < service.row + service.height
+                 and cell.column == service.column + 27 and cell.text == "│"]
     assert [(cell.row, cell.role) for cell in separator] == [
         (row, "muted") for row in range(service.row + 1, service.row + service.height - 1)
     ]
@@ -143,12 +151,13 @@ def test_storage_has_three_content_rows_at_every_window_height(mounts):
     for height in (36, 44, 48):
         frame = compose_frame(snapshot(), config, TerminalSize(120, height), HOST, NOW)
         storage = next(region for region in frame.regions if region.name == "storage")
-        assert (storage.row, storage.height) == (8, 6)
+        assert (storage.row, storage.height) == (9 if height == 36 else 12, 6)
         for index, mount in enumerate(mounts):
             cells = [cell for cell in frame.cells if cell.text == mount or cell.text.startswith(mount + "  ")]
-            assert len(cells) == 1 and cells[0].row == 10 + index
+            assert len(cells) == 1 and cells[0].row == storage.row + 2 + index
         if not mounts:
-            assert any("No mount points configured" in cell.text and 10 <= cell.row <= 12 for cell in frame.cells)
+            assert any("No mount points configured" in cell.text and storage.row + 2 <= cell.row <= storage.row + 4
+                       for cell in frame.cells)
 
 
 def test_storage_ignores_fourth_mount_without_replacing_failed_first_item():
@@ -160,9 +169,10 @@ def test_storage_ignores_fourth_mount_without_replacing_failed_first_item():
     frame = compose_frame(data, config, TerminalSize(120, 44), HOST, NOW)
     labels = [cell for cell in frame.cells if any(cell.text == mount or cell.text.startswith(mount + "  ") for mount in mounts)]
     assert [cell.text.split("  ", 1)[0] for cell in labels] == ["/", "/data", "/cache"]
-    assert [cell.row for cell in labels] == [10, 11, 12]
-    assert any(cell.text == "STALE" and cell.row == 8 for cell in frame.cells)
-    assert not any(cell.text == "STALE" and cell.row in (10, 11, 12) for cell in frame.cells)
+    storage = next(region for region in frame.regions if region.name == "storage")
+    assert [cell.row for cell in labels] == list(range(storage.row + 2, storage.row + 5))
+    assert any(cell.text == "STALE" and cell.row == storage.row for cell in frame.cells)
+    assert not any(cell.text == "STALE" and storage.row + 2 <= cell.row <= storage.row + 4 for cell in frame.cells)
     assert "/ignored" not in text(frame)
 
 
@@ -180,7 +190,7 @@ def visible_container_names(frame):
 def test_docker_resize_shows_prefix_four_then_six_then_three_from_same_latest_snapshot():
     config, data = config_with_containers(10), docker_snapshot(stale_index=5)
     before = deepcopy((config, data))
-    frames = [compose_frame(data, config, TerminalSize(120, height), HOST, NOW) for height in (44, 48, 42)]
+    frames = [compose_frame(data, config, TerminalSize(120, height), HOST, NOW) for height in (50, 54, 48)]
     for frame, capacity in zip(frames, (4, 6, 3)):
         assert not frame.too_small
         assert visible_container_names(frame) == [f"container-{index}" for index in range(capacity)]
@@ -210,14 +220,14 @@ def test_zero_docker_content_capacity_does_not_draw_entries_empty_state_or_promp
 def test_empty_docker_uses_available_content_row_without_shrinking_panel():
     frame = compose_frame(snapshot(), config_with_containers(0), TerminalSize(120, 44), HOST, NOW)
     docker = next(region for region in frame.regions if region.name == "docker")
-    assert docker.height == 7
+    assert docker.height == 4
     empty = [cell for cell in frame.cells if "No containers configured" in cell.text]
-    assert len(empty) == 1 and empty[0].row == 17
+    assert len(empty) == 1 and empty[0].row == 20
 
 
 def test_docker_failures_keep_prefix_order_and_other_regions_unchanged():
     config = config_with_containers(10)
-    frames = [compose_frame(docker_snapshot(stale_index=index), config, TerminalSize(120, 44), HOST, NOW)
+    frames = [compose_frame(docker_snapshot(stale_index=index), config, TerminalSize(120, 50), HOST, NOW)
               for index in (None, 0, None)]
     assert all(frame.regions == frames[0].regions for frame in frames)
     assert all(visible_container_names(frame) == [f"container-{index}" for index in range(4)] for frame in frames)
@@ -277,11 +287,11 @@ def test_four_gpu_minimum_keeps_all_cards_even_when_no_container_fits():
     frame = compose_frame(StateSnapshot(()), config_with_containers(100), TerminalSize(120, 36), HOST, NOW,
                           gpu_slots=("0", "1", "2", "3"))
     assert not frame.too_small and frame.minimum_size == TerminalSize(120, 36)
-    assert [cell.text for cell in frame.cells if cell.text.startswith("GPU ")] == ["GPU 0", "GPU 1", "GPU 2", "GPU 3"]
+    assert [cell.text for cell in frame.cells if cell.text.startswith("[")] == ["[0]", "[1]", "[2]", "[3]"]
     assert visible_container_names(frame) == []
 
 
-@pytest.mark.parametrize("gpu_count,minimum_rows", [(6, 43), (10, 67)])
+@pytest.mark.parametrize("gpu_count,minimum_rows", [(5, 39), (6, 45), (10, 69)])
 def test_gpu_capacity_boundary_draws_every_slot_inside_the_upper_half(gpu_count, minimum_rows):
     """Capacity includes actual GPU values/statuses without cropping later cards."""
     slots = tuple(str(index) for index in range(gpu_count))
@@ -295,15 +305,19 @@ def test_gpu_capacity_boundary_draws_every_slot_inside_the_upper_half(gpu_count,
     assert too_small.too_small and too_small.regions == ()
     assert f"Enlarge terminal to at least 120x{minimum_rows}" in text(too_small)
 
-    for height in (minimum_rows, minimum_rows + 1):
+    # With these card counts the GPU region is the limiting side. Switching
+    # from the compact to the pixel header takes three more upper-half rows.
+    for extra_rows, header_height in ((0, 3), (1, 3), (5, 3), (6, 6), (7, 6)):
+        height = minimum_rows + extra_rows
         frame = compose_frame(data, config, TerminalSize(120, height), HOST, NOW, gpu_slots=slots)
         assert not frame.too_small
         regions = {region.name: region for region in frame.regions}
         gpu, service = regions["gpu"], regions["service"]
-        labels = [cell for cell in frame.cells if cell.text.startswith("GPU ")]
+        assert regions["header"].height == gpu.row == header_height
+        labels = [cell for cell in frame.cells if cell.text.startswith("[")]
         values = [cell for cell in frame.cells if cell.text.startswith("util: ")]
         statuses = [cell for cell in frame.cells if cell.text == "STALE" and cell.column < gpu.width]
-        assert [cell.text for cell in labels] == [f"GPU {object_id}" for object_id in slots]
+        assert [cell.text for cell in labels] == [f"[{object_id}]" for object_id in slots]
         assert [cell.text for cell in values] == [f"util: {index}%" for index in range(gpu_count)]
         assert len(statuses) == gpu_count // 2
         assert all(gpu.row < cell.row < gpu.row + gpu.height - 1 <= service.row
