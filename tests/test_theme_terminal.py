@@ -1,7 +1,7 @@
 """Theme contracts through public APIs and an offline curses boundary.
 
 The recorder substitutes terminal IO, not palette selection or theme behavior.
-Assertions inspect requested colors, rendered cells, and restoration effects.
+Assertions inspect fixed color indices, rendered cells, and restoration effects.
 """
 
 from types import SimpleNamespace
@@ -15,19 +15,14 @@ from joi_observer.tui.theme import CursesTheme
 
 
 ROLES = ("text", "muted", "primary", "secondary", "amber", "track")
-COMMON = {
-    "background": (8, 14, 24), "text": (212, 221, 235),
-    "muted": (138, 157, 181), "amber": (255, 164, 91), "track": (62, 74, 91),
+COMMON_SLOTS = {
+    "text": 253, "muted": 247, "amber": 215, "track": 239,
 }
-ACCENTS = {
-    "hologram": {"primary": (123, 159, 255), "secondary": (229, 112, 208)},
-    "moonlight": {"primary": (125, 223, 255), "secondary": (198, 167, 255)},
+ACCENT_SLOTS = {
+    "hologram": {"primary": 111, "secondary": 170},
+    "moonlight": {"primary": 117, "secondary": 183},
 }
-
-
-def scaled(rgb):
-    """Specified conversion from byte RGB into curses' documented units."""
-    return tuple((value * 1000 + 127) // 255 for value in rgb)
+PALETTE_OPERATIONS = {"can_change_color", "color_content", "init_color"}
 
 
 class RecordingCurses:
@@ -94,13 +89,16 @@ class RecordingCurses:
     def pair_for(self, attribute):
         return self.pairs[(attribute & ~(self.A_DIM | self.A_BOLD)) >> 8]
 
-    def rgb_for(self, attribute):
-        foreground, background = self.pair_for(attribute)
-        return self.colors[foreground], self.colors[background]
+    def setupterm(self, term=None, fd=-1):
+        self.record("setupterm", term, fd)
 
     def initscr(self):
         self.record("initscr")
         return self.screen
+
+    def tigetnum(self, name):
+        self.record("tigetnum", name)
+        raise self.error("setupterm has not been called")
 
     def noecho(self):
         self.record("noecho")
@@ -183,15 +181,14 @@ def test_construct_style_and_repeated_restore_are_inert_before_activation():
     assert api.events == []
 
 
-def test_mutable_colors_are_exact_bounded_and_restored_across_two_switches():
-    api = RecordingCurses()
+@pytest.mark.parametrize("mutable", (True, False))
+def test_fixed_colors_are_bounded_and_palette_is_untouched_across_two_switches(mutable):
+    api = RecordingCurses(mutable=mutable)
     theme = CursesTheme(api)
     for name in ("hologram", "moonlight", "hologram"):
         theme.activate(name)
         for role in ROLES:
-            assert api.rgb_for(theme.style(role)) == (
-                scaled((COMMON | ACCENTS[name])[role]), scaled(COMMON["background"]),
-            )
+            assert api.pair_for(theme.style(role)) == ((COMMON_SLOTS | ACCENT_SLOTS[name])[role], 233)
         assert not theme.style("muted") & api.A_DIM
         assert not theme.style("secondary") & api.A_BOLD
         assert not theme.style("track") & (api.A_BOLD | api.A_DIM)
@@ -199,12 +196,11 @@ def test_mutable_colors_are_exact_bounded_and_restored_across_two_switches():
         before = tuple(api.events)
         theme.activate(name)
         assert tuple(api.events) == before
-    touched = {event[1] for event in api.events if event[0] == "init_color"}
-    assert len(touched) == 7 and all(number >= 16 for number in touched)
-    assert len(api.pairs) == 6
+    assert set(api.pairs) == set(range(1, 7))
     assert sum(event[0] == "start_color" for event in api.events) == 1
-    assert all(api.colors[number] == api.original[number] for number in range(16))
+    before = tuple(api.events)
     theme.restore()
+    assert tuple(api.events) == before
     assert api.colors == api.original
     assert all(theme.style(role) == 0 for role in ROLES)
     before = tuple(api.events)
@@ -214,6 +210,7 @@ def test_mutable_colors_are_exact_bounded_and_restored_across_two_switches():
     assert sum(event[0] == "start_color" for event in api.events) == 2
     theme.restore()
     assert api.colors == api.original
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
 
 
 def test_invalid_theme_after_activation_preserves_colors_styles_and_avoids_io():
@@ -239,18 +236,37 @@ def test_invalid_theme_after_activation_preserves_colors_styles_and_avoids_io():
 @pytest.mark.parametrize("name,accents", (
     ("hologram", (111, 170)), ("moonlight", (117, 183)),
 ))
-def test_fixed_256_colors_use_documented_nearest_xterm_slots(name, accents):
-    api = RecordingCurses(mutable=False)
+@pytest.mark.parametrize("colors", (256, 512))
+@pytest.mark.parametrize("mutable", (False, True))
+def test_fixed_256_colors_use_documented_nearest_xterm_slots(name, accents, colors, mutable):
+    api = RecordingCurses(colors=colors, mutable=mutable)
     theme = CursesTheme(api)
     theme.activate(name)
-    expected = dict(text=253, muted=109, primary=accents[0], secondary=accents[1], amber=215, track=239)
+    expected = dict(text=253, muted=247, primary=accents[0], secondary=accents[1], amber=215, track=239)
     for role, foreground in expected.items():
         assert api.pair_for(theme.style(role)) == (foreground, 233)
         assert not theme.style(role) & api.A_DIM
         assert not theme.style(role) & api.A_BOLD
-    assert not any(event[0] == "init_color" for event in api.events)
     theme.restore()
     assert api.colors == api.original
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
+
+
+@pytest.mark.parametrize("operation", sorted(PALETTE_OPERATIONS))
+@pytest.mark.parametrize("error_type", (RecordingCurses.error, RuntimeError))
+def test_palette_capability_queries_and_mutation_are_never_attempted(operation, error_type):
+    api = RecordingCurses(mutable=True)
+    failure = (operation, 1, error_type("palette API must not be called"))
+    api.failure = failure
+    theme = CursesTheme(api)
+    for name in ("hologram", "moonlight", "hologram"):
+        theme.activate(name)
+        for role, foreground in (COMMON_SLOTS | ACCENT_SLOTS[name]).items():
+            assert api.pair_for(theme.style(role)) == (foreground, 233)
+    theme.restore()
+    assert api.failure == failure
+    assert api.colors == api.original
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
 
 
 @pytest.mark.parametrize("colors", (8, 16, 88, 255))
@@ -270,8 +286,8 @@ def test_basic_colors_keep_theme_accents_distinct_and_share_black_background(col
         assert not theme.style("track") & api.A_DIM
         assert theme.style("track") != theme.style("muted")
         assert all(not theme.style(role) & api.A_BOLD for role in ROLES if role not in {"secondary", "track"})
-    assert not any(event[0] == "init_color" for event in api.events)
     theme.restore()
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
 
 
 @pytest.mark.parametrize("settings", (
@@ -284,6 +300,10 @@ def test_insufficient_color_capability_preserves_monochrome_operation(settings):
         theme.activate(name)
         assert all(theme.style(role) == 0 for role in (*ROLES, "unknown"))
     assert not any(event[0] in ("init_color", "init_pair") for event in api.events)
+    events = tuple(api.events)
+    with pytest.raises(ValueError, match="Unknown theme"):
+        theme.activate("invalid")
+    assert tuple(api.events) == events
     theme.restore()
 
 
@@ -302,11 +322,12 @@ def test_seven_pair_capacity_is_sufficient_for_all_six_foreground_roles(colors):
 
 
 @pytest.mark.parametrize("operation,occurrence", (
-    ("has_colors", 1), ("start_color", 1), ("can_change_color", 1),
-    ("color_content", 3), ("init_color", 3), ("init_pair", 3), ("color_pair", 3),
-    ("color_content", 7), ("init_color", 7), ("init_pair", 6), ("color_pair", 6),
+    ("has_colors", 1), ("start_color", 1),
+    ("init_pair", 1), ("color_pair", 1),
+    ("init_pair", 3), ("color_pair", 3),
+    ("init_pair", 6), ("color_pair", 6),
 ))
-def test_curses_errors_roll_back_partial_colors_and_latch_monochrome(operation, occurrence):
+def test_curses_errors_clear_partial_styles_and_latch_monochrome(operation, occurrence):
     api = RecordingCurses()
     api.failure = operation, occurrence, api.error("terminal capability failure")
     theme = CursesTheme(api)
@@ -317,8 +338,17 @@ def test_curses_errors_roll_back_partial_colors_and_latch_monochrome(operation, 
     theme.activate("moonlight")
     assert all(theme.style(role) == 0 for role in ROLES)
     assert tuple(api.events) == after_failure
+    with pytest.raises(ValueError, match="Unknown theme"):
+        theme.activate("invalid")
+    assert tuple(api.events) == after_failure
+    theme.restore()
+    assert tuple(api.events) == after_failure
+    theme.activate("moonlight")
+    for role, foreground in (COMMON_SLOTS | ACCENT_SLOTS["moonlight"]).items():
+        assert api.pair_for(theme.style(role)) == (foreground, 233)
     theme.restore()
     assert api.colors == api.original
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
 
 
 def test_programming_errors_are_not_disguised_as_color_degradation():
@@ -330,22 +360,25 @@ def test_programming_errors_are_not_disguised_as_color_degradation():
     theme.restore()
 
 
-@pytest.mark.parametrize("occurrence", (1, 7))
-def test_failed_color_restore_still_attempts_all_saved_slots_and_clears_styles(occurrence):
-    api = RecordingCurses()
+@pytest.mark.parametrize("settings", ({}, {"colors": 8}, {"enabled": False}))
+def test_restore_clears_session_without_terminal_io_and_rechecks_capabilities(settings):
+    api = RecordingCurses(**settings)
     theme = CursesTheme(api)
     theme.activate("hologram")
-    touched = {event[1] for event in api.events if event[0] == "init_color"}
-    start = len(api.events)
-    api.failure = "init_color", occurrence, api.error("one slot cannot be restored")
-    theme.restore()
-    restored = [event[1] for event in api.events[start:] if event[0] == "init_color"]
-    assert set(restored) == touched
-    assert len(restored) == len(touched)
-    assert all(theme.style(role) == 0 for role in ROLES)
     before = tuple(api.events)
     theme.restore()
     assert tuple(api.events) == before
+    assert all(theme.style(role) == 0 for role in ROLES)
+    theme.restore()
+    assert tuple(api.events) == before
+    api.enabled = True
+    api.COLORS = 256
+    theme.activate("moonlight")
+    for role, foreground in (COMMON_SLOTS | ACCENT_SLOTS["moonlight"]).items():
+        assert api.pair_for(theme.style(role)) == (foreground, 233)
+    theme.restore()
+    assert api.colors == api.original
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
 
 
 def install_terminal_boundary(monkeypatch, api):
@@ -373,21 +406,17 @@ def test_terminal_uses_frame_theme_for_cells_and_blank_background_then_restores(
             names = [event[0] for event in events]
             assert "bkgd" in names, "Each frame must paint its blank background"
             assert names.index("bkgd") < names.index("erase")
-            assert api.rgb_for(api.screen.blank_attribute) == (
-                scaled(COMMON["text"]), scaled(COMMON["background"]),
-            )
+            assert api.pair_for(api.screen.blank_attribute) == (253, 233)
             for _, _, role, attribute in api.screen.drawn:
-                assert api.rgb_for(attribute) == (
-                    scaled((COMMON | ACCENTS[name])[role]), scaled(COMMON["background"]),
-                )
+                assert api.pair_for(attribute) == ((COMMON_SLOTS | ACCENT_SLOTS[name])[role], 233)
             assert [item[:3] for item in api.screen.drawn] == [
                 (cell.row, cell.column, cell.text) for cell in cells
             ]
     finally:
         terminal.restore()
     assert api.colors == api.original
-    end = next(index for index, event in enumerate(api.events) if event[0] == "endwin")
-    assert all(index < end for index, event in enumerate(api.events) if event[0] == "init_color")
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
+    assert ("endwin",) in api.events
     assert ("echo",) in api.events and ("tcsetattr", ["original mode"]) in api.events
     before = tuple(api.events)
     terminal.restore()
@@ -419,28 +448,30 @@ def test_terminal_color_restore_failure_does_not_block_other_terminal_cleanup(mo
     terminal.enter()
     try:
         terminal.render(Frame((TextCell(0, 0, "Observer", "primary"),), (), TerminalSize(120, 36)))
-        touched = {event[1] for event in api.events if event[0] == "init_color"}
         start = len(api.events)
-        api.failure = "init_color", 1, api.error("one color cannot be restored")
+
+        def failed_theme_restore():
+            api.events.append(("theme_restore",))
+            raise RuntimeError("theme cleanup failed")
+
+        monkeypatch.setattr(terminal._theme, "restore", failed_theme_restore)
     finally:
         terminal.restore()
-    assert len(touched) == 7
     events = api.events[start:]
-    restored = [event[1] for event in events if event[0] == "init_color"]
-    assert len(restored) == len(touched) and set(restored) == touched
-    # The one failing color is best-effort; every later slot still restores.
-    assert all(api.colors[number] == api.original[number] for number in restored[1:])
-    end = next(index for index, event in enumerate(events) if event[0] == "endwin")
-    assert all(index < end for index, event in enumerate(events) if event[0] == "init_color")
+    assert events[0] == ("theme_restore",)
+    assert ("keypad", False) in events and ("nocbreak",) in events
+    assert ("curs_set", 1) in events and ("endwin",) in events
     assert ("echo",) in events and ("tcsetattr", ["original mode"]) in events
+    assert api.colors == api.original
+    assert not any(event[0] in PALETTE_OPERATIONS for event in api.events)
     before = tuple(api.events)
     terminal.restore()
     assert tuple(api.events) == before
 
 
-@pytest.mark.parametrize("operation", ("init_color", "init_pair", "color_pair"))
+@pytest.mark.parametrize("operation", ("init_pair", "color_pair"))
 def test_theme_switch_failure_clears_prior_styles_and_latches_monochrome(monkeypatch, operation):
-    """A later capability failure must also remove an already visible palette."""
+    """A later pair failure must also discard all previously active styles."""
     api = RecordingCurses()
     install_terminal_boundary(monkeypatch, api)
     terminal = CursesTerminal()
@@ -498,7 +529,7 @@ def test_theme_transition_invalidates_physical_screen_but_same_theme_does_not(mo
             assert invalidations == ([("clearok", True)] if previous and name != previous else [])
             if invalidations:
                 operations = [event[0] for event in events]
-                assert operations.index("init_color") < operations.index("clearok")
+                assert operations.index("init_pair") < operations.index("clearok")
                 assert operations.index("clearok") < operations.index("bkgd") < operations.index("erase")
             previous = name
     finally:
@@ -581,9 +612,7 @@ def test_resize_aborted_theme_switch_keeps_physical_redraw_pending(monkeypatch):
         assert [drawn[:3] for drawn in api.screen.drawn] == [
             (cell.row, cell.column, cell.text) for cell in cells
         ]
-        assert api.rgb_for(api.screen.drawn[0][3]) == (
-            scaled(ACCENTS["moonlight"]["secondary"]), scaled(COMMON["background"]),
-        )
+        assert api.pair_for(api.screen.drawn[0][3]) == (183, 233)
 
         start = len(api.events)
         terminal.render(switched)
@@ -619,9 +648,7 @@ def test_cell_bold_preserves_color_pairs_and_does_not_leak_to_following_text(mon
         for cell, (_, _, _, attribute) in zip(cells, api.screen.drawn):
             assert bool(attribute & api.A_BOLD) is cell.bold
             if enabled:
-                assert api.rgb_for(attribute) == (
-                    scaled(COMMON[cell.role]), scaled(COMMON["background"]),
-                )
+                assert api.pair_for(attribute) == (COMMON_SLOTS[cell.role], 233)
             else:
                 assert attribute == (api.A_BOLD if cell.bold else 0)
         assert not api.screen.blank_attribute & api.A_BOLD

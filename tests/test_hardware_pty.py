@@ -83,7 +83,7 @@ def wide_screen_color(row, column):
     if wide_curses.getcchar(cell, characters, ctypes.byref(attributes), ctypes.byref(pair), None) == -1:
         raise curses.error('wide screen attributes unavailable')
     foreground, background = curses.pair_content(pair.value)
-    return characters.value, curses.color_content(foreground), curses.color_content(background)
+    return characters.value, foreground, background, bool(attributes.value & curses.A_BOLD)
 
 def observed_compose(snapshot, config, size, *args, **kwargs):
     frame = compose(snapshot, config, size, *args, **kwargs)
@@ -110,10 +110,10 @@ def observed_render(self, frame):
             for cell in frame.cells:
                 if set(cell.text) != {'▌'}:
                     continue
-                character, foreground, background = wide_screen_color(cell.row, cell.column)
+                character, foreground, background, bold = wide_screen_color(cell.row, cell.column)
                 observation['bar_colors'].append({
                     'row': cell.row, 'column': cell.column, 'role': cell.role,
-                    'character': character, 'foreground': foreground, 'background': background,
+                    'character': character, 'foreground': foreground, 'background': background, 'bold': bold,
                 })
         except curses.error:
             if self.size() == frame_size:
@@ -129,11 +129,15 @@ def forbidden(*args, **kwargs):
     connections.append('attempted')
     raise AssertionError('Network is forbidden in this local test')
 
+def forbidden_palette_write(*args, **kwargs):
+    raise AssertionError('Fixed palettes must not redefine terminal colors')
+
 asyncio.create_subprocess_exec = observed_spawn
 app_module.compose_frame = observed_compose
 CursesTerminal.render = observed_render
 socket.socket.connect = forbidden
 socket.create_connection = forbidden
+curses.init_color = forbidden_palette_write
 try:
     result = main(['--config', str(config)])
 finally:
@@ -286,7 +290,7 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
 
     resize(120, 44)
     original = termios.tcgetattr(slave)
-    env = dict(os.environ, TERM="xterm-256color", LANG="C.UTF-8",
+    env = dict(os.environ, TERM="xterm", LANG="C.UTF-8",
                PATH=str(tmp_path) + os.pathsep + os.environ.get("PATH", ""),
                JOI_PTY_MODE=mode, JOI_PTY_SLOW_MARKER=str(slow_marker))
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
@@ -345,6 +349,8 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
         assert b"\x1b[?25l" in output and b"\x1b[?25h" in output
         assert b"PRIVATE_RAW_DRIVER_STDERR" not in output and b"Traceback" not in output
         assert b"PTY GPU" in output and b"GiB" in output
+        assert b"\x1b]4;" not in output
+        assert b"\x1b[38;5;239m" in output and b"\x1b[48;5;233m" in output
         result = json.loads(report.read_text())
         assert not result["connections"]
         # A real mounted '/' must remain readable even when unrelated nsfs or
@@ -375,11 +381,12 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
             assert frame["screen"][row][74:96] == "▌" * 22
             assert frame["screen"][row][96:118].strip() == ""
         assert frame["bar_colors"]
-        rgb = {"muted": [541, 616, 710], "secondary": [898, 439, 816], "track": [243, 290, 357]}
+        palette_indices = {"muted": 247, "secondary": 170, "track": 239}
         for observed in frame["bar_colors"]:
             assert observed["character"] == "▌"
-            assert observed["foreground"] == rgb[observed["role"]]
-            assert observed["background"] == [31, 55, 94]
+            assert observed["foreground"] == palette_indices[observed["role"]]
+            assert observed["background"] == 233
+            assert observed["bold"] is False
         for index in range(final_index + 1):
             row = 3 + 3 * index
             memory = f"{index + 1}.0 / 16.0 GiB"

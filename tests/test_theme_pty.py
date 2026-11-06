@@ -1,4 +1,4 @@
-"""Theme changes must repaint physical cells, not only ncurses' color table."""
+"""Fixed-palette output, theme changes and re-entry through a real local PTY."""
 
 import os
 from pathlib import Path
@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="Requires a local Uni
 
 
 CHILD = r'''
-import os, socket, sys
+import curses, os, socket, sys
 from joi_observer.tui.app import CursesTerminal
 from joi_observer.tui.layout import Frame, TerminalSize, TextCell
 
@@ -21,28 +21,82 @@ def forbidden(*args, **kwargs):
     raise AssertionError('Theme PTY verification is offline')
 socket.getaddrinfo = socket.create_connection = forbidden
 socket.socket.connect = socket.socket.connect_ex = forbidden
+
+def forbidden_palette_write(*args, **kwargs):
+    raise AssertionError('Fixed palettes must not redefine terminal colors')
+curses.init_color = forbidden_palette_write
+
 commands, completed = map(int, sys.argv[1:])
+original_term = os.environ.get('TERM')
 terminal = CursesTerminal()
-try:
-    terminal.enter()
-    cells = (TextCell(0, 0, 'SECONDARY-SENTINEL', 'secondary'),
-             TextCell(1, 0, 'PRIMARY-SENTINEL', 'primary'),
-             TextCell(2, 0, 'BODY-SENTINEL', 'text'),
-             TextCell(3, 0, 'TRACK-SENTINEL', 'track'),
-             TextCell(4, 0, 'MUTED-SENTINEL', 'muted'),
-             TextCell(5, 0, 'AFTER-TRACK-SENTINEL', 'text'))
-    for theme in ('hologram', 'moonlight', 'moonlight', 'hologram'):
-        terminal.render(Frame(cells, (), TerminalSize(120, 36), theme=theme))
-        os.write(completed, b'r')
-        if os.read(commands, 1) != b'n':
-            raise AssertionError('Parent closed the frame handshake')
-finally:
-    terminal.restore()
+cells = (TextCell(0, 0, 'SECONDARY-SENTINEL', 'secondary'),
+         TextCell(1, 0, 'PRIMARY-SENTINEL', 'primary'),
+         TextCell(2, 0, 'BODY-SENTINEL', 'text'),
+         TextCell(3, 0, 'TRACK-SENTINEL', 'track'),
+         TextCell(4, 0, 'MUTED-SENTINEL', 'muted'),
+         TextCell(5, 0, 'AFTER-TRACK-SENTINEL', 'text'),
+         TextCell(6, 0, 'AMBER-SENTINEL', 'amber'))
+
+def acknowledge(marker):
+    os.write(completed, marker)
+    if os.read(commands, 1) != b'n':
+        raise AssertionError('Parent closed the frame handshake')
+
+# The second session uses the same terminal object and process. Both initial
+# xterm and xterm-256color must work without a shell TERM command prefix.
+for _ in range(2):
+    try:
+        terminal.enter()
+        assert os.environ.get('TERM') == original_term
+        for theme in ('hologram', 'moonlight', 'moonlight', 'hologram'):
+            terminal.render(Frame(cells, (), TerminalSize(120, 36), theme=theme))
+            assert curses.COLORS >= 256
+            assert os.environ.get('TERM') == original_term
+            acknowledge(b'r')
+    finally:
+        terminal.restore()
+    assert os.environ.get('TERM') == original_term
+    acknowledge(b's')
 '''
 
 
+def _sgr_before(frame, text):
+    """Read the emitted SGR state, independently of curses' color bookkeeping."""
+    bold, dim, foreground, background = False, False, None, None
+    for match in re.finditer(rb"\x1b\[([0-9;]*)m", frame[:frame.index(text)]):
+        codes = [int(value or b"0") for value in match[1].split(b";")]
+        index = 0
+        while index < len(codes):
+            code = codes[index]
+            if code == 0:
+                bold, dim, foreground, background = False, False, None, None
+            elif code == 1:
+                bold = True
+            elif code == 2:
+                dim = True
+            elif code == 22:
+                bold, dim = False, False
+            elif 30 <= code <= 37:
+                foreground = code - 30
+            elif 40 <= code <= 47:
+                background = code - 40
+            elif code == 39:
+                foreground = None
+            elif code == 49:
+                background = None
+            elif code in (38, 48) and codes[index + 1:index + 2] == [5]:
+                value = codes[index + 2]
+                if code == 38:
+                    foreground = value
+                else:
+                    background = value
+                index += 2
+            index += 1
+    return bold, dim, foreground, background
+
+
 @pytest.mark.parametrize("term", ("xterm", "xterm-256color"))
-def test_theme_switch_repaints_unchanged_text_after_palette_update_but_same_theme_does_not(term):
+def test_fixed_palette_theme_switch_same_frame_and_reentry_preserve_term(term):
     import fcntl
     import pty
     import select
@@ -71,69 +125,46 @@ def test_theme_switch_repaints_unchanged_text_after_palette_update_but_same_them
                 break
         return bytes(result)
 
-    frames = []
+    def receive(marker):
+        assert select.select([completed_r], [], [], 5)[0], drain()
+        assert os.read(completed_r, 1) == marker, drain()
+        return drain()
+
+    sessions, restored_outputs = [], []
     try:
-        for _ in range(4):
-            assert select.select([completed_r], [], [], 5)[0], drain()
-            assert os.read(completed_r, 1) == b"r", drain()
-            frames.append(drain())
+        for _ in range(2):
+            frames = []
+            for _ in range(4):
+                frames.append(receive(b"r"))
+                os.write(commands_w, b"n")
+            sessions.append(frames)
+            restored_outputs.append(receive(b"s"))
+            # Check each restore before allowing the same object to re-enter.
+            assert termios.tcgetattr(slave) == original
             os.write(commands_w, b"n")
         child.wait(timeout=5)
-        restored_output = drain()
-        assert child.returncode == 0, restored_output
+        restored_outputs.append(drain())
+        assert child.returncode == 0, restored_outputs
         assert termios.tcgetattr(slave) == original
 
-        sentinels = (b"SECONDARY-SENTINEL", b"PRIMARY-SENTINEL", b"BODY-SENTINEL",
-                     b"TRACK-SENTINEL", b"MUTED-SENTINEL", b"AFTER-TRACK-SENTINEL")
-        for frame, expected, bold in ((frames[1], (198, 167, 255), True),
-                                      (frames[3], (229, 112, 208), False)):
-            for text in sentinels:
-                assert text in frame, f"Theme changed its color table without repainting {text!r}: {frame!r}"
-            if term == "xterm-256color":
-                changes = list(re.finditer(rb"\x1b\]4;\d+;rgb:([0-9A-F]{2})/([0-9A-F]{2})/([0-9A-F]{2})\x1b\\", frame))
-                # ncurses' byte -> 0..1000 -> terminfo byte conversion can lose
-                # one level. This does not justify changing the design RGB.
-                secondary = next((change for change in changes if all(
-                    abs(int(channel, 16) - target) <= 1 for channel, target in zip(change.groups(), expected)
-                )), None)
-                assert secondary is not None, frame
-                assert secondary.end() < frame.index(b"SECONDARY-SENTINEL"), frame
-                for expected_rgb, text in (((62, 74, 91), b"TRACK-SENTINEL"),
-                                           ((138, 157, 181), b"MUTED-SENTINEL")):
-                    color = next((change for change in changes if all(
-                        abs(int(channel, 16) - target) <= 1
-                        for channel, target in zip(change.groups(), expected_rgb)
-                    )), None)
-                    assert color is not None and color.end() < frame.index(text), frame
-            else:
-                # Check the actual SGR state immediately before each physical
-                # write. Basic Moonlight uses bold magenta, while Hologram and
-                # following primary/body text do not inherit the extra bold.
-                def sgr_before(text):
-                    bright, dim, foreground = False, False, None
-                    for match in re.finditer(rb"\x1b\[([0-9;]*)m", frame[:frame.index(text)]):
-                        for code in (int(value or b"0") for value in match[1].split(b";")):
-                            if code == 0:
-                                bright, dim, foreground = False, False, None
-                            elif code == 1:
-                                bright = True
-                            elif code == 2:
-                                dim = True
-                            elif code == 22:
-                                bright, dim = False, False
-                            elif 30 <= code <= 37:
-                                foreground = code - 30
-                    return bright, dim, foreground
-
-                assert sgr_before(b"SECONDARY-SENTINEL") == (bold, False, 5), frame
-                assert sgr_before(b"PRIMARY-SENTINEL")[:2] == (False, False), frame
-                assert sgr_before(b"BODY-SENTINEL") == (False, False, 7), frame
-                assert sgr_before(b"TRACK-SENTINEL") == (True, False, 0), frame
-                assert sgr_before(b"MUTED-SENTINEL") == (False, True, 7), frame
-                assert sgr_before(b"AFTER-TRACK-SENTINEL") == (False, False, 7), frame
-                assert b"\x1b]4;" not in frame
-        assert all(text not in frames[2] for text in sentinels)
-        assert b"\x1b[2J" not in frames[2] and b"\x1b]4;" not in frames[2]
+        fixed = {b"BODY-SENTINEL": 253, b"TRACK-SENTINEL": 239,
+                 b"MUTED-SENTINEL": 247, b"AFTER-TRACK-SENTINEL": 253,
+                 b"AMBER-SENTINEL": 215}
+        for frames in sessions:
+            for frame, primary, secondary in ((frames[0], 111, 170),
+                                               (frames[1], 117, 183),
+                                               (frames[3], 111, 170)):
+                expected = dict(fixed)
+                expected.update({b"PRIMARY-SENTINEL": primary, b"SECONDARY-SENTINEL": secondary})
+                for text, foreground in expected.items():
+                    assert text in frame, (text, frame)
+                    assert _sgr_before(frame, text) == (False, False, foreground, 233), frame
+            assert all(text not in frames[2] for text in (*fixed, b"PRIMARY-SENTINEL", b"SECONDARY-SENTINEL"))
+            assert b"\x1b[2J" not in frames[2]
+        output = b"".join(frame for frames in sessions for frame in frames) + b"".join(restored_outputs)
+        assert b"\x1b]4;" not in output
+        assert b"\x1b[?1049h" in output and b"\x1b[?1049l" in output
+        assert b"\x1b[?25l" in output and b"\x1b[?25h" in output
     finally:
         if child.poll() is None:
             child.kill()

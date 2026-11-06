@@ -31,6 +31,11 @@ def forbidden(*args, **kwargs):
     raise AssertionError('Network forbidden in local vLLM PTY test')
 socket.getaddrinfo = socket.create_connection = forbidden
 socket.socket.connect = socket.socket.connect_ex = forbidden
+
+def forbidden_palette_write(*args, **kwargs):
+    raise AssertionError('Fixed palettes must not redefine terminal colors')
+curses.init_color = forbidden_palette_write
+
 terminal = CursesTerminal()
 observations = []
 try:
@@ -69,11 +74,9 @@ try:
                 def color(row, column):
                     pair = curses.pair_number(terminal._screen.inch(row, column))
                     foreground, background = curses.pair_content(pair)
-                    # -1 means the terminal's unspecified default color; keep
-                    # it observable as None rather than aborting before the
-                    # parent can report the missing explicit RGB/background.
-                    return {'foreground': curses.color_content(foreground) if foreground >= 0 else None,
-                            'background': curses.color_content(background) if background >= 0 else None}
+                    # Observe selected fixed-palette indices. The terminal's
+                    # physical RGB cannot be inferred from color_content.
+                    return {'foreground': foreground, 'background': background}
                 observations.append({
                     'kind': kind.value, 'stale': stale, 'height': height,
                     'regions': {region.name: [region.row, region.height] for region in frame.regions},
@@ -97,7 +100,7 @@ try:
                     # from color attributes, so it is not a border-color oracle.
                     'blank_color': color(0, 20),
                     'blank_character': terminal._screen.inch(0, 20) & curses.A_CHARTEXT,
-                    'mutable_256': curses.COLORS >= 256 and curses.can_change_color(),
+                    'colors': curses.COLORS,
                 })
     ready.touch()
     async def read_quit():
@@ -145,17 +148,18 @@ def test_vllm_types_status_colors_resize_and_quit_in_real_curses(tmp_path, check
         drain()
         assert child.returncode == 0, bytes(captured)
         assert termios.tcgetattr(slave) == original
+        assert b"\x1b]4;" not in captured
+        assert b"\x1b[38;5;215m" in captured and b"\x1b[38;5;253m" in captured
+        assert b"\x1b[48;5;233m" in captured
         result = json.loads(report.read_text())
         assert result["connections"] == [] and result["key"] == "q"
         assert len(result["frames"]) == 18
         for frame in result["frames"]:
             if checks == "colors":
-                # xterm-256color in local WSL supports exact mutable colors. These
-                # are the specified RGB values in curses' 0..1000 channel units,
-                # independent of whichever private slots and pairs are allocated.
-                assert frame["mutable_256"]
+                # Mutable-color support must still use the same fixed palette.
+                assert frame["colors"] >= 256
                 assert frame["blank_character"] == ord(" ")
-                text, amber, background = [831, 867, 922], [1000, 643, 357], [31, 55, 94]
+                text, amber, background = 253, 215, 233
                 assert frame["waiting_label_color"]["foreground"] == text
                 expected = text if frame["stale"] else amber
                 assert frame["status_color"]["foreground"] == expected

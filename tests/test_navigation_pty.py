@@ -39,6 +39,11 @@ def forbidden(*args, **kwargs):
 
 socket.getaddrinfo = socket.create_connection = forbidden
 socket.socket.connect = socket.socket.connect_ex = forbidden
+
+def forbidden_palette_write(*args, **kwargs):
+    raise AssertionError('Fixed palettes must not redefine terminal colors')
+curses.init_color = forbidden_palette_write
+
 models = tuple(ModelConfig(kind.value, kind, kind.value.upper(), 'http://offline.invalid:8000')
                for kind in ModelType)
 objects = []
@@ -85,14 +90,15 @@ class ObservedTerminal:
         if self.pending is None:
             return
         # Observe the real ncurses screen after rendering. Labels locate cells;
-        # inch/pair_content/color_content supply their actual RGBs.
+        # inch/pair_content supply the selected fixed-palette indices; the
+        # parent separately checks physical output never redefines the palette.
         def screen_colors(row, column):
             attribute = self.terminal._screen.inch(row, column)
             foreground, background = curses.pair_content(curses.pair_number(attribute))
             return {
                 'character': attribute & curses.A_CHARTEXT,
-                'foreground': None if foreground == -1 else curses.color_content(foreground),
-                'background': None if background == -1 else curses.color_content(background),
+                'foreground': foreground,
+                'background': background,
                 'dim': bool(attribute & curses.A_DIM),
             }
 
@@ -212,6 +218,9 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
         assert result["keys"] == ["down", "down", "left", "right", "up", "t", "t", "enter", "p", "q"]
         assert b"\x1b[?1049h" in captured and b"\x1b[?1049l" in captured
         assert b"\x1b[?25l" in captured and b"\x1b[?25h" in captured
+        assert b"\x1b]4;" not in captured
+        assert b"\x1b[38;5;111m" in captured and b"\x1b[38;5;117m" in captured
+        assert b"\x1b[48;5;233m" in captured
         mouse_modes = {b"1000", b"1002", b"1003", b"1006"}
         assert not any(mouse_modes.intersection(parameters.split(b";"))
                        for parameters in re.findall(rb"\x1b\[\?([0-9;]+)h", captured))
@@ -226,19 +235,19 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
                 assert frame["theme"] == [f"Theme: {'Moonlight' if step == 6 else 'Hologram'} [t]"]
                 continue
             if checks == "colors":
-                # Requirement RGBs expressed literally on ncurses' 0..1000 scale:
-                # #7DDFFF/#C6A7FF or #7B9FFF/#E570D0; common #8A9DB5/#080E18.
-                accents = {"primary": [490, 875, 1000], "secondary": [776, 655, 1000]} if step == 6 else {
-                    "primary": [482, 624, 1000], "secondary": [898, 439, 816],
+                # Assert fixed indices, not ncurses' bookkeeping RGBs: an
+                # emulator can ignore OSC 4 while that table reports success.
+                accents = {"primary": 117, "secondary": 183} if step == 6 else {
+                    "primary": 111, "secondary": 170,
                 }
                 for role, character in (("primary", "O"), ("secondary", "J"), ("muted", ":")):
                     color = frame["colors"][role]
                     assert color["character"] == ord(character)
-                    assert color["foreground"] == (accents[role] if role in accents else [541, 616, 710])
-                    assert color["background"] == [31, 55, 94]
+                    assert color["foreground"] == (accents[role] if role in accents else 247)
+                    assert color["background"] == 233
                     assert color["dim"] is False
                 assert frame["colors"]["blank"]["character"] == ord(" ")
-                assert frame["colors"]["blank"]["background"] == [31, 55, 94]
+                assert frame["colors"]["blank"]["background"] == 233
                 continue
             assert frame["detail_name"] == [kind.upper()]
             assert frame["detail_type"] == []
