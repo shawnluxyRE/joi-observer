@@ -15,7 +15,7 @@ RGB = tuple[int, int, int]
 class Palette:
     """不可变颜色值；RGB 是三个 0..255 的整数，不是 curses 的 0..1000。
 
-    name 为小写主题标识。六个前景角色共用 background；amber 只供绘制层
+    name 为小写主题标识。前景角色共用 background；amber 只供绘制层
     已判定的新鲜正等待数量与 QUEUED 使用，不在此层检查文字或监控状态。
     track 是硬件未填充分段的独立深灰，末尾默认值兼容旧七参数构造。
     """
@@ -28,13 +28,14 @@ class Palette:
     secondary: RGB
     amber: RGB
     track: RGB = (62, 74, 91)
+    brand_shadow: RGB = (118, 118, 118)
 
 
 def palette_for(name: str) -> Palette:
     """纯查询主题，不初始化终端，无 I/O；只接受 hologram / moonlight。
 
     公共 background/text/muted/amber 分别为 #080E18/#D4DDEB/#8A9DB5/#FFA45B；
-    track 为独立的 #3E4A5B，不改变次要文字 muted。
+    track 为硬件未填充段的 #3E4A5B，brand_shadow 为像素品牌影线的 #767676。
     Hologram primary/secondary 为 #7B9FFF/#E570D0，Moonlight 为
     #7DDFFF/#C6A7FF。未知名称（含大小写变体、空白、非字符串）抛 ValueError，
     不静默回退，以免标题和实际颜色不一致。返回值不共享可变容器。
@@ -49,6 +50,7 @@ def palette_for(name: str) -> Palette:
 
 
 _ROLES = ("text", "muted", "primary", "secondary", "amber", "track")
+_BRAND_SHADOW_PAIR = 7
 
 
 def _nearest_xterm(rgb: RGB, *, gray_only: bool = False) -> int:
@@ -82,9 +84,10 @@ class CursesTheme:
 
         支持颜色时 start_color 一次。COLORS>=256、COLOR_PAIRS>=7 时统一在
         标准xterm色表中按RGB平方距离选最近色，同距取较小索引。次要文字
-        muted仅使用232..255中性灰阶，其他角色使用16..255。
+        muted及像素品牌影线使用232..255中性灰阶，其他角色使用16..255。
         不查询或修改调色板，也不以 can_change_color 的能力声明选择改色路径。
-        色对共享背景，固定色不额外加 A_DIM/A_BOLD；切换复用六个色对编号。
+        色对共享背景，固定色不额外加 A_DIM/A_BOLD。六个基础角色使用色对1..6。
+        固定256色且色对7可用时，用它显示243号品牌影线；否则影线复用muted。
 
         8..255色：背景黑、正文白、次要白加
         A_DIM，主色 Hologram 蓝/Moonlight 青；辅色 Hologram 紫，Moonlight
@@ -136,6 +139,12 @@ class CursesTheme:
                     # user-selected approximation is terminal bright magenta;
                     # do not alter TERM or the fixed 256-color palette.
                     styles["secondary"] |= api.A_BOLD
+            if self._mode == "fixed" and api.COLOR_PAIRS > _BRAND_SHADOW_PAIR:
+                shadow = _nearest_xterm(palette.brand_shadow, gray_only=True)
+                api.init_pair(_BRAND_SHADOW_PAIR, shadow, background)
+                styles["brand_shadow"] = api.color_pair(_BRAND_SHADOW_PAIR)
+            else:
+                styles["brand_shadow"] = styles["muted"]
             self._styles = styles
             self._name = name
         except api.error:
@@ -144,7 +153,7 @@ class CursesTheme:
             self._mode = "monochrome"
 
     def style(self, role: str) -> int:
-        """返回 text/muted/primary/secondary/amber/track 的 curses 属性。
+        """返回基础角色或 brand_shadow 的 curses 属性。
 
         未知角色按 text；未激活或 restore 后为0。不读屏幕或按文字猜角色，
         不进行初始化。调用者用 style('text') 给空白区域设置统一背景。

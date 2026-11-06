@@ -1,17 +1,19 @@
 """硬件纯展示入口；复用Frame的区域和语义颜色。
 
 无采集器、日志或可变State引用；只接受不可变值。所有行沿用layout.py既定
-Region，不改变最小尺寸、半页分界、Storage三行、Docker剩余高度。
+Region，按同一帧的分组和可用高度绘制。
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+from itertools import pairwise
 import re
 import unicodedata
 
 from joi_observer.config import AppConfig
 from joi_observer.data.models import Metric, ObjectSnapshot, StateSnapshot
-from joi_observer.tui.layout import Region, TextCell, ViewSelection, _clip, format_metric
+from joi_observer.tui.layout import GpuGroups, Region, TextCell, ViewSelection, _clip, format_metric, grouped_gpu_rows
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,94 @@ def capacity_text(used: int | None, total: int | None) -> tuple[str, str]:
     return text(used), text(total)
 
 
+def _configured_gpus(snapshot: StateSnapshot, config: AppConfig) -> dict[str, set[str | None]]:
+    """Keep an unresolved alias as None so a partial match cannot claim a TP size."""
+    aliases: dict[str, str | None] = {}
+    for obj in snapshot.objects:
+        if obj.key.collector != "gpu":
+            continue
+        card = obj.key.object_id
+        if _UUID.fullmatch(card):
+            aliases[card] = card
+        value = _value(obj, "index")
+        if not obj.stale and obj.sampled_at is not None and type(value) is int and value >= 0:
+            index = format_metric(Metric("index", value))
+            aliases[index] = None if index in aliases else card
+
+    return {
+        model.id: {aliases.get(alias) for alias in model.gpu_ids}
+        for model in config.models
+    }
+
+
+def _selected_gpus(by_model: dict[str, set[str | None]], view: ViewSelection) -> set[str | None]:
+    if view.model_id is None:
+        return next(iter(by_model.values()), set())
+    return by_model.get(view.model_id, set())
+
+
+def _gpu_range(numbers: list[int]) -> str:
+    """Compact actual device indices, including sparse sets such as 0–2, 5."""
+    runs: list[tuple[int, int]] = []
+    for number in sorted(numbers):
+        if runs and runs[-1][1] + 1 == number:
+            runs[-1] = (runs[-1][0], number)
+        else:
+            runs.append((number, number))
+    labels = []
+    for first, last in runs:
+        label = format(Decimal(first), "f")
+        if last != first:
+            label += "–" + format(Decimal(last), "f")
+        labels.append(label)
+    return "GPU " + ", ".join(labels)
+
+
+def _gpu_group_headers(gpu_slots: tuple[str, ...], by_model: dict[str, set[str | None]],
+                       snapshot: StateSnapshot) -> dict[int, tuple[str, str]]:
+    """Keep every model's span intact in display order, including overlaps."""
+    positions = {card: index for index, card in enumerate(gpu_slots)}
+    assigned: set[str | None] = set()
+    shared: set[str | None] = set()
+    crossed: set[int] = set()
+    for cards in by_model.values():
+        shared.update(assigned & cards)
+        assigned.update(cards)
+        indices = [positions[card] for card in cards if card in positions]
+        if indices:
+            crossed.update(range(min(indices), max(indices)))
+
+    numbers = {}
+    for obj in snapshot.objects:
+        card = obj.key.object_id
+        if obj.key.collector != "gpu" or card not in positions:
+            continue
+        number = _value(obj, "index")
+        if type(number) is int and number >= 0:
+            numbers[card] = number
+    counts = Counter(numbers.values())
+    identifiable = {card for card, number in numbers.items() if counts[number] == 1}
+    boundaries = [0] + [i + 1 for i in range(len(gpu_slots)) if i not in crossed]
+    headers = {}
+    for start, stop in pairwise(boundaries):
+        members = set(gpu_slots[start:stop])
+        if not (members <= assigned and members <= identifiable):
+            continue
+        badge = ""
+        if members & shared:
+            badge = "SHARED"
+        elif members in by_model.values():
+            badge = f"TP {len(members)}"
+        headers[start] = _gpu_range([numbers[card] for card in members]), badge
+    return headers
+
+
+def resolve_gpu_groups(snapshot: StateSnapshot, config: AppConfig, gpu_slots: tuple[str, ...],
+                       view: ViewSelection) -> GpuGroups:
+    by_model = _configured_gpus(snapshot, config)
+    return GpuGroups(_gpu_group_headers(gpu_slots, by_model, snapshot), _selected_gpus(by_model, view))
+
+
 def linked_gpu_ids(
     snapshot: StateSnapshot, config: AppConfig, view: ViewSelection,
 ) -> tuple[str, ...]:
@@ -84,23 +174,9 @@ def linked_gpu_ids(
     '04'不视为'4'，UUID前缀/型号/占用均不猜测；同卡被多种标识命中也只返回一次。
     失败卡的过期index不得继续高亮；明确UUID映射仍有效，不把局部失败猜作换卡。
     """
-    selected = view.model_id if view.model_id is not None else (config.models[0].id if config.models else None)
-    model = next((model for model in config.models if model.id == selected), None)
-    if model is None or not model.gpu_ids:
-        return ()
-    cards = tuple(obj for obj in snapshot.objects if obj.key.collector == "gpu")
-    indices: dict[str, list[str]] = {}
-    for obj in cards:
-        value = _value(obj, "index")
-        if not obj.stale and obj.sampled_at is not None and type(value) is int and value >= 0:
-            indices.setdefault(format_metric(Metric("index", value)), []).append(obj.key.object_id)
-    linked = {obj.key.object_id for obj in cards
-              if _UUID.fullmatch(obj.key.object_id) and obj.key.object_id in model.gpu_ids}
-    for alias in model.gpu_ids:
-        matches = indices.get(alias, ())
-        if len(matches) == 1:
-            linked.add(matches[0])
-    return tuple(obj.key.object_id for obj in cards if obj.key.object_id in linked)
+    linked = _selected_gpus(_configured_gpus(snapshot, config), view)
+    return tuple(obj.key.object_id for obj in snapshot.objects
+                 if obj.key.collector == "gpu" and obj.key.object_id in linked)
 
 
 def hardware_cells(
@@ -110,6 +186,7 @@ def hardware_cells(
     *,
     gpu_slots: tuple[str, ...],
     view: ViewSelection = ViewSelection(),
+    gpu_groups: GpuGroups | None = None,
 ) -> tuple[TextCell, ...]:
     """生成GPU/Host/Storage内部内容及预留状态，不画边框、不触碰其他区域。
 
@@ -117,13 +194,14 @@ def hardware_cells(
     全屏GPU宽floor((columns-1)*3/5)，一列间隔，右侧使用余宽；Host外壳6行，
     Storage外壳6行且内容3行。最小高度、GPU槽数预算与下半页分界不变。
 
-    每个区域内容边界L=column+2，R=column+width-2（不含R）。GPU每槽3行，
-    首行row+1+3*i：编号最多10格；显存槽[L+12,R-12)，温度槽[R-10,R)，
+    每个区域内容边界L=column+2，R=column+width-2（不含R）。后续组头上方独占一行横线。
+    有组头时标题下固定留一行，再放设备信息和条；有余高时在组内设备间留一行；
+    无组头时从槽首行开始放设备信息和条。方括号编号最多10格；显存槽[L+12,R-12)，温度槽[R-10,R)，
     数值均右对齐。编号后至少一空格，名称只占显存之前的余位，可为空；
     有名称时和编号/显存至少各隔一空格，不能覆盖显存或温度。
     次行：GPU条从L起，占floor((width-4)/2)格，百分比紧随条后的一格空白；
-    功率在同一[R-10,R)组右对齐，条/百分比不可碰该组。第三行只在[R-5,R)
-    保留五格STALE，健康留空；不将状态挤入设备首行。未知身份用GPU —，
+    功率在同一[R-10,R)组右对齐，条/百分比不可碰该组。有组头时STALE放在功率槽左侧；
+    无组头时STALE使用槽第三行右端。未知身份用[—]，
     不拿UUID假装编号。极长编号只裁自身10格；数值按下述有界显示规则处理。
     只有关联卡的编号/填充条/百分比用primary，其余同位置muted；名称text，
     显存/功率muted，温度text，轨道track。功率的正常文本为数值+' W'，
@@ -158,7 +236,7 @@ def hardware_cells(
     保留指数和单位，不修改原始指标或capacity_text返回值；仍放不下时，
     只在该槽显示明确的…，不能截成看似较小的完整数或冒充—/0/N/A。
     先保留身份/标签/状态及分隔，再安排数值槽；巨大整数不得先转float溢出。
-    兼容原通用快照：无index字段的旧GPU对象/纯十进制空槽保留GPU {key}标签
+    兼容原通用快照：无index字段的旧GPU对象/纯十进制空槽使用方括号编号
     及次行通用name: value指标、首行旧状态槽，host/local保留通用字段和STALE；有index模板即走新契约，
     即使其值None也不能退回UUID标签。旧路径key兼容读取（序号key优先）。这些兼容
     不创建生产来源，生产仅生成具名指标schema，不能将无UUID的卡作为新发现设备。
@@ -217,25 +295,53 @@ def hardware_cells(
             empty = "No NVIDIA GPUs" if (inventory is not None and not inventory.stale
                 and inventory.sampled_at is not None and _value(inventory, "device_count") == 0) else "—"
             put(gpu, gpu.row + 1, gpu.column + 2, empty, "muted", gpu.width - 4)
-        linked = set(linked_gpu_ids(snapshot, config, view))
+        if gpu_groups is None:
+            gpu_groups = resolve_gpu_groups(snapshot, config, gpu_slots, view)
+        headers = gpu_groups.headers
+        left, right = gpu.column + 2, gpu.column + gpu.width - 2
+        first_header = next(iter(headers), None)
+        cursor = gpu.row + 1
+        bottom = gpu.row + gpu.height - 1
+        spare_rows = bottom - cursor - grouped_gpu_rows(len(gpu_slots), len(headers))
         for index, object_id in enumerate(gpu_slots):
-            row = gpu.row + 1 + 3 * index
-            if row + 2 >= gpu.row + gpu.height - 1:
+            row = cursor
+            has_header = index in headers
+            divider = has_header and index != first_header
+            if has_header:
+                header_row = cursor + int(divider)
+                row = header_row + 2
+            elif headers and spare_rows > 0:
+                row += 1
+                spare_rows -= 1
+            cursor = row + (2 if headers else 3)
+            if cursor > bottom:
                 break
+            if has_header:
+                if divider:
+                    put(gpu, header_row - 1, left, "─" * (right - left), "muted")
+                title, badge = headers[index]
+                badge_start = right - len(badge)
+                title_end = badge_start - 1 if badge else right
+                width = title_end - left
+                if len(title) > width:
+                    title = title[:max(0, width - 1)] + "…"
+                put(gpu, header_row, left, title, "text")
+                put(gpu, header_row, badge_start, badge, "secondary")
             obj = objects.get(("gpu", object_id))
             metrics = {metric.name: metric for metric in obj.metrics} if obj else {}
-            legacy = (obj is not None and "index" not in metrics) or (
-                obj is None and re.fullmatch(r"(?:0|[1-9][0-9]*)", object_id) is not None)
-            role = "primary" if object_id in linked else "muted"
+            legacy_number = re.fullmatch(r"(?:0|[1-9][0-9]*)", object_id) is not None
+            legacy = (obj is not None and "index" not in metrics) or (obj is None and legacy_number)
+            stale = bool(obj and obj.stale)
+            role = "primary" if object_id in gpu_groups.linked else "muted"
+            number = format_metric(metrics.get("index", Metric("index", None)))
+            if legacy and legacy_number:
+                number = object_id
+            label = "[" + (number if len(number) <= 8 else number[:7] + "…") + "]"
+            put(gpu, row, left, label, role, 10)
             if legacy:
-                put(gpu, row, gpu.column + 2, f"GPU {object_id}", role, gpu.width - 11)
                 put(gpu, row + 1, gpu.column + 2, _generic_metrics(obj), "muted", gpu.width - 4)
-                status(gpu, row, bool(obj and obj.stale))
+                status(gpu, row, stale)
             else:
-                left, right = gpu.column + 2, gpu.column + gpu.width - 2
-                number = format_metric(metrics.get("index", Metric("index", None)))
-                label = _clip(f"GPU {number}", 10)
-                put(gpu, row, left, label, role, 10)
                 memory_parts = _capacity_parts(_value(obj, "memory_used_bytes"),
                                                _value(obj, "memory_total_bytes"),
                                                max(0, right - left - 24))
@@ -250,7 +356,10 @@ def hardware_cells(
                 power = _bounded_number(_value(obj, "power_w"), " W", 10)
                 right_parts(gpu, row, right, ((temperature, "text"),))
                 right_parts(gpu, row + 1, right, ((power, "muted"),))
-                status(gpu, row + 2, bool(obj and obj.stale))
+                if not headers:
+                    status(gpu, row + 2, stale)
+                elif stale:
+                    put(gpu, row + 1, right - 16, "STALE")
 
     host = by_region.get("host")
     if host is not None:

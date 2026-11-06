@@ -1,7 +1,7 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001、REQ-005、REQ-006，需求说明 v1.24；AC-101～106、AC-110、AC-111、AC-113、AC-114、AC-501～504；共享布局约束关联 AC-202/203/207/301/304/605/607/608/613/614/616。
-- 修订：v1.21，2026-11-05；集中维护启动、终端生命周期、整页几何、页眉与帧调度；模块内部呈现和配色规则改为引用所属设计，行为不变。
+- 修订：v1.23，2026-11-06。主机与时钟下方增加一行全宽分隔线，Storage 与 Docker 上下相邻。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
 - 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
 - 当前阶段：REQ-006布局、Frame主题、帧时钟和历史尺度接线已由R4实现。输入/绘制公平性沿用AC-603/609/612与原始帧相位；本轮按用户反馈同步设备标签、发行版本与显示细节。R5-006-001/002返修及当前复验证据见[REQ-006 R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)及[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)。
@@ -144,40 +144,45 @@ q 使 UI 正常返回，组合根通知/停止 Monitor；UI 内部异常同样�
 ```text
 lower_rows = H // 2
 upper_rows = H - lower_rows
-hardware_rows = upper_rows - 2
-minimum_rows = max(36, 2 * (2 + max(3 * max(gpu_count, 1) + 2, 16)) - 1)
-docker_capacity = max(0, upper_rows - 18)
+grouped_rows = 2 * gpu_count + 2 * gpu_group_count + max(0, gpu_group_count - 1)
+hardware_minimum = max(3 * gpu_count + 2, grouped_rows + 2, 15)
+minimum_rows = max(36, 2 * (3 + hardware_minimum) - 1)
+header_rows = 6 if upper_rows >= hardware_minimum + 6 else 3
+hardware_rows = upper_rows - header_rows
+docker_row = header_rows + 12
+docker_capacity = max(0, hardware_rows - 15)
 ```
 
-上半区包含2行页眉；硬件最低高度取GPU与右侧面板所需高度的较大值。GPU每卡仍3行、面板边框另2行；右侧最低16行现在由Host Resources 6行、Storage 6行、间距1行、Docker外壳3行组成。Host增加的第4内容行使用原Host/Storage之间的1行留白，两面板相邻而不额外占行。Docker 允许零内容行，不因需要显示某个容器而增加最小高度。下半区最低 18 行，由服务窗口至少 16 行、独立服务切换位 1 行、键位 1 行组成。页高为奇数时，多出的 1 行留给上半区。
+上半区为每张 GPU 预算 3 行，另加 2 行边框。`gpu_group_count` 是本帧实际显示的 GPU 组头数。如果各组的设备、标题与组间横线合计需要更多行，按实际需要确定高度。右侧至少需要 15 行，包括 Host Resources 6 行、Storage 6 行、Docker 外壳 3 行。Storage 底边的下一行就是 Docker 顶边。能再容纳 6 行页眉时显示像素字标，其余可用尺寸显示 3 行紧凑页眉。奇数页高多出的一行归上半区。下半区至少 18 行，包括服务窗口 16 行、服务入口和键位提示各 1 行。
 
-| GPU 槽数 | 最小尺寸（与挂载点/容器数量无关） |
-| --- | --- |
-| 0～4 | 120×36 |
-| 5（主要场景） | 120×37 |
-| 6 | 120×43 |
-| 10 | 120×67 |
+| GPU 槽数（未注明时按无组头计算） | 最小尺寸 | 首次显示完整字标的尺寸 |
+| --- | --- | --- |
+| 0～4 | 120×36 | 120×41 |
+| 5（四卡组加单卡组） | 120×39 | 120×45 |
+| 5（五个独立单卡组） | 120×57 | 120×63 |
+| 6 | 120×45 | 120×51 |
+| 10 | 120×69 | 120×75 |
 
-保留 `required_size(gpu_count, mount_count, container_count)` 的关键字参数签名，三个计数都必须是非负整数，bool 和小数非法；后两项仅校验输入，不参与高度计算。容器不设固定数量上限；挂载点第 4 项起不增加尺寸，由配置层忽略采集且展示层不绘制。
+`required_size` 接受 `gpu_count`、`mount_count`、`container_count` 和可选的 `gpu_group_count`（默认 0）。各计数均为非负整数，组数至多等于 GPU 槽数。挂载点和容器数量仅校验输入，不参与高度计算。容器不设固定数量上限；挂载点第 4 项起不增加尺寸，由配置层忽略采集且展示层不绘制。
 
 正常 Frame 固定返回以下 **8 个命名区域**；`Region` 描述矩形，可有或无边框。宽度分配沿用 GPU 左、主机右和服务全宽的结构。
 
 | Region.name | 起始行 | 高度 | 说明 |
 | --- | --- | --- | --- |
-| `header` | 0 | 2 | 品牌、主题、主机和当前时间 |
-| `gpu` | 2 | upper_rows − 2 | GPU 所有已知槽位，上半区内 |
-| `host` | 2 | 6 | Host Resources四行内容：CPU标签/数值、CPU条、RAM标签/容量、RAM条；无额外下间距 |
-| `storage` | 8 | 6 | 内容固定在第 10～12 行；第 14 行为右侧间距 |
-| `docker` | 15 | upper_rows − 15 | 内容从第 17 行起，到 upper_rows − 2；最后一行为边框 |
+| `header` | 0 | header_rows | 品牌及主题置顶，倒数第二行显示主机信息和时间，末行绘制全宽分隔线 |
+| `gpu` | header_rows | hardware_rows | GPU 所有已知槽位，上半区内 |
+| `host` | header_rows | 6 | Host Resources四行内容：CPU标签/数值、CPU条、RAM标签/容量、RAM条；无额外下间距 |
+| `storage` | header_rows + 6 | 6 | 在区域内第 2～4 行（零基）绘制 3 个挂载点，第 5 行是 Storage 底边 |
+| `docker` | docker_row | upper_rows − docker_row | 容器从区域内第 2 行（零基）起依次排列，最后一行为边框 |
 | `service` | upper_rows | lower_rows − 2 | 服务窗口标题、边框、模型、指标、历史和内部留白 |
 | `service_switch` | H − 2 | 1 | 独立的 vLLM / WebUI 切换位，WebUI 禁用 |
 | `footer` | H − 1 | 1 | 键位提示 |
 
 ### HTML 对齐的字符适配
 
-页眉保持两行，不增加预算外留白。row0 左侧为 `Joi::Observer`，右侧显示当前 `Theme: {name} [t]`，按实际文本宽度使两种主题名称的右端都等于全页列数 C。Theme 为不可点击的状态说明；配色由[主题角色表](theme.md#color-roles)定义，交互见[导航](navigation.md)。
+完整页眉左上角的 `Joi::Observer` 字标占 59 列 × 4 行。字模采用细线投影、修订的 J 下钩、原版 s 和原版 v（含完整右下影线）。字符分色由[主题设计](theme.md#color-roles)定义。完整页眉在第 4 行（零基）显示主机信息和时钟，第 5 行绘制横线。紧凑页眉在第 0 行显示文字品牌，第 1 行显示主机信息和时钟，第 2 行绘制横线。两种横线均使用 muted 角色，以 `─` 填满第 0 列至最后一列，硬件面板从横线的下一行开始。两种布局的主题名称均位于第 0 行右缘，按 `t` 切换。
 
-row1沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，紧随` / `及HostInfo.system发行版本。组合根`_local_host_info()`只在启动装配时读取本地os-release：按`/etc/os-release`、`/usr/lib/os-release`顺序尝试，打开或读取发生OSError时尝试下一候选；首个读取成功的文件一次解析，缺字段或空文件不与低优先级文件合并。只使用文件实际提供的字段，优先非空PRETTY_NAME，缺失或空值时组合NAME与VERSION_ID，名称/版本缺失或空值分别用Ubuntu/—。显式提供的字面值Linux是有效名称，不能当成库默认值丢弃；空文件、全部候选读取失败或所选文件UTF-8解码失败显示Ubuntu —。解析沿用标准库已核对的字段赋值、引号及五类转义规则，不执行shell、不使用标准库注入的Linux默认字段或全局缓存，不新增依赖。该读取不使用platform.release内核版本、不读取DMI、不发起网络探测；布局自身仍为纯函数，显式HostInfo注入接口保持。合计左区最多`C-19-2`列，按终端显示宽度裁切；右侧19列固定为传入本机aware墙钟的`YYYY-MM-DD HH:MM:SS`，右端同为C，中间至少空两格。不把时间转换成UTC，不追加设计稿模拟的CST，不使用采样时间。控制字符和双向控制符先净化，宽字符/组合字符不得穿越时钟保护区。
+主机信息行沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，紧随` / `及HostInfo.system发行版本。组合根`_local_host_info()`只在启动装配时读取本地os-release：按`/etc/os-release`、`/usr/lib/os-release`顺序尝试，打开或读取发生OSError时尝试下一候选；首个读取成功的文件一次解析，缺字段或空文件不与低优先级文件合并。只使用文件实际提供的字段，优先非空PRETTY_NAME，缺失或空值时组合NAME与VERSION_ID，名称/版本缺失或空值分别用Ubuntu/—。显式提供的字面值Linux是有效名称，不能当成库默认值丢弃；空文件、全部候选读取失败或所选文件UTF-8解码失败显示Ubuntu —。解析沿用标准库已核对的字段赋值、引号及五类转义规则，不执行shell、不使用标准库注入的Linux默认字段或全局缓存，不新增依赖。该读取不使用platform.release内核版本、不读取DMI、不发起网络探测；布局自身仍为纯函数，显式HostInfo注入接口保持。合计左区最多`C-19-2`列，按终端显示宽度裁切；右侧19列固定为传入本机aware墙钟的`YYYY-MM-DD HH:MM:SS`，右端同为C，中间至少空两格。不把时间转换成UTC，不追加设计稿模拟的CST，不使用采样时间。控制字符和双向控制符先净化，宽字符/组合字符不得穿越时钟保护区。
 
 面板标题复用上边框行，保持既有内缩，不增加布局高度。正式标题与颜色角色、HTML 边框/表面的采用范围统一见[主题设计](theme.md#color-roles)。
 
@@ -189,7 +194,7 @@ row1沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，紧随` 
 
 固定半页和最低终端尺寸优先；统一字体/字符边框替代浏览器字号及像素边框，不以多行ASCII大数字消耗历史高度。逐模型状态、GPU状态位、真实单位与未知值的保留是可靠监控需要的适配；不为模仿HTML而移除这些字段或复制模拟参数。不能以“终端适配”为由继续保留可以实现但未同步的数值左排、三列负载或两列同行指标。
 
-两半之间不另加预算外行。H=44/48/42 时 Docker 内容容量分别为 4/6/3 行；H=36 且 GPU 槽数不超过 4 时容量为 0。H=37 的主要 5 GPU 场景中，Docker 可见 1 行，下半区仍有完整 18 行；最小尺寸并不承诺显示所有容器。
+以 5 张 GPU 为例，H=42 时使用紧凑页眉，Docker 可见 3 项。H=43 或 44 时仍使用紧凑页眉，可见 4 项。H=45 时切至完整页眉，可见 2 项。H=48 时可见 3 项。模型窗口、服务入口与键位提示在这些尺寸下始终合计占 H//2 行。
 
 GPU 槽位身份与生命周期见[硬件发现设计](hardware.md#gpu-发现调度与资源生命周期)。本模块按已知槽位数量计算容量；无已知 GPU 时按一个空态槽分配，首次发现后重新计算最低尺寸。
 
@@ -201,7 +206,7 @@ Docker 条目内部名称、状态槽及失败替换规则统一见[Docker 行�
 
 模型总数不增加页面最小高度；模型列表的可见窗口由[vLLM 固定槽位](vllm.md#vllm-layout)和[导航](navigation.md)协调。所有内容必须限制在自己的区域内，不能仅依赖整屏裁切，否则 Docker 末尾项会覆盖下半区。
 
-仅低于基础尺寸时显示 `Enlarge terminal to at least 120x37`（数字随 GPU 容量）和 `q Quit`；Docker 溢出不触发该提示，也不触发局部提示。极小终端只裁切提示，q 仍可退出；恢复尺寸后立即重绘。Monitor 不因缩放、隐藏、主题或模型选择改变采集节奏。长名称按终端显示宽度截断而不换行；颜色和模型面板分别遵循[主题](theme.md)与[vLLM](vllm.md#vllm-view)设计。
+仅低于基础尺寸时显示 `Enlarge terminal to at least 120x39`（数字随 GPU 容量）和 `q Quit`；Docker 溢出不触发该提示，也不触发局部提示。极小终端只裁切提示，q 仍可退出；恢复尺寸后立即重绘。Monitor 不因缩放、隐藏、主题或模型选择改变采集节奏。长名称按终端显示宽度截断而不换行；颜色和模型面板分别遵循[主题](theme.md)与[vLLM](vllm.md#vllm-view)设计。
 
 ## 只读呈现与诊断隔离
 
@@ -217,7 +222,7 @@ Docker 条目内部名称、状态槽及失败替换规则统一见[Docker 行�
 | --- | --- | --- |
 | `main` / `CliDependencies` | `tests/test_cli.py`：直接启动、缺配置、显式路径、非法配置、重新读取配置、非TTY、帮助、日志初始化失败、退出清理 | AC-104/105/110/111/113 |
 | `required_size` | `tests/test_tui.py`：GPU容量、非负整数边界、容器不限量且不增高、挂载点尾项不增高 | AC-106 |
-| `compose_frame` / `format_metric` | 标题/值槽/STALE、偶数及奇数半页、8区边界、Storage固定及无补位、Docker 4→6→3行/零行/空态/无溢出提示、失败恢复稳定 | AC-101/106/110/207/304/607/608 |
+| `compose_frame` / `format_metric` | 标题/值槽/STALE、偶数及奇数半页、8区边界、Storage固定及无补位、两种页眉的 Docker 可见前缀、零行与空态、失败恢复稳定 | AC-101/106/110/207/304/607/608 |
 | HTML外壳 / `compose_frame` | `tests/test_html_shell_layout.py`：两主题/多宽右边缘、主机与非UTC时钟分色、Unicode/ANSI保护、完整面板标题角色、7种Docker生命周期/未知/STALE固定槽、容量0与空配置 | REQ-006排版与颜色契约 |
 | `ObserverApp.run` / `TerminalPort` | 初次绘制、q、部分进入异常、绘制异常、Ctrl+C、小窗口退出、缩放恢复、键位只分派展示操作 | AC-103/104/106 |
 | `SessionViewActions` / 默认 `ObserverApp` | `tests/test_navigation.py`、`tests/test_navigation_app.py`、`tests/test_navigation_pty.py`：真实控制器、默认接线、只读采样隔离、失败/缩放保持、真实方向键、页脚与禁用入口 | AC-501～504 |
@@ -227,7 +232,7 @@ Docker 条目内部名称、状态槽及失败替换规则统一见[Docker 行�
 
 离线命令：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。配置解析与屏幕生成没有被替换；运行期/终端替身只隔离操作系统、驱动和终端。REQ-001～005已合并的采集/退出等非呈现行为继续回归；REQ-006当前实现与验证记录在R4/R5交接，R2记录只保留当时的未实现基线。REQ-002最初骨架/未接线记录同样保留为历史，不使用skip/xfail掩盖当前差异。
 
-现有PTY输入、终端恢复、最低尺寸、边界与缩放测试继续保留，涵盖奇偶半页、Storage/Docker区域和可见条目；返修后按影响范围重跑。当前整体观感已由用户在R5确认，GUI-006-001关闭，详见R5交接。历史`verify_pty.py` / `verify_uv_install.py`中以5容器抬高到120×38的版本不再适用：无GPU最低120×36，5GPU最低120×37；这些旧JSON不改写为新通过，新证据须注明当前需求及源码版本。`tests/test_terminal_pty.py`的Esc/方向键时限测试只针对终端适配器，不因布局改写。上述验证不授权连接服务器。
+现有PTY输入、终端恢复、最低尺寸、边界与缩放测试继续保留，涵盖奇偶半页、Storage/Docker区域和可见条目；返修后按影响范围重跑。当前整体观感已由用户在R5确认，GUI-006-001关闭，详见R5交接。历史`verify_pty.py` / `verify_uv_install.py`中以5容器抬高到120×38的版本不再适用：无GPU最低120×36，5GPU最低120×39；这些旧JSON不改写为新通过，新证据须注明当前需求及源码版本。`tests/test_terminal_pty.py`的Esc/方向键时限测试只针对终端适配器，不因布局改写。上述验证不授权连接服务器。
 
 ## 修订说明
 

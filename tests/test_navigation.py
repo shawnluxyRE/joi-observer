@@ -183,7 +183,8 @@ def test_navigation_updates_type_units_history_and_gpu_roles_together():
         right = [cell for cell in frame.cells if service.row < cell.row < service.row + service.height - 1
                  and service.column + 30 <= cell.column < service.column + service.width - 2]
         detail = " ".join(cell.text for cell in right)
-        assert model.name in detail and model.base_url in detail
+        assert model.name in detail
+        assert [cell.text for cell in right if cell.row == service.row + 3] == [f":{8000 + index}"]
         if model.type == ModelType.CHAT:
             assert all(label in detail for label in ("DECODE / tok/s", "TTFT / s", "DECODE HISTORY / tok/s"))
             assert [cell.text for cell in right if cell.row == service.row + 10] == ["10", "20", "0.25", "25"]
@@ -192,9 +193,9 @@ def test_navigation_updates_type_units_history_and_gpu_roles_together():
             assert all(label in detail for label in ("RATE / seq/s", "Avg latency / s", "RATE HISTORY / seq/s"))
             assert [cell.text for cell in right if cell.row == service.row + 10] == ["0", "0.5", "0.75", "N/A"]
             assert "TTFT" not in detail and "DECODE" not in detail
-        labels = [(cell.text, cell.role) for cell in frame.cells if cell.text in {"GPU 0", "GPU 1"}]
+        labels = [(cell.text, cell.role) for cell in frame.cells if cell.text in {"[0]", "[1]"}]
         expected_roles = (("primary", "muted"), ("muted", "primary"), ("muted", "muted"))[index]
-        assert labels == list(zip(("GPU 0", "GPU 1"), expected_roles))
+        assert labels == list(zip(("[0]", "[1]"), expected_roles))
         history = [cell for cell in right if service.row + 13 <= cell.row <= service.row + service.height - 3]
         zeros = [cell.column for cell in history if cell.text == "·"]
         assert zeros == ([30] if index == 0 else [117])
@@ -207,8 +208,12 @@ def test_navigation_updates_type_units_history_and_gpu_roles_together():
         unit = "tok/s" if model.type == ModelType.CHAT else "seq/s"
         assert f"Scale ≤ {(10, 5, 1)[index]} {unit}" in detail
     assert all(frame.regions == frames[0].regions for frame in frames)
-    assert all([(cell.row, cell.column, cell.text) for cell in frame.cells if cell.text in {"GPU 0", "GPU 1"}]
-               == [(3, 2, "GPU 0"), (6, 2, "GPU 1")] for frame in frames)
+    first, second = (cell for cell in frames[0].cells if cell.text in {"[0]", "[1]"})
+    assert first.row < second.row
+    for frame in frames:
+        assert [(cell.row, cell.column, cell.text) for cell in frame.cells if cell.text in {"[0]", "[1]"}] == [
+            (first.row, 2, "[0]"), (second.row, 2, "[1]"),
+        ]
     assert (config, snapshot) == before
     actions.on_key("up")
     actions.on_key("up")
@@ -230,7 +235,7 @@ def test_refresh_missing_data_failure_and_recovery_do_not_move_selection():
         service = next(region for region in frame.regions if region.name == "service")
         detail = [cell for cell in frame.cells if service.row < cell.row < service.row + service.height - 1
                   and service.column + 30 <= cell.column < service.column + service.width - 2]
-        assert "↳ " + selected.base_url in {cell.text for cell in detail}
+        assert [cell.text for cell in detail if cell.row == service.row + 3] == [":8001"]
         assert ("STALE" in {cell.text for cell in detail}) is (snapshot is failed)
         assert actions.selection() == ViewSelection("embedding", "hologram")
         baseline_regions = baseline_regions or frame.regions

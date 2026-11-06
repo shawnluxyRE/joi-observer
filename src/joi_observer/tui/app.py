@@ -15,6 +15,7 @@ from joi_observer.tui.layout import Frame, HostInfo, TerminalSize, ViewSelection
 from joi_observer.tui.navigation import SessionViewActions
 from joi_observer.tui.theme import CursesTheme
 from joi_observer.tui.timing import FrameSchedule
+from joi_observer.tui.widgets import resolve_gpu_groups
 
 
 def _create_screen(curses_api, fd: int):
@@ -422,15 +423,18 @@ class ObserverApp:
                         if obj.key.collector == "gpu" and obj.key.object_id not in gpu_slots:
                             gpu_slots.append(obj.key.object_id)
                     view = self.actions.selection()
+                    slots = tuple(gpu_slots)
+                    groups = resolve_gpu_groups(snapshot, self.config, slots, view)
                     minimum = required_size(gpu_count=len(gpu_slots),
                                             mount_count=len(self.config.mount_points),
-                                            container_count=len(self.config.containers))
+                                            container_count=len(self.config.containers),
+                                            gpu_group_count=len(groups.headers))
                     if size.columns >= minimum.columns and size.rows >= minimum.rows:
                         self._history_columns = size.columns - 32
                     scales = self._history_scales.update(snapshot, now=now,
                                                          columns=self._history_columns)
                     frame = compose_frame(snapshot, self.config, size, self.host, self.wall_clock(),
-                                          gpu_slots=tuple(gpu_slots), view=view,
+                                          gpu_slots=slots, view=view, gpu_groups=groups,
                                           monotonic_now=now, history_scales=scales)
                     self.terminal.render(frame)
                     drew_frame = True

@@ -95,11 +95,9 @@ try:
                         if service.row < cell.row < service.row + service.height - 1
                         and cell.text.isascii() and cell.text.strip()
                     ],
-                    # Row 7 is now the Host border. Probe an actual ASCII blank:
-                    # narrow inch() cannot separate a Unicode glyph's high bits
-                    # from color attributes, so it is not a border-color oracle.
-                    'blank_color': color(0, 20),
-                    'blank_character': terminal._screen.inch(0, 20) & curses.A_CHARTEXT,
+                    # The gap between the wordmark and Theme is an ASCII blank.
+                    'blank_color': color(0, 70),
+                    'blank_character': terminal._screen.inch(0, 70) & curses.A_CHARTEXT,
                     'colors': curses.COLORS,
                 })
     ready.touch()

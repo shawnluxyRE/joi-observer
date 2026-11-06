@@ -67,7 +67,8 @@ def test_cpu_storage_fixed_decimal_preserves_rounding_roles_and_gpu_percent(perc
     cells = rendered(*objects)
     assert text(cells, 3, 78, 118).strip() == expected
     assert text(cells, 10, 74, 118).endswith("1 / 4 GiB · " + expected)
-    assert text(cells, 4, 36, 42).strip() == percentage_bar(percent, 33).text
+    device_row = next(cell.row for cell in cells if cell.text == "[0]")
+    assert text(cells, device_row + 1, 36, 42).strip() == percentage_bar(percent, 33).text
     grid = pixels(cells)
     assert {grid[3, column][1] for column in range(118 - len(expected), 117 if percent is not None else 118)} == {"text"}
     if percent is not None:

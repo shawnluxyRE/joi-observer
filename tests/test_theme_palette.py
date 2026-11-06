@@ -23,6 +23,7 @@ def test_palette_matches_neon_grid_roles(name, primary, secondary):
     assert palette.muted == (138, 157, 181)
     assert palette.amber == (255, 164, 91)
     assert palette.track == (62, 74, 91)
+    assert palette.brand_shadow == (118, 118, 118)
     assert palette.primary == primary
     assert palette.secondary == secondary
 

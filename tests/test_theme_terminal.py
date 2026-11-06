@@ -14,9 +14,9 @@ from joi_observer.tui.layout import Frame, TerminalSize, TextCell
 from joi_observer.tui.theme import CursesTheme
 
 
-ROLES = ("text", "muted", "primary", "secondary", "amber", "track")
+ROLES = ("text", "muted", "primary", "secondary", "amber", "track", "brand_shadow")
 COMMON_SLOTS = {
-    "text": 253, "muted": 247, "amber": 215, "track": 239,
+    "text": 253, "muted": 247, "amber": 215, "track": 239, "brand_shadow": 243,
 }
 ACCENT_SLOTS = {
     "hologram": {"primary": 111, "secondary": 170},
@@ -196,7 +196,7 @@ def test_fixed_colors_are_bounded_and_palette_is_untouched_across_two_switches(m
         before = tuple(api.events)
         theme.activate(name)
         assert tuple(api.events) == before
-    assert set(api.pairs) == set(range(1, 7))
+    assert set(api.pairs) == set(range(1, 8)) and api.pairs[7] == (243, 233)
     assert sum(event[0] == "start_color" for event in api.events) == 1
     before = tuple(api.events)
     theme.restore()
@@ -242,7 +242,8 @@ def test_fixed_256_colors_use_documented_nearest_xterm_slots(name, accents, colo
     api = RecordingCurses(colors=colors, mutable=mutable)
     theme = CursesTheme(api)
     theme.activate(name)
-    expected = dict(text=253, muted=247, primary=accents[0], secondary=accents[1], amber=215, track=239)
+    expected = dict(text=253, muted=247, primary=accents[0], secondary=accents[1],
+                    amber=215, track=239, brand_shadow=243)
     for role, foreground in expected.items():
         assert api.pair_for(theme.style(role)) == (foreground, 233)
         assert not theme.style(role) & api.A_DIM
@@ -280,6 +281,7 @@ def test_basic_colors_keep_theme_accents_distinct_and_share_black_background(col
         for role, foreground in expected.items():
             assert api.pair_for(theme.style(role)) == (foreground, api.COLOR_BLACK)
         assert theme.style("muted") & api.A_DIM
+        assert theme.style("brand_shadow") == theme.style("muted")
         assert not theme.style("text") & api.A_DIM
         assert bool(theme.style("secondary") & api.A_BOLD) == (name == "moonlight")
         assert theme.style("track") & api.A_BOLD
@@ -308,13 +310,19 @@ def test_insufficient_color_capability_preserves_monochrome_operation(settings):
 
 
 @pytest.mark.parametrize("colors", (8, 256))
-def test_seven_pair_capacity_is_sufficient_for_all_six_foreground_roles(colors):
-    api = RecordingCurses(colors=colors, pairs=7)
+@pytest.mark.parametrize("capacity", (7, 8))
+def test_brand_shadow_uses_a_spare_fixed_pair_or_falls_back_to_muted(colors, capacity):
+    api = RecordingCurses(colors=colors, pairs=capacity)
     theme = CursesTheme(api)
     try:
         theme.activate("moonlight")
-        assert set(api.pairs) == set(range(1, 7))
         assert all(theme.style(role) != 0 for role in ROLES)
+        if colors == 256 and capacity == 8:
+            assert set(api.pairs) == set(range(1, 8))
+            assert api.pair_for(theme.style("brand_shadow")) == api.pairs[7] == (243, 233)
+        else:
+            assert set(api.pairs) == set(range(1, 7))
+            assert theme.style("brand_shadow") == theme.style("muted")
         assert api.pair_for(theme.style("track")) != api.pair_for(theme.style("muted"))
     finally:
         theme.restore()
@@ -325,7 +333,7 @@ def test_seven_pair_capacity_is_sufficient_for_all_six_foreground_roles(colors):
     ("has_colors", 1), ("start_color", 1),
     ("init_pair", 1), ("color_pair", 1),
     ("init_pair", 3), ("color_pair", 3),
-    ("init_pair", 6), ("color_pair", 6),
+    ("init_pair", 6), ("color_pair", 6), ("init_pair", 7), ("color_pair", 7),
 ))
 def test_curses_errors_clear_partial_styles_and_latch_monochrome(operation, occurrence):
     api = RecordingCurses()

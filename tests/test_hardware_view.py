@@ -112,6 +112,11 @@ def text_roles(cells, row, region, token):
     return {grid[row, column][1] for column in range(start, start + len(token))}
 
 
+def device_rows(cells, region=GPU_REGION):
+    return sorted(cell.row for cell in cells if cell.column == region.column + 2
+                  and region.row < cell.row < region.row + region.height - 1 and cell.text.startswith("["))
+
+
 def assert_contained(cells, regions=REGIONS):
     for cell in cells:
         assert "\x1b" not in cell.text and "\n" not in cell.text and "\r" not in cell.text
@@ -237,19 +242,30 @@ def test_gpu_index_alias_requires_a_nonnegative_integer_metric(invalid_index):
 
 
 @pytest.mark.parametrize("selected,highlighted", [("A", {0, 1, 2, 3}), ("B", {4}), ("unknown", set())])
-def test_five_gpu_rows_have_stable_three_line_content_and_only_associated_highlights(selected, highlighted):
-    sample = StateSnapshot((inventory(5, sampled_at=1.0), *(gpu(index) for index in range(5))))
+def test_five_gpu_groups_have_separate_rules_and_titles_and_only_associated_highlights(selected, highlighted):
+    names = ["NVIDIA GeForce RTX 5090"] * 4 + ["NVIDIA GeForce RTX 5060 Ti"]
+    cards = tuple(gpu(index, name=name) for index, name in enumerate(names))
+    sample = StateSnapshot((inventory(5, sampled_at=1.0), *cards))
     before = deepcopy(sample)
-    cells = hardware_cells(sample, configured(), REGIONS, gpu_slots=UUIDS, view=ViewSelection(selected))
-    for index in range(5):
-        row = GPU_REGION.row + 1 + 3 * index
+    config = configured()
+    config = replace(config, models=(*config.models, model("reranker", (UUIDS[4],))))
+    cells = hardware_cells(sample, config, REGIONS, gpu_slots=UUIDS, view=ViewSelection(selected))
+    rows = device_rows(cells)
+    assert len(rows) == 5
+    assert [cell.text for cell in cells if cell.text.startswith("GPU ")] == ["GPU 0–3", "GPU 4"]
+    divider_rows = {cell.row for cell in cells if "─" in cell.text}
+    assert divider_rows == {rows[4] - 3}
+    assert rows[3] + 1 < rows[4] - 3
+    for index, row in enumerate(rows):
+        heading = line(cells, row - 2, GPU_REGION)
+        if index in (0, 4):
+            assert line(cells, row - 1, GPU_REGION) == " " * GPU_REGION.width
         header = line(cells, row, GPU_REGION)
         bar = line(cells, row + 1, GPU_REGION)
-        status = line(cells, row + 2, GPU_REGION)
         role = "primary" if index in highlighted else "muted"
-        assert f"GPU {index}" in header and f"Device-{index}" in header
-        assert text_roles(cells, row, GPU_REGION, str(index)) == {role}
-        assert text_roles(cells, row, GPU_REGION, f"Device-{index}") == {"text"}
+        assert header.startswith(f"  [{index}] {names[index]} ")
+        assert text_roles(cells, row, GPU_REGION, f"[{index}]") == {role}
+        assert text_roles(cells, row, GPU_REGION, names[index]) == {"text"}
         expected_percent, expected_filled = ("25%", 8) if index % 2 == 0 else ("50%", 17)
         assert bar[2:35] == "▌" * 33
         assert expected_percent in bar and bar.index(expected_percent) == 36
@@ -258,12 +274,101 @@ def test_five_gpu_rows_have_stable_three_line_content_and_only_associated_highli
         assert text_roles(cells, row + 1, GPU_REGION, expected_percent) == {role}
         assert {grid[row + 1, column][1] for column in range(2 + expected_filled, 35)} == {"track"}
         assert f"{index + 1}.0 / 16.0 GiB" in header and "60°C" in header
-        assert f"{100 + index} W" in bar and not status.strip()
+        assert f"{100 + index} W" in bar
+        if index == 0:
+            assert row - 2 == GPU_REGION.row + 1
+            assert heading.startswith("  GPU 0–3 ") and heading.endswith(" TP 4  ")
+            assert not heading[10:-7].strip()
+        elif index == 4:
+            assert heading.startswith("  GPU 4 ") and heading.endswith(" SHARED  ")
+            assert not heading[8:-9].strip()
+            rule = "─" * (GPU_REGION.width - 4)
+            assert line(cells, row - 3, GPU_REGION) == "  " + rule + "  "
+            assert text_roles(cells, row - 3, GPU_REGION, rule) == {"muted"}
         assert text_roles(cells, row, GPU_REGION, f"{index + 1}.0 / 16.0 GiB") == {"muted"}
         assert text_roles(cells, row, GPU_REGION, "60°C") == {"text"}
         assert text_roles(cells, row + 1, GPU_REGION, f"{100 + index} W") == {"muted"}
     assert sample == before
     assert_contained(cells)
+
+
+@pytest.mark.parametrize("assignments,types_by_slot", [
+    pytest.param((("0", "1", "2", "3"), ("4",), (UUIDS[4],)), {0: "TP 4", 4: "SHARED"}, id="shared-last-card"),
+    pytest.param((("0", UUIDS[0], "1", "2", "3"), ("4",)), {0: "TP 4", 4: "TP 1"}, id="duplicate-alias"),
+    pytest.param((("0", "1"), ("1", "2"), ("3",), ("4",)), {0: "SHARED", 3: "TP 1", 4: "TP 1"}, id="overlap"),
+    pytest.param(((UUIDS[2], "0"), ("1",), ("3", "4")), {3: "TP 2"}, id="interleaved-models"),
+    pytest.param((("0", "1"), (), ("3", "4")), {0: "TP 2", 3: "TP 2"}, id="unknown-card-between-groups"),
+    pytest.param((), {}, id="no-models"),
+])
+def test_group_types_follow_model_assignments_in_display_order(assignments, types_by_slot):
+    sample = StateSnapshot(tuple(gpu(index) for index in reversed(range(5))))
+    config = AppConfig(models=tuple(model(str(index), ids) for index, ids in enumerate(assignments)))
+    cells = hardware_cells(sample, config, REGIONS, gpu_slots=UUIDS)
+    rows = device_rows(cells)
+    assert len(rows) == len(UUIDS)
+    assert [(cell.row, cell.text) for cell in cells if cell.text.startswith("TP ") or cell.text == "SHARED"] == [
+        (rows[slot] - 2, value) for slot, value in types_by_slot.items()
+    ]
+    for cell in cells:
+        if cell.text.startswith("GPU "):
+            assert line(cells, cell.row + 1, GPU_REGION) == " " * GPU_REGION.width
+    if not assignments:
+        assert not any(cell.text.startswith("GPU ") for cell in cells)
+        assert "[0] Device-0" in line(cells, GPU_REGION.row + 1, GPU_REGION)
+
+
+def test_nonconsecutive_gpu_indices_do_not_expand_the_group_range():
+    config = AppConfig(models=(model("pair", ("0", UUIDS[2])),))
+    sample = StateSnapshot((gpu(0), gpu(2)))
+    cells = hardware_cells(sample, config, REGIONS, gpu_slots=(UUIDS[0], UUIDS[2]))
+    heading = line(cells, GPU_REGION.row + 1, GPU_REGION).strip()
+    assert heading.startswith("GPU 0,") and "2 " in heading and heading.endswith("TP 2")
+    assert "0–2" not in heading
+
+
+def test_partially_resolved_config_does_not_report_a_smaller_tp_size():
+    config = AppConfig(models=(model("pair", ("0", "1")),))
+    cells = hardware_cells(StateSnapshot((gpu(0),)), config, REGIONS, gpu_slots=UUIDS[:1])
+    assert not any(cell.text.startswith("TP ") for cell in cells)
+
+
+@pytest.mark.parametrize("alias,first_assigned", [("0", False), (UUIDS[0], True)])
+def test_gpu_group_header_respects_stale_alias_and_leaves_room_for_status(alias, first_assigned):
+    sample = StateSnapshot((gpu(0, stale=True), gpu(1)))
+    config = AppConfig(models=(model("A", (alias,)), model("B", ("1",))))
+    cells = hardware_cells(sample, config, REGIONS, gpu_slots=UUIDS[:2])
+    first, second = device_rows(cells)
+    assert ("GPU 0" in line(cells, first - 2, GPU_REGION)) == first_assigned
+    assert "GPU 1" in line(cells, second - 2, GPU_REGION)
+    bar_row = first + 1
+    content = line(cells, bar_row, GPU_REGION)
+    assert content.index("25%") < content.index("STALE") < content.index("100 W")
+    assert text_roles(cells, bar_row, GPU_REGION, "STALE") == {"text"}
+
+
+def test_ambiguous_index_does_not_create_a_gpu_group_boundary():
+    sample = StateSnapshot((gpu(1, uuid=UUIDS[0]), gpu(1), gpu(2)))
+    config = AppConfig(models=(model("A", ("1",)), model("B", ("2",))))
+    cells = hardware_cells(sample, config, REGIONS, gpu_slots=UUIDS[:3])
+    assert [cell.text for cell in cells if cell.text.startswith("GPU ")] == ["GPU 2"]
+
+
+def test_uuid_assignments_survive_reused_index_without_ambiguous_group_titles():
+    sample = StateSnapshot((gpu(1, uuid=UUIDS[0], stale=True), gpu(1), gpu(2)))
+    config = AppConfig(models=tuple(model(str(index), (uuid,)) for index, uuid in enumerate(UUIDS[:3])))
+    for selected, uuid in enumerate(UUIDS[:3]):
+        view = ViewSelection(str(selected))
+        assert linked_gpu_ids(sample, config, view) == (uuid,)
+        cells = hardware_cells(sample, config, REGIONS, gpu_slots=UUIDS[:3], view=view)
+        assert [cell.text for cell in cells if cell.text.startswith("GPU ")] == ["GPU 2"]
+        rows = device_rows(cells)
+        assert len(rows) == 3
+        group = line(cells, rows[2] - 2, GPU_REGION)
+        assert group.startswith("  GPU 2 ") and group.endswith(" TP 1  ")
+        for slot, index in enumerate((1, 1, 2)):
+            assert text_roles(cells, rows[slot], GPU_REGION, f"[{index}]") == {
+                "primary" if slot == selected else "muted"
+            }
 
 
 def test_gpu_unknown_field_keeps_other_fields_and_failure_reuses_fixed_slot():
@@ -281,7 +386,7 @@ def test_gpu_unknown_field_keeps_other_fields_and_failure_reuses_fixed_slot():
 
 
 def test_unsupported_gpu_field_is_unknown_without_stale_or_zero_substitution():
-    cells = hardware_cells(StateSnapshot((gpu(0, temperature=None),)), configured(),
+    cells = hardware_cells(StateSnapshot((gpu(0, temperature=None),)), AppConfig(),
                            REGIONS, gpu_slots=(UUIDS[0],))
     details = line(cells, 3, GPU_REGION)
     assert "—" in details and "1.0 / 16.0 GiB" in details and "100 W" in line(cells, 4, GPU_REGION)
@@ -294,8 +399,8 @@ def test_gpu_name_is_clipped_without_losing_number_or_status_and_unknown_index_i
     unknown = replace(gpu(1), metrics=tuple(replace(metric, value=None) if metric.name == "index" else metric
                                            for metric in gpu(1).metrics))
     cells = hardware_cells(StateSnapshot((known, unknown)), configured(), REGIONS, gpu_slots=UUIDS[:2])
-    assert "GPU 0" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 5, GPU_REGION)
-    assert "GPU —" in line(cells, 6, GPU_REGION)
+    assert "[0]" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 5, GPU_REGION)
+    assert "[—]" in line(cells, 6, GPU_REGION)
     assert UUIDS[1] not in "".join(cell.text for cell in cells)
     assert_contained(cells)
 
@@ -377,7 +482,7 @@ def test_gpu_inventory_distinguishes_initial_unknown_successful_empty_and_failur
 def test_successful_empty_inventory_does_not_remove_previously_known_gpu_slot():
     sample = StateSnapshot((inventory(0, sampled_at=2.0), gpu(0, stale=True)))
     cells = hardware_cells(sample, configured(), REGIONS, gpu_slots=(UUIDS[0],))
-    assert "GPU 0" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 5, GPU_REGION)
+    assert "[0]" in line(cells, 3, GPU_REGION) and "STALE" in line(cells, 5, GPU_REGION)
     assert "No NVIDIA GPUs" not in "".join(cell.text for cell in cells)
 
 
@@ -386,7 +491,7 @@ def test_compose_frame_integrates_named_hardware_values_without_generic_metric_d
     frame = compose_frame(sample, configured(("/",)), TerminalSize(120, 44),
                           HostInfo("offline-host", "Ubuntu"), NOW, gpu_slots=(UUIDS[0],))
     combined = "".join(cell.text for cell in frame.cells)
-    assert "GPU 0" in combined and "Device-0" in combined and "25%" in combined
+    assert "[0]" in combined and "Device-0" in combined and "25%" in combined
     assert "▌" in combined and "4 / 16 GiB" in combined
     assert "memory_used_bytes" not in combined and "ram_used_bytes" not in combined
     assert UUIDS[0] not in combined
@@ -406,10 +511,15 @@ def test_compose_failure_recovery_and_model_change_keep_regions_gpu_order_and_in
     assert frames[0].regions == frames[1].regions == frames[2].regions
     for frame in frames:
         region = next(region for region in frame.regions if region.name == "gpu")
-        for index in range(5):
-            assert f"GPU {index}" in line(frame.cells, 3 + index * 3, region)
+        rows = device_rows(frame.cells, region)
+        assert len(rows) == 5
+        for index, row in enumerate(rows):
+            assert f"[{index}]" in line(frame.cells, row, region)
         assert "987654321" not in "".join(cell.text for cell in frame.cells)
-    assert "STALE" in line(frames[1].cells, 11, GPU_REGION)
-    assert "STALE" in line(frames[1].cells, STORAGE_REGION.row, STORAGE_REGION)
+    gpu_area = next(region for region in frames[1].regions if region.name == "gpu")
+    storage = next(region for region in frames[1].regions if region.name == "storage")
+    gpu2 = device_rows(frames[1].cells, gpu_area)[2]
+    assert "STALE" in line(frames[1].cells, gpu2 + 1, gpu_area)
+    assert "STALE" in line(frames[1].cells, storage.row, storage)
     assert not any(cell.text == "STALE" for cell in frames[2].cells)
     assert (normal, failed, config) == (normal_before, failed_before, config_before)

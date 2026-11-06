@@ -172,7 +172,7 @@ def test_all_docker_sources_keep_sampling_and_logging_while_visibility_changes(t
             await sample(monitor, clock, 0)
             assert [source.calls for source in sources] == [1] * 10
             assert len(state.snapshot().objects) == 10
-            initial = frame_at(44)
+            initial = frame_at(50)
             assert not initial.too_small
             assert names(initial) == [item.name for item in containers[:4]]
             assert await log.flush()
@@ -186,12 +186,12 @@ def test_all_docker_sources_keep_sampling_and_logging_while_visibility_changes(t
             entries = [json.loads(line) for line in
                        (config.logging.directory / "error.log").read_text(encoding="utf-8").splitlines()]
             assert [(entry["collector"], entry["object_id"]) for entry in entries] == [("docker", "docker-5")]
-            assert "STALE" not in text(frame_at(44))
+            assert "STALE" not in text(frame_at(50))
 
-            expanded = frame_at(48)
+            expanded = frame_at(54)
             assert names(expanded) == [item.name for item in containers[:6]]
             assert "STALE" in text(expanded)
-            assert names(frame_at(42)) == [item.name for item in containers[:3]]
+            assert names(frame_at(48)) == [item.name for item in containers[:3]]
             assert [source.calls for source in sources] == [2] * 10
             assert len(config.containers) == len(state.snapshot().objects) == 10
         finally:
@@ -203,7 +203,7 @@ def test_all_docker_sources_keep_sampling_and_logging_while_visibility_changes(t
 def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resize(tmp_path, capsys):
     """从真实 YAML 接入全部离线来源；缩放仅改变 Frame 中的容器前缀。"""
     class ResizingTerminal(QueueTerminal):
-        rows = 44
+        rows = 50
 
         def size(self):
             return TerminalSize(120, self.rows)
@@ -305,9 +305,9 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
             assert "ignored" not in region_text(terminal.frames[-1], "storage")
             assert all(not item.stale for item in healthy_snapshot.objects)
 
-            expanded = await resize(48, 6)
+            expanded = await resize(54, 6)
             assert status_is(expanded, names[5], "STALE")
-            reduced = await resize(42, 3)
+            reduced = await resize(48, 3)
             assert "STALE" not in region_text(reduced, "docker")
             assert len(state.snapshot().objects) == 13
 
@@ -332,7 +332,7 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
             assert state.snapshot().revision == 52
             assert all(len(item.history) == 4 for item in state.snapshot().objects)
             assert await log.flush()
-            recovered = await resize(48, 6)
+            recovered = await resize(54, 6)
             assert status_is(recovered, names[5], "Restarting")
             assert "STALE" not in text(recovered)
             assert len(log_path.read_bytes().splitlines()) == 2  # Recovery/Exited are silent.

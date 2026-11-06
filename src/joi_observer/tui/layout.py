@@ -14,6 +14,7 @@ import unicodedata
 from joi_observer.config import AppConfig
 from joi_observer.data.models import Metric, StateSnapshot
 from joi_observer.tui import services
+from joi_observer.tui.brand import WORDMARK_ROWS, wordmark_runs
 from joi_observer.tui.history import HistoryScale
 from joi_observer.tui.theme import DEFAULT_THEME
 
@@ -66,6 +67,12 @@ class TextCell:
     text: str
     role: str = "text"
     bold: bool = False
+
+
+# These immutable cells can be shared by all frames, including theme switches.
+_WORDMARK_CELLS = tuple(TextCell(*run) for run in wordmark_runs())
+_COMPACT_HEADER_ROWS = 3
+_FULL_HEADER_ROWS = len(WORDMARK_ROWS) + 2
 
 
 @dataclass(frozen=True)
@@ -128,26 +135,45 @@ def format_metric(metric: Metric) -> str:
     return value + _single_line(metric.unit)
 
 
-def required_size(*, gpu_count: int, mount_count: int, container_count: int) -> TerminalSize:
+@dataclass(frozen=True)
+class GpuGroups:
+    """Per-frame device groups shared by capacity checks and rendering."""
+
+    headers: dict[int, tuple[str, str]]
+    linked: set[str | None]
+
+
+def grouped_gpu_rows(gpu_count: int, group_count: int) -> int:
+    """Budget two rows per card, a title and blank row per group, and dividers."""
+    return 2 * gpu_count + 2 * group_count + max(0, group_count - 1)
+
+
+def _hardware_minimum_rows(gpu_count: int, group_count: int) -> int:
+    return max(3 * gpu_count + 2, grouped_gpu_rows(gpu_count, group_count) + 2, 15)
+
+
+def required_size(*, gpu_count: int, mount_count: int, container_count: int,
+                  gpu_group_count: int = 0) -> TerminalSize:
     """返回完整 Neon Grid 所需最小尺寸，无 I/O 或状态变化。
 
-    v1.12契约保留现有三个计数参数签名。所有参数
-    必须是非负int，bool/小数/负数抛ValueError；container_count不设上限，
-    mount_count超过3不增高。后两参数仅验证输入，不参与最小尺寸计算。
+    所有计数必须是非负int，bool/小数非法。mount_count和container_count
+    仅验证输入，不参与最小尺寸计算。
     gpu_count为会话保留的GPU槽数；列数固定120。
-    行数 = max(36, 2 * (2 + max(3 * max(gpu_count, 1) + 2, 16)) - 1)。
+    可选的gpu_group_count为本帧可显示的组头数量。分组密集时额外预留组间横线。
 
-    全页H行：下半L=H//2，上半U=H-L，header2包含在上半内；硬件高度U-2。
-    目标右侧最低16行=Host6+Storage6+间距1+Docker外壳3，允许Docker零
-    内容行；下半最低18行=服务窗口16+切换位1+键位1。GPU每卡3行另加边框2。
-    0～4GPU最低120×36，5GPU120×37，6GPU120×43，10GPU120×67。
-    Docker数量只影响显示前缀长度，不导致放大提示；模型数也不参与公式。
+    全页H行：下半L=H//2，上半U=H-L。基础最小尺寸按3行紧凑页眉计算；
+    上半区足以容纳6行页眉和全部必需硬件行时，改用4行字标。两种页眉的
+    主机信息均独占一行，其下为全宽分隔线。右侧最低15行=Host6+Storage6+Docker外壳3，允许Docker零
+    内容行；下半最低18行=服务窗口16+切换位1+键位1。GPU面板含上下边框各1行。
+    普通五卡两组布局最低120×39。Docker数量只影响显示前缀长度。
     """
-    counts = (gpu_count, mount_count, container_count)
+    counts = (gpu_count, mount_count, container_count, gpu_group_count)
     if any(type(count) is not int or count < 0 for count in counts):
         raise ValueError("Object counts must be nonnegative integers")
-    hardware_minimum = max(3 * max(gpu_count, 1) + 2, 16)
-    return TerminalSize(120, max(36, 2 * (2 + hardware_minimum) - 1))
+    if gpu_group_count > gpu_count:
+        raise ValueError("GPU groups cannot outnumber GPU slots")
+    hardware_minimum = _hardware_minimum_rows(gpu_count, gpu_group_count)
+    return TerminalSize(120, max(36, 2 * (_COMPACT_HEADER_ROWS + hardware_minimum) - 1))
 
 
 def compose_frame(
@@ -159,6 +185,7 @@ def compose_frame(
     *,
     gpu_slots: tuple[str, ...] = (),
     view: ViewSelection = ViewSelection(),
+    gpu_groups: GpuGroups | None = None,
     monotonic_now: float | None = None,
     history_scales: tuple[HistoryScale, ...] | None = None,
 ) -> Frame:
@@ -179,10 +206,10 @@ def compose_frame(
     按model_id+field匹配；重复键、非法upper或匹配上限低于有效峰值抛ValueError。
     固定60秒轴、绝对时间桶和尺度标签遵守vllm_cells契约。
 
-    H为总可绘制高度，L=H//2，U=H-L。header为row0/height2；gpu为row2/
-    height(U-2)。目标GPU宽floor((columns-1)*3/5)，间隔1列后右侧取余宽，
-    接近参考稿约3:2分区。右侧host为row2/height6，紧接storage为row8/height6
-    （内容row10..12共3行），row14留白，docker为row15/height(U-15)。
+    H为总可绘制高度，L=H//2，U=H-L。页眉高B正常为6，空间紧张时为3。
+    gpu为rowB/height(U-B)。目标GPU宽floor((columns-1)*3/5)，间隔1列后
+    右侧取余宽。右侧host为rowB/height6，紧接storage为row(B+6)/height6，
+    docker紧接storage，从B+12起占上半区余高。
     service从rowU开始、height(L-2)；service_switch为row(H-2)/height1，
     footer为row(H-1)/height1；两半之外不再额外占行。
 
@@ -196,7 +223,7 @@ def compose_frame(
     secondary；所有外框与分隔仍用muted。标题不占额外行，不侵入状态槽。
 
     Storage只画配置前三项，不足3项保留内容空行；失败不以第四项补位。
-    Docker内容容量=max(0,U-18)，按配置顺序只画前capacity个容器，余项
+    Docker内容容量=max(0,U-B-15)，按配置顺序只画前capacity个容器，余项
     仍保留在配置/快照并由Monitor持续采集。容量零时不画条目或空态；容量
     大于零且未配置容器时在内容区画空态。不作省略号、更多/隐藏数量或放大
     提示，不滚动/分页；少量容器允许留白，不能压缩面板或把余高让给Storage。
@@ -210,10 +237,12 @@ def compose_frame(
     空值/尚未采集显示 —，真实0显示0，applicable=False显示 N/A；仅 stale
     对象在各自预留状态槽显示 STALE，不展示 sampled_at/history时间、原因
     或任何错误诊断。正常/失败/恢复、不同模型类型共用同样区域高度。
-    顶部row0为Joi::Observer，Joi/::/Observer分别secondary/muted/primary。
+    正常字标占row0..3，Joi/::/Observer分别secondary/muted/primary，细线为
+    brand_shadow。紧凑页眉的row0显示单行Joi::Observer。
     Theme为纯状态文字'Theme: Hologram [t]'或'Theme: Moonlight [t]'，primary，
     每种主题按实际显示宽度定位，右端均为全页columns；不画可点击按钮。
-    row1的hostname设备标签用text，紧随' / '及system发行版本用muted；合计左区最多
+    主机信息位于页眉倒数第二行，末行为全宽muted分隔线。
+    hostname设备标签用text，紧随' / '及system发行版本用muted；合计左区最多
     columns-19-2列，过长按终端宽度裁切，不能覆盖右侧19列时钟及两格间隔。
     时钟muted，以columns为右端，显示传入本机aware墙钟的
     YYYY-MM-DD HH:MM:SS，不强转UTC、不补CST。默认主题Hologram。
@@ -244,8 +273,13 @@ def compose_frame(
     if (type(monotonic_now) not in (int, float)
             or not math.isfinite(monotonic_now) or monotonic_now < 0):
         raise ValueError("History time must be finite and nonnegative")
+    from joi_observer.tui.widgets import hardware_cells, resolve_gpu_groups
+
+    if gpu_groups is None:
+        gpu_groups = resolve_gpu_groups(snapshot, config, gpu_slots, view)
+    group_count = len(gpu_groups.headers)
     minimum = required_size(gpu_count=len(gpu_slots), mount_count=len(config.mount_points),
-                            container_count=len(config.containers))
+                            container_count=len(config.containers), gpu_group_count=group_count)
     cells: list[TextCell] = []
 
     def put(row: int, column: int, value: str, role: str = "text", width: int | None = None) -> None:
@@ -262,15 +296,19 @@ def compose_frame(
 
     lower = size.rows // 2
     upper = size.rows - lower
+    pixel_brand = upper >= _FULL_HEADER_ROWS + _hardware_minimum_rows(len(gpu_slots), group_count)
+    header_rows = _FULL_HEADER_ROWS if pixel_brand else _COMPACT_HEADER_ROWS
+    storage_row = header_rows + 6
+    docker_row = storage_row + 6
     left_width = (size.columns - 1) * 3 // 5
     right_column = left_width + 1
     right_width = size.columns - right_column
     regions = (
-        Region("header", 0, 0, size.columns, 2),
-        Region("gpu", 2, 0, left_width, upper - 2),
-        Region("host", 2, right_column, right_width, 6),
-        Region("storage", 8, right_column, right_width, 6),
-        Region("docker", 15, right_column, right_width, upper - 15),
+        Region("header", 0, 0, size.columns, header_rows),
+        Region("gpu", header_rows, 0, left_width, upper - header_rows),
+        Region("host", header_rows, right_column, right_width, 6),
+        Region("storage", storage_row, right_column, right_width, 6),
+        Region("docker", docker_row, right_column, right_width, upper - docker_row),
         Region("service", upper, 0, size.columns, lower - 2),
         Region("service_switch", size.rows - 2, 0, size.columns, 1),
         Region("footer", size.rows - 1, 0, size.columns, 1),
@@ -301,29 +339,31 @@ def compose_frame(
         border(by_region[name], title, "primary" if name == "gpu" else "secondary")
 
     header = by_region["header"]
-    region_put(header, 0, 0, "Joi", "secondary")
-    region_put(header, 0, 3, "::", "muted")
-    region_put(header, 0, 5, "Observer", "primary")
+    if pixel_brand:
+        cells.extend(_WORDMARK_CELLS)
+    else:
+        region_put(header, 0, 0, "Joi", "secondary")
+        region_put(header, 0, 3, "::", "muted")
+        region_put(header, 0, 5, "Observer", "primary")
     theme = "Hologram" if view.theme == "hologram" else "Moonlight"
     theme_text = f"Theme: {theme} [t]"
     region_put(header, 0, size.columns - len(theme_text), theme_text, "primary")
     clock_text = now.strftime("%Y-%m-%d %H:%M:%S")
+    info_row = header_rows - 2
     host_width = size.columns - len(clock_text) - 2
     hostname = _clip(host.hostname, host_width)
-    region_put(header, 1, 0, hostname, "text", host_width)
+    region_put(header, info_row, 0, hostname, "text", host_width)
     hostname_width = sum(0 if unicodedata.combining(char) else
                          2 if unicodedata.east_asian_width(char) in "WF" else 1
                          for char in hostname)
-    region_put(header, 1, hostname_width, f" / {host.system}", "muted",
+    region_put(header, info_row, hostname_width, f" / {host.system}", "muted",
                max(0, host_width - hostname_width))
-    region_put(header, 1, size.columns - len(clock_text), clock_text, "muted")
+    region_put(header, info_row, size.columns - len(clock_text), clock_text, "muted")
+    region_put(header, info_row + 1, 0, "─" * header.width, "muted")
     objects = {(obj.key.collector, obj.key.object_id): obj for obj in snapshot.objects}
 
-    # A local import keeps the public Region/TextCell types available to widgets
-    # without a module import cycle. Hardware content is drawn exactly once.
-    from joi_observer.tui.widgets import hardware_cells
-
-    cells.extend(hardware_cells(snapshot, config, regions, gpu_slots=gpu_slots, view=view))
+    cells.extend(hardware_cells(snapshot, config, regions, gpu_slots=gpu_slots, view=view,
+                                gpu_groups=gpu_groups))
 
     docker = by_region["docker"]
     docker_capacity = max(0, docker.height - 3)

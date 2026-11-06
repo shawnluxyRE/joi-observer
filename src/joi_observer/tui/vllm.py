@@ -44,7 +44,8 @@ def vllm_cells(
     选中id未知或None回退首项；空配置只显示一次No models configured。
 
     右+1行留空；+2行模型名和6字符状态槽[R-6,R)，文字右对齐到R，无额外[type]；
-    +3为'↳ '+真实base_url，secondary；+4/+8为覆盖[L,R)的muted水平分隔。
+    +3只显示所选服务的 :端口，secondary，省略端口时采用协议默认值。
+    +4/+8为覆盖[L,R)的muted水平分隔。
     +5行留空，+6是RUNNING/WAITING两组，
     text标签在组内左齐，至少空1列后纯数值在组内右齐；不画大字或ASCII数字。
     不将Total作为第三组。RUNNING数字text，WAITING数字沿用新鲜正值amber规则。
@@ -79,7 +80,7 @@ def vllm_cells(
     对象非stale时才能显示READY或QUEUED。waiting>0显示QUEUED，仅QUEUED
     与此时的正等待值用amber；WAITING标签、0、保留旧等待值均为text。
     缺队列数据保持未知状态—，不能默认READY。主题不改变amber规则。
-    路由只展示配置name和base_url，不推断并发上限、TP或额外参数。
+    路由展示配置的名称和服务端口。
 
     历史只取选中模型、相应主吞吐字段，保留[now-60,now]内的点；now须为
     与HistoryPoint.sampled_at同域的有限非负单调秒数，不能传墙钟datetime。
@@ -179,7 +180,9 @@ def vllm_cells(
     obj = objects.get(model.id)
     put(2, right, model.name, end - right - 7, "primary")
     status_at(2, end, obj)
-    put(3, right, "↳ " + model.base_url, end - right, "secondary")
+    origin = urlsplit(model.base_url)
+    port = origin.port if origin.port is not None else (443 if origin.scheme == "https" else 80)
+    put(3, right, f":{port}", end - right, "secondary")
     for offset in (4, 8):
         put(offset, right, "─" * (end - right), end - right, "muted")
     middle = right + (end - right) // 2

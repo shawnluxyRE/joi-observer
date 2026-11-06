@@ -208,11 +208,11 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
                                  HostInfo("offline-host", "Ubuntu"), NOW)
 
         try:
-            initial = frame_at(44)
+            initial = frame_at(50)
             assert "—" in frame_text(initial) and "STALE" not in frame_text(initial)
             await sample(monitor, clock, 0)
             assert [len(command.calls) for command in commands] == [1] * 10
-            ready = frame_at(44)
+            ready = frame_at(50)
             assert visible_names(ready, config) == [item.name for item in config.containers[:4]]
             assert "Exited" in row_status(ready, config.containers[1].name)
             assert all(not item.stale for item in state.snapshot().objects)
@@ -227,11 +227,11 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
             assert failed.objects[5].stale
             assert failed.objects[5].metrics[0].value == "Running"
             assert failed.objects[5].history[-1].metrics is None
-            assert "STALE" not in frame_text(frame_at(44))
-            expanded = frame_at(48)
+            assert "STALE" not in frame_text(frame_at(50))
+            expanded = frame_at(54)
             assert visible_names(expanded, config) == [item.name for item in config.containers[:6]]
             assert "STALE" in row_status(expanded, config.containers[5].name)
-            assert visible_names(frame_at(42), config) == [item.name for item in config.containers[:3]]
+            assert visible_names(frame_at(48), config) == [item.name for item in config.containers[:3]]
             assert [len(command.calls) for command in commands] == [2] * 10
             assert await log.flush()
             entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -241,7 +241,7 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
             commands[5].error = None
             commands[5].status = "restarting"
             await sample(monitor, clock, 2)
-            recovered = frame_at(48)
+            recovered = frame_at(54)
             assert [len(command.calls) for command in commands] == [3] * 10
             assert "Restarting" in row_status(recovered, config.containers[5].name)
             assert "STALE" not in frame_text(recovered)
@@ -252,7 +252,7 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
             assert len(log_path.read_text(encoding="utf-8").splitlines()) == 1
             combined = log_path.read_text(encoding="utf-8") + repr(state.snapshot()) + frame_text(recovered)
             assert "SECRET_CREDENTIAL" not in combined and "permission denied" not in frame_text(expanded)
-            for frame, rows in ((ready, 44), (expanded, 48), (recovered, 48), (frame_at(42), 42)):
+            for frame, rows in ((ready, 50), (expanded, 54), (recovered, 54), (frame_at(48), 48)):
                 assert not frame.too_small
                 assert all(word not in frame_text(frame).lower()
                            for word in ("enlarge", "hidden", "more", "overflow", "page ", "...", "…"))
@@ -379,7 +379,7 @@ class MemoryTerminal:
         self.restored = True
 
     def size(self):
-        return TerminalSize(120, 44)
+        return TerminalSize(120, 50)
 
     def render(self, frame):
         self.frames.append(frame)

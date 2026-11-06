@@ -161,14 +161,21 @@ def test_frame_carries_selected_theme_even_when_window_is_too_small(theme, size)
 @pytest.mark.parametrize("theme", THEMES)
 def test_brand_hardware_model_route_and_footer_use_semantic_roles(theme):
     frame = draw(theme=theme)
-    assert [(cell.text, cell.role) for cell in cells_in(frame, "header") if cell.row == 0][:3] == [
-        ("Joi", "secondary"), ("::", "muted"), ("Observer", "primary")]
     header = cells_in(frame, "header")
+    strokes = [cell for cell in header if cell.row < 4 and cell.column < 60]
+    assert all(" " not in cell.text for cell in strokes)
+    pixels = {(cell.row, cell.column + offset): (char, cell.role)
+              for cell in strokes for offset, char in enumerate(cell.text)}
+    assert pixels[0, 1] == ("▀", "secondary")
+    assert pixels[1, 14] == pixels[1, 16] == ("▀", "muted")
+    assert pixels[0, 18] == ("▄", "primary")
+    assert pixels[0, 4] == ("╷", "brand_shadow")
+    assert {char for char, role in pixels.values() if role == "brand_shadow"} == set("─│╭╮╰╯╷╶")
     info = next(cell for cell in header if "offline" in cell.text)
     clock = next(cell for cell in header if "2026-11-04" in cell.text)
-    assert info.row == clock.row and info.column + width(info.text) < clock.column
+    assert info.row == clock.row == 4 and info.column + width(info.text) < clock.column
     gpu = cells_in(frame, "gpu")
-    for label, role in (("GPU 0", "primary"), ("GPU 1", "muted")):
+    for label, role in (("[0]", "primary"), ("[1]", "muted")):
         identity = next(cell for cell in gpu if cell.text == label)
         bar = [cell for cell in gpu if cell.row == identity.row + 1]
         filled = next(cell for cell in bar if cell.column == 2 and set(cell.text) == {"▌"})
@@ -189,7 +196,7 @@ def test_brand_hardware_model_route_and_footer_use_semantic_roles(theme):
     service = cells_in(frame, "service")
     assert next(cell for cell in service if cell.text == " vLLM ").role == "secondary"
     assert all(cell.role == "primary" for cell in service if cell.text == "Model-chat")
-    assert next(cell for cell in service if "http://" in cell.text).role == "secondary"
+    assert next(cell for cell in service if cell.text == ":8000").role == "secondary"
     assert "Total 3 seq" in row_text(service, regions(frame)["service"].row + 7)
     assert "Avg queue 0.5s" in row_text(service, regions(frame)["service"].row + 7)
     assert all(cell.role == "primary" for cell in cells_in(frame, "footer"))
@@ -251,24 +258,32 @@ def test_theme_change_is_presentation_only_for_same_selection_and_snapshot(theme
         cell for cell in frames[1].cells if not cell.text.startswith("Theme:"))
     assert plot(frames[0]) == plot(frames[1])
     for frame in frames:
-        assert next(cell for cell in frame.cells if cell.text == "GPU 0").role == "muted"
-        assert next(cell for cell in frame.cells if cell.text == "GPU 1").role == "primary"
+        assert next(cell for cell in frame.cells if cell.text == "[0]").role == "muted"
+        assert next(cell for cell in frame.cells if cell.text == "[1]").role == "primary"
     assert (data, config) == before
 
 
 @pytest.mark.parametrize("theme", THEMES)
 def test_resize_keeps_half_page_storage_three_rows_and_docker_visible_prefix(theme):
     data, config = snapshot(), configured()
-    for height, visible in ((36, 0), (37, 1), (44, 4), (48, 6), (42, 3)):
+    for height, header_height, visible in ((36, 3, 0), (37, 3, 1), (40, 3, 2),
+                                           (41, 6, 0), (44, 6, 1), (48, 6, 3), (42, 6, 0)):
         frame = draw(data, config, theme=theme, size=TerminalSize(120, height))
         area = regions(frame)
         assert not frame.too_small
         assert area["service"].row == height - height // 2
         assert sum(area[name].height for name in ("service", "service_switch", "footer")) == height // 2
-        assert (area["storage"].row, area["storage"].height) == (8, 6)
+        assert area["header"].height == header_height
+        header = cells_in(frame, "header")
+        separator_row = header_height - 1
+        assert row_text(header, separator_row) == "─" * area["header"].width
+        assert {cell.role for cell in header if cell.row == separator_row} == {"muted"}
+        assert area["gpu"].row == area["host"].row == header_height
+        assert (area["storage"].row, area["storage"].height) == (header_height + 6, 6)
+        assert area["docker"].row == area["storage"].row + area["storage"].height
         paths = [cell for cell in cells_in(frame, "storage") if cell.text in ("/", "/data", "/cache")
                  or cell.text.startswith(("/ ", "/data ", "/cache "))]
-        assert [cell.row for cell in paths] == [10, 11, 12]
+        assert [cell.row for cell in paths] == list(range(header_height + 8, header_height + 11))
         assert [cell.text for cell in cells_in(frame, "docker") if cell.text.startswith("Container-")] == [
             f"Container-{index}" for index in range(visible)]
         assert area["docker"].row + area["docker"].height == area["service"].row

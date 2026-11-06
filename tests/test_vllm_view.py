@@ -244,8 +244,8 @@ def test_unknown_denominators_and_raw_metrics_are_not_invented_or_dumped():
 
 def test_configured_route_is_secondary_without_unknown_parameters():
     cells = cells_for()
-    assert "↳ http://offline.invalid:8000" in row(cells, 3)
-    assert token_roles(cells, 3, "http://offline.invalid:8000") == {"secondary"}
+    assert row(cells, 3).strip() == ":8000"
+    assert_span_role(cells, REGION.row + 3, 30, ":8000", "secondary")
 
 
 def test_duplicate_display_names_remain_separate_configured_id_rows():
@@ -829,17 +829,17 @@ def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(regio
     assert_contained(cells, region)
 
 
-@pytest.mark.parametrize("url,expected", (
-    ("http://offline.invalid", "CHAT"),
-    ("https://offline.invalid/path?q=:9999", "CHAT"),
-    ("http://[::1]:8100/v1", "CHAT / :8100"),
+@pytest.mark.parametrize("url,expected,detail", (
+    ("http://offline.invalid", "CHAT", ":80"),
+    ("https://offline.invalid/path?q=:9999", "CHAT", ":443"),
+    ("http://[::1]:8100/v1", "CHAT / :8100", ":8100"),
 ))
-def test_model_type_port_uses_only_explicit_configured_url_port(url, expected):
+def test_model_rail_uses_explicit_port_and_detail_shows_effective_port(url, expected, detail):
     configured = config(replace(model(), base_url=url))
     cells = vllm_cells(StateSnapshot((object_snapshot(),)), configured, REGION, ViewSelection("chat"), now=NOW)
     type_cells = [cell for cell in cells if cell.row == REGION.row + 3 and cell.column < 27]
     assert [(cell.text, cell.role) for cell in type_cells] == [(expected, "muted")]
-    assert "↳ " + url in row(cells, 3)
+    assert row(cells, 3).strip() == detail
 
 
 @pytest.mark.parametrize("kind", tuple(ModelType), ids=lambda kind: kind.value)

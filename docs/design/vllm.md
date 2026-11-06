@@ -290,7 +290,7 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 | 左名称后三行 | 分隔留白，不增加独立行框或将三行合为一行 |
 | 右 `+1`、`+5`、`+11` | 空行，分别位于模型名、RUNNING/WAITING统计及历史标题上方 |
 | 右 `+2` | 模型名左，状态槽`[R-6,R)`右对齐且无尾空格；不重复左栏已有类型 |
-| 右 `+3` | `↳ `加配置的真实直接服务URL |
+| 右 `+3` | 仅显示服务端口，如 `:8000`。若 `base_url` 省略端口，HTTP 显示 `:80`，HTTPS 显示 `:443` |
 | 右 `+4`、`+8` | `[L,R)`横向分隔线 |
 | 右 `+6` | RUNNING / WAITING 两统计组：标签组内左对齐，至少留1空格，纯数值组内右对齐；无ASCII大数字、分母或Total第三组 |
 | 右 `+7` | 左从L起`Total {state.total} seq`；右从`S+2`起Chat的`Avg queue {seconds}s`或pooling的`Unit: seq`；caption限于各自统计组 |

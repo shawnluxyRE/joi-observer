@@ -510,15 +510,15 @@ def test_default_app_keeps_model_and_gpu_selection_consistent_during_discovery_a
         cells = [cell for cell in frame.cells if gpu_region.row < cell.row
                  < gpu_region.row + gpu_region.height - 1
                  and gpu_region.column < cell.column < gpu_region.column + gpu_region.width - 1]
-        labels = sorted((cell for cell in cells if cell.text in {"GPU 0", "GPU 1"}),
+        labels = sorted((cell for cell in cells if cell.text in {"[0]", "[1]"}),
                         key=lambda cell: (cell.row, cell.column))
-        assert [(cell.text, cell.row, cell.role) for cell in labels] == [
-            (f"GPU {index}", 3 + 3 * index, role) for index, role in enumerate(roles)
+        assert [(cell.text, cell.column, cell.role) for cell in labels] == [
+            (f"[{index}]", gpu_region.column + 2, role) for index, role in enumerate(roles)
         ]
-        for index, role in enumerate(roles):
+        for index, (label, role) in enumerate(zip(labels, roles)):
             # Association changes affect the number, filled bar and percentage
             # together, without moving devices or changing sampled values.
-            utilization = [cell for cell in cells if cell.row == 4 + 3 * index]
+            utilization = [cell for cell in cells if cell.row == label.row + 1]
             assert any(cell.text == f"{25 + 25 * index}%" and cell.role == role
                        for cell in utilization)
             assert any(cell.column == gpu_region.column + 2 and cell.role == role
@@ -617,8 +617,8 @@ def test_each_frame_reads_selection_once_for_model_details_and_gpu_highlight():
             assert detail_metric(frame, "DECODE / tok/s" if model_index == 0 else "RATE / seq/s") == (
                 "100" if model_index == 0 else "3")
             highlighted = [cell.text for cell in frame.cells
-                           if cell.text in {"GPU 0", "GPU 1"} and cell.role == "primary"]
-            assert highlighted == [f"GPU {model_index}"]
+                           if cell.text in {"[0]", "[1]"} and cell.role == "primary"]
+            assert highlighted == [f"[{model_index}]"]
             assert any(cell.text == f"Theme: {theme} [t]" for cell in frame.cells)
             super().render(frame)
 

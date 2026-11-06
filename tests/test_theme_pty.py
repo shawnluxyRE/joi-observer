@@ -35,7 +35,8 @@ cells = (TextCell(0, 0, 'SECONDARY-SENTINEL', 'secondary'),
          TextCell(3, 0, 'TRACK-SENTINEL', 'track'),
          TextCell(4, 0, 'MUTED-SENTINEL', 'muted'),
          TextCell(5, 0, 'AFTER-TRACK-SENTINEL', 'text'),
-         TextCell(6, 0, 'AMBER-SENTINEL', 'amber'))
+         TextCell(6, 0, 'AMBER-SENTINEL', 'amber'),
+         TextCell(7, 0, 'SHADOW-SENTINEL', 'brand_shadow'))
 
 def acknowledge(marker):
     os.write(completed, marker)
@@ -60,10 +61,10 @@ for _ in range(2):
 '''
 
 
-def _sgr_before(frame, text):
+def sgr_at(frame, offset):
     """Read the emitted SGR state, independently of curses' color bookkeeping."""
     bold, dim, foreground, background = False, False, None, None
-    for match in re.finditer(rb"\x1b\[([0-9;]*)m", frame[:frame.index(text)]):
+    for match in re.finditer(rb"\x1b\[([0-9;]*)m", frame[:offset]):
         codes = [int(value or b"0") for value in match[1].split(b";")]
         index = 0
         while index < len(codes):
@@ -149,7 +150,7 @@ def test_fixed_palette_theme_switch_same_frame_and_reentry_preserve_term(term):
 
         fixed = {b"BODY-SENTINEL": 253, b"TRACK-SENTINEL": 239,
                  b"MUTED-SENTINEL": 247, b"AFTER-TRACK-SENTINEL": 253,
-                 b"AMBER-SENTINEL": 215}
+                 b"AMBER-SENTINEL": 215, b"SHADOW-SENTINEL": 243}
         for frames in sessions:
             for frame, primary, secondary in ((frames[0], 111, 170),
                                                (frames[1], 117, 183),
@@ -158,7 +159,7 @@ def test_fixed_palette_theme_switch_same_frame_and_reentry_preserve_term(term):
                 expected.update({b"PRIMARY-SENTINEL": primary, b"SECONDARY-SENTINEL": secondary})
                 for text, foreground in expected.items():
                     assert text in frame, (text, frame)
-                    assert _sgr_before(frame, text) == (False, False, foreground, 233), frame
+                    assert sgr_at(frame, frame.index(text)) == (False, False, foreground, 233), frame
             assert all(text not in frames[2] for text in (*fixed, b"PRIMARY-SENTINEL", b"SECONDARY-SENTINEL"))
             assert b"\x1b[2J" not in frames[2]
         output = b"".join(frame for frames in sessions for frame in frames) + b"".join(restored_outputs)
