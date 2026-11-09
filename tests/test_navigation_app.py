@@ -23,7 +23,7 @@ from joi_observer.tui.app import ObserverApp
 from joi_observer.tui.layout import HostInfo, TerminalSize, ViewSelection, compose_frame
 from joi_observer.tui.navigation import SessionViewActions
 from test_vllm_integration import RawHttp, configs, settle
-from test_vllm_view import object_snapshot
+from test_vllm_view import braille_points, object_snapshot, scan_x
 
 
 HOST = HostInfo("offline-host", "Ubuntu")
@@ -148,11 +148,11 @@ def test_default_app_arrows_traverse_all_types_and_stop_at_both_ends():
         if expected == "chat":
             assert detail_metric(frame, "DECODE / tok/s") == "100"
             assert detail_metric(frame, "TTFT / s") == "3"
-            assert "DECODE HISTORY / tok/s" in text
+            assert "DECODE HISTORY | tok/s" in text
         else:
             assert detail_metric(frame, "RATE / seq/s") == "3"
             assert detail_metric(frame, "Avg latency / s") == "3"
-            assert "RATE HISTORY / seq/s" in text
+            assert "RATE HISTORY | seq/s" in text
             assert "TTFT" not in text and "DECODE" not in text
 
 
@@ -538,7 +538,7 @@ def test_default_app_uses_id_for_same_type_name_and_endpoint_samples(monkeypatch
 
     def history(values):
         return tuple(HistoryPoint(at, (Metric("decode_rate", value, "tok/s"),))
-                     for at, value in zip((40, 100), values))
+                     for at, value in zip((41, 100), values))
 
     # Reverse snapshot order to ensure neither type/name nor object ordering
     # can replace the configured ID as the lookup key.
@@ -566,12 +566,11 @@ def test_default_app_uses_id_for_same_type_name_and_endpoint_samples(monkeypatch
         assert [cell.row - service.row for cell in names if cell.role == "primary"] == [selected_offset]
         plot = [cell for cell in detail
                 if service.row + 13 <= cell.row <= service.row + service.height - 3]
-        left = service.column + 30
-        right = service.column + service.width - 3
-        zeros = {cell.column for cell in plot if cell.text == "·"}
-        bars = {cell.column for cell in plot if cell.text in "▁▂▃▄▅▆▇█"}
-        assert zeros == {right if stale else left}
-        assert bars == {left if stale else right}
+        dots = braille_points(plot, service)
+        by_x = {x: y for x, y in dots}
+        assert set(by_x) == {scan_x(41, service), scan_x(100, service)}
+        earlier, current = by_x[scan_x(41, service)], by_x[scan_x(100, service)]
+        assert (earlier < current) is stale
     assert frames[0] == frames[-1]
 
 

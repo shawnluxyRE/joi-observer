@@ -169,8 +169,9 @@ def test_brand_hardware_model_route_and_footer_use_semantic_roles(theme):
     assert pixels[0, 1] == ("▀", "secondary")
     assert pixels[1, 14] == pixels[1, 16] == ("▀", "muted")
     assert pixels[0, 18] == ("▄", "primary")
-    assert pixels[0, 4] == ("╷", "brand_shadow")
-    assert {char for char, role in pixels.values() if role == "brand_shadow"} == set("─│╭╮╰╯╷╶")
+    assert (0, 4) not in pixels
+    assert all(role != "brand_shadow" and char not in "─│╭╮╰╯╷╶" for char, role in pixels.values())
+    assert all(row < 3 for row, column in pixels)
     info = next(cell for cell in header if "offline" in cell.text)
     clock = next(cell for cell in header if "2026-11-04" in cell.text)
     assert info.row == clock.row == 4 and info.column + width(info.text) < clock.column
@@ -217,7 +218,10 @@ def test_amber_is_reserved_for_fresh_queued_status_and_positive_waiting(theme, w
     waiting_labels = [cell for cell in frame.cells if cell.text == "WAITING"]
     assert waiting_labels and all(cell.role == "text" for cell in waiting_labels)
     if waiting == 0:
-        assert all(cell.role == "text" for cell in frame.cells if cell.text == "0")
+        service = regions(frame)["service"]
+        zero_values = [cell for cell in cells_in(frame, "service") if cell.text == "0"
+                       and (cell.column < service.column + 27 or cell.row < service.row + 12)]
+        assert zero_values and all(cell.role == "text" for cell in zero_values)
     if stale:
         assert all(cell.role == "text" for cell in frame.cells if cell.text == "STALE")
     assert all("!" not in cell.text for cell in frame.cells)
@@ -330,13 +334,16 @@ def test_explicit_history_scale_survives_theme_and_width_changes_without_mutatin
         for frame in frames:
             service = regions(frame)["service"]
             label = next(cell for cell in frame.cells if cell.text == f"Scale ≤ 5 {unit}")
-            title = next(cell for cell in frame.cells if "HISTORY /" in cell.text)
+            title = next(cell for cell in frame.cells if "HISTORY |" in cell.text)
             assert label.row == title.row == service.row + 12
             assert label.role == "muted" and title.role == "secondary"
             assert label.column + width(label.text) == service.column + service.width - 2
             assert title.column + width(title.text) < label.column
-            assert plot(frame) and all(cell.role == "primary" for cell in plot(frame))
-            assert all(cell.row > service.row + 13 for cell in plot(frame))
+            curve = [cell for cell in plot(frame) if any("\u2800" <= char <= "\u28ff" for char in cell.text)]
+            assert curve and all(cell.role == "primary" and not cell.bold for cell in curve)
+            assert all(cell.row > service.row + 13 for cell in curve)
+            marker = next(cell for cell in plot(frame) if cell.text == "▼")
+            assert marker.row == service.row + 13 and marker.role == "text" and marker.bold
             assert any(cell.text == f"Model-{kind.value}" and cell.role == "primary"
                        for cell in cells_in(frame, "service"))
     assert (data, config, scales) == before

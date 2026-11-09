@@ -98,7 +98,7 @@ class ObservedTerminal:
         # its attributes, so the parent checks their colors in the emitted SGR.
         screen = self.terminal._screen
         glyphs = [screen.instr(row, column, 3).decode('utf-8') for row, column in
-                  ((0, 1), (0, 4), (1, 14), (1, 16), (0, 18))]
+                  ((0, 1), (1, 14), (1, 16), (0, 18))]
         blank = screen.inch(0, 70)
         service = next(region for region in frame.regions if region.name == 'service')
         gpu = next(region for region in frame.regions if region.name == 'gpu')
@@ -129,6 +129,8 @@ class ObservedTerminal:
                                 and cell.text == '─' * (gpu.width - 4)],
             'theme': [cell.text for cell in frame.cells if cell.text.startswith('Theme:')],
             'brand_glyphs': glyphs,
+            'shadow_blank': screen.instr(3, 0, 59).decode().isspace()
+                            and screen.inch(0, 4) & curses.A_CHARTEXT == ord(' '),
             'blank': [blank & curses.A_CHARTEXT, curses.pair_content(curses.pair_number(blank))[1]],
             'switch': [cell.text for cell in frame.cells
                        if cell.row == next(region.row for region in frame.regions
@@ -254,13 +256,14 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
                 assert frame["theme"] == [f"Theme: {'Moonlight' if step == 6 else 'Hologram'} [t]"]
                 continue
             if checks == "colors":
-                assert frame["brand_glyphs"] == ["▀", "╷", "▀", "▀", "▄"]
+                assert frame["brand_glyphs"] == ["▀", "▀", "▀", "▄"]
+                assert frame["shadow_blank"]
                 assert frame["blank"] == [ord(" "), 233]
                 if step in (0, 6, 7):  # First paint and both theme changes.
                     primary, secondary = (117, 183) if step == 6 else (111, 170)
                     output = output_by_step[step]
                     for glyphs, foreground, count in (("▀▀█", secondary, 1), ("▄▀▀▄", primary, 1),
-                                                     ("▀", 247, 2), ("╷", 243, 1)):
+                                                     ("▀", 247, 2)):
                         attributes = [sgr_at(output, match.start()) for match in
                                       re.finditer(re.escape(glyphs.encode()), output)]
                         assert attributes.count((False, False, foreground, 233)) >= count, (glyphs, output)
@@ -268,7 +271,7 @@ def test_real_arrows_drive_default_app_and_disabled_keys_preserve_selection(tmp_
             assert frame["detail_name"] == [kind.upper()]
             assert frame["detail_type"] == []
             assert frame["list_type"] == [f"{kind.upper()} / :{port}"]
-            assert "DECODE HISTORY / tok/s" in frame["detail"] if kind == "chat" else "RATE HISTORY / seq/s" in frame["detail"]
+            assert "DECODE HISTORY | tok/s" in frame["detail"] if kind == "chat" else "RATE HISTORY | seq/s" in frame["detail"]
             assert "TTFT" in frame["detail"] if kind == "chat" else "Avg latency" in frame["detail"]
             assert frame["theme"] == [f"Theme: {'Moonlight' if step == 6 else 'Hologram'} [t]"]
             assert "vLLM" in " ".join(frame["switch"])

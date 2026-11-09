@@ -1,7 +1,7 @@
 # Neon Grid 主题与终端配色设计
 
 - 关联需求：dev-0 / REQ-006，需求说明 v1.24，AC-601～616；复用 REQ-001～005。
-- 修订 v1.16，2026-11-06。为四行像素品牌增加中性灰影线。
+- 修订 v1.17，2026-11-09。页眉像素品牌采用无阴影字形。
 - 代码：`src/joi_observer/tui/theme.py`、`layout.py`、`navigation.py`、`app.py`；沿用 `widgets.py`、`vllm.py`、`services.py`。
 - 关联模块：[应用外壳](application-shell.md)、[模型导航](navigation.md)、[硬件](hardware.md)、[vLLM](vllm.md)。
 - 当前阶段：REQ-006既有配色、Frame传递和终端接线已实现；本次固定色方案取代先前可改色终端的私有RGB色槽方案。原[R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)、[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)与[R2交接](../dev-workflow/dev-0/REQ-006/handoff-r2.md)保留其对应版本事实，不能代替本次验证。
@@ -102,17 +102,19 @@ classDiagram
 | background | `#080E18` | `#080E18` | 全窗口，包含空白、边框与小窗口提示背景 |
 | text | `#D4DDEB` | `#D4DDEB` | 设备标签/正文、GPU名称/温度、CPU数字/RAM总量数字、Storage路径/空态/百分比、未选中模型名称、左栏running数字、右侧RUNNING/WAITING标签、零等待数、STALE、普通生命周期、指标值 |
 | muted | `#8A9DB5` | `#8A9DB5` | `::`/系统/时钟、边框/分隔、显存/功率、CPU百分号/RAM已用与共享单位、Storage容量/中点、MODELS标题、模型类型/端口、计数标签、四指标标签/单位、caption/历史尺度文字、未关联GPU填充/编号/百分比、禁用WebUI |
-| primary | `#7DDFFF` | `#7B9FFF` | Observer、Theme名称、GPU标题、关联GPU编号/条/百分比、选中模型名称及标记、当前服务、键位、历史柱、fresh Running |
+| primary | `#7DDFFF` | `#7B9FFF` | Observer、Theme名称、GPU标题、关联GPU编号/条/百分比、选中模型名称及标记、当前服务、键位、历史曲线、fresh Running |
 | secondary | `#C6A7FF` | `#E570D0` | Joi、CPU/RAM已填充段、Host/Storage/Docker/vLLM标题、GPU组头右端配置标记、模型详情端口 |
 | amber | `#FFA45B` | `#FFA45B` | 仅新鲜的 QUEUED 和大于 0 的等待数 |
 | track | `#3E4A5B` | `#3E4A5B` | 仅GPU/CPU/RAM条的未填充段；不替换muted的其他用途 |
-| brand_shadow | `#767676` | `#767676` | 四行像素品牌中的细线笔画 |
+| brand_shadow | `#767676` | `#767676` | 旧版品牌影线角色，保留供兼容调用 |
 
-像素品牌的主体笔画按三个区段着色。`Joi` 使用 secondary，双冒号使用 muted，`Observer` 使用 primary。细线笔画统一使用 brand_shadow。图形内的空格透出页眉背景。紧凑页眉直接显示三个区段并使用相同的主体颜色。页眉的尺寸和切换条件见[应用外壳](application-shell.md#可验证的字符容量)。
+像素品牌按三个区段着色。`Joi` 使用 secondary，双冒号使用 muted，`Observer` 使用 primary。原阴影位置为空格，最后一行为空白，字面笔画保留原来的字符、位置和颜色。紧凑页眉直接显示三个区段并使用相同的主体颜色。页眉的尺寸和切换条件见[应用外壳](application-shell.md#可验证的字符容量)。
 
 `Palette`冻结且所有RGB为tuple，标准0..255通道。`palette_for`是纯查询；未知主题、大小写变体、空白和非字符串均抛ValueError。颜色值与curses色号分离，避免控件依赖终端能力。`CursesTheme.style`的未知角色沿用正文回退，不从文本推断状态。硬件轨道扩展、构造兼容与颜色资源编号统一见下节。
 
 `TextCell`在既有`row/column/text/role`之后追加`bold: bool = False`，保留原有位置参数和默认外观。粗体是独立字体属性，不新增颜色role或改写Palette；哪些服务数值请求粗体由[vLLM 展示契约](vllm.md#10-展示与固定布局)统一定义。本模块负责将请求与颜色属性叠加，具体后端规则见下文。
+
+扫描历史图的 `▼` 使用 text 角色并设置 `bold=True`，曲线使用 primary 普通字重。当前扫描位置由亮色三角标记表示。
 
 两主题共享琥珀规则；等待值未知、首次未采集、失败保留的旧正数都不用琥珀，不增感叹号或告警色。RAM总量数字及Storage百分比的“白色”对应text角色，不另建纯白色。硬件未知片段沿各字段原角色，STALE始终为text，不因故障改变数值颜色。对象状态和字段位置分别由[硬件](hardware.md)、[Docker](docker.md)及[vLLM](vllm.md)设计定义。
 
@@ -126,7 +128,7 @@ classDiagram
 
 GPU/CPU/RAM在`hardware_cells`绘制时，按`percentage_bar`返回的`len(filled)`和`len(empty)`各画同数量的`▌`；填充与未填充轨道字形一致，每段仍占1字符格，组合宽度仍为原width。公开`percentage_bar`继续返回`█`/`░`，百分比按ROUND_HALF_UP保留1位小数再去尾零，填充数量沿用同一舍入比例换算字符格；不乘2、不增加半格量化，不改GPU利用率文字。
 
-只有未填充段使用上表的track角色；关联GPU填充为primary，未关联GPU填充保留muted，CPU/RAM填充为secondary。0与未知均画全轨道，100%全为填充，未知数值文字仍为`—`。未关联GPU的muted填充不能替换成track；边框、其他灰色文字和vLLM竖向历史柱也不使用track。原条宽、位置、段数、百分比列与三行/四行布局保持。硬件条不设置`TextCell.bold`，低色模式由颜色能力附带的字重不改变字体元数据。
+只有未填充段使用上表的track角色；关联GPU填充为primary，未关联GPU填充保留muted，CPU/RAM填充为secondary。0与未知均画全轨道，100%全为填充，未知数值文字仍为`—`。未关联GPU的muted填充不能替换成track；边框、其他灰色文字和vLLM历史曲线也不使用track。原条宽、位置、段数、百分比列与三行/四行布局保持。硬件条不设置`TextCell.bold`，低色模式由颜色能力附带的字重不改变字体元数据。
 
 `Palette` 将 track 和 brand_shadow 作为具有默认值的末尾字段，支持原位置参数构造。text、muted、primary、secondary、amber、track 依次使用色对 1～6。品牌影线在固定 256 色且有额外色对时使用第 7 对。各色对共享背景索引。
 
@@ -181,7 +183,7 @@ Python的`setupterm`会缓存首次成功结果，后续同进程调用不能视
 
 全页区域、最低尺寸与各面板容量统一见[应用外壳容量契约](application-shell.md#可验证的字符容量)；页眉内容与本机发行版本读取见[HTML 对齐的字符适配](application-shell.md#html-对齐的字符适配)。主题不增加专用行或改变区域预算。
 
-硬件内部坐标、容量与百分比精度、Storage 状态汇总及GPU匹配统一见[硬件显示设计](hardware.md#硬件显示与模型关联)；模型栏、服务详情、数字强调与留白见[vLLM 展示契约](vllm.md#10-展示与固定布局)；历史算法见[vLLM 历史设计](vllm.md#101-稳定柱状历史与显示尺度)。本节仅追踪HTML元素与这些正式契约的对应关系。
+硬件内部坐标、容量与百分比精度、Storage 状态汇总及GPU匹配统一见[硬件显示设计](hardware.md#硬件显示与模型关联)；模型栏、服务详情、数字强调与留白见[vLLM 展示契约](vllm.md#10-展示与固定布局)；历史算法见[vLLM 历史设计](vllm.md#vllm-history)。本节仅追踪HTML元素与这些正式契约的对应关系。
 
 `joi-observer.html` 的初始 Neon Grid 已改为 Hologram，仍是可交互的设计预览；预览的鼠标、模拟数据和保存状态不构成正式 TUI 功能，正式键位、默认行为和新增排版验收以需求v1.15为准。
 
@@ -209,7 +211,7 @@ Python的`setupterm`会缓存首次成功结果，后续同进程调用不能视
 | neon-queues | [运行/等待统计](vllm.md#10-展示与固定布局) | vllm_view |
 | queue / divider | [分隔线与留白](vllm.md#10-展示与固定布局) | vllm_view、tui |
 | neon-metrics | [类型字段、数值强调与槽位](vllm.md#10-展示与固定布局) | vllm_view、theme_view |
-| history-block | [历史显示与尺度](vllm.md#101-稳定柱状历史与显示尺度) | history_presentation、vllm_view/pty |
+| history-block | [历史显示与尺度](vllm.md#vllm-history) | history_presentation、vllm_view/pty |
 | neon-service-tabs / keybar | [服务入口与键位](navigation.md#服务入口与键位呈现) | service_footer、navigation_app |
 | resize / long text / partial values | [整页边界](application-shell.md#可验证的字符容量)、[硬件裁切](hardware.md#硬件显示与模型关联)、[服务裁切](vllm.md#10-展示与固定布局) | html_hardware_layout、vllm_view、html_shell_layout、tui |
 

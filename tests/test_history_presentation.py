@@ -17,7 +17,7 @@ import pytest
 
 from joi_observer.config import ModelConfig, ModelType
 from joi_observer.data.models import HistoryPoint, Metric, ObjectKey, ObjectSnapshot, StateSnapshot
-from joi_observer.tui.history import HistoryScale, HistoryScaleTracker, bucket_history
+from joi_observer.tui.history import HistoryScale, HistoryScaleTracker, bucket_history, scan_history
 
 
 def point(at, value, field="decode_rate", *, applicable=True):
@@ -148,6 +148,88 @@ def test_bucket_rejects_invalid_clock(now):
 def test_bucket_rejects_invalid_columns(columns):
     with pytest.raises(ValueError):
         bucket_history((), "decode_rate", now=100, columns=columns)
+
+
+def test_scan_slots_stay_fixed_as_time_advances_without_new_samples():
+    history = (point(58.25, 5), point(59.5, 8), point(60.1, 0))
+    before = deepcopy(history)
+    initial = scan_history(history, "decode_rate", now=60.1)
+    later = scan_history(history, "decode_rate", now=65.9)
+    assert initial == later
+    assert isinstance(initial, tuple) and len(initial) == 60
+    assert [(slot, value) for slot, value in enumerate(initial) if value is not None] == [
+        (0, 0), (58, 5), (59, 8),
+    ]
+    assert history == before
+
+
+def test_scan_rollover_expires_previous_revolution_and_accepts_new_sample():
+    history = (point(0.75, 900), point(59.25, 8))
+    before = scan_history(history, "decode_rate", now=59.9)
+    after = scan_history(history, "decode_rate", now=60)
+    new = scan_history((*history, point(60, 3)), "decode_rate", now=60)
+    assert before[0] == 900 and before[59] == 8
+    assert after[0] is None and after[59] == 8
+    assert new[0] == 3 and new[59] == 8
+    assert scan_history(history, "decode_rate", now=120) == (None,) * 60
+
+
+@pytest.mark.parametrize("gap", (
+    HistoryPoint(70.2, None), HistoryPoint(70.2, ()),
+    point(70.2, 1000, field="rate"), point(70.2, None),
+    point(70.2, 1000, applicable=False),
+), ids=("failed", "missing-metrics", "missing-primary", "unknown-primary", "not-applicable"))
+def test_scan_missing_sample_hides_its_whole_second_but_preserves_other_seconds(gap):
+    history = (point(70.1, 1e300), gap, point(70.3, 0), point(80.2, 0))
+    expected = [None] * 60
+    expected[20] = 0
+    assert scan_history(history, "decode_rate", now=100) == tuple(expected)
+    assert scan_history(tuple(reversed(history)), "decode_rate", now=100) == tuple(expected)
+
+
+def test_scan_same_second_maximum_ignores_future_and_expired_samples():
+    history = (point(40.999999, 1e300), point(41, 2), point(70.1, 3),
+               point(70.2, 9), point(70.3, 0), point(100.2, 8), point(100.200001, 1e300))
+    expected = [None] * 60
+    expected[41], expected[10], expected[40] = 2, 9, 8
+    assert scan_history(history, "decode_rate", now=100.2) == tuple(expected)
+    assert scan_history(tuple(reversed(history)), "decode_rate", now=100.2) == tuple(expected)
+
+
+def test_scan_startup_keeps_unobserved_slots_empty():
+    assert scan_history((), "decode_rate", now=0) == (None,) * 60
+    result = scan_history((point(0.1, 0), point(0.2, 7), point(1, 8)),
+                          "decode_rate", now=0.3)
+    assert result == (7,) + (None,) * 59
+
+
+@pytest.mark.parametrize("now", (60, 100.2, 1_000_000.4, 10**100, sys.float_info.max))
+def test_scan_exact_clock_endpoint_and_adjacent_seconds(now):
+    current = math.floor(now)
+    result = scan_history((point(current - 60, 999), point(current - 59, 3), point(now, 7)),
+                          "decode_rate", now=now)
+    assert result[current % 60] == 7
+    assert result[(current - 59) % 60] == 3
+    assert sum(value is not None for value in result) == 2
+
+
+@pytest.mark.parametrize("now", (-1, math.nan, math.inf, -math.inf, True, "100", None))
+def test_scan_rejects_invalid_clock(now):
+    with pytest.raises(ValueError):
+        scan_history((), "decode_rate", now=now)
+
+
+def test_scan_scale_uses_visible_fixed_second_peak_regardless_of_width():
+    history = (point(40.5, 1e300), point(41, 121), point(70.1, 1e300),
+               HistoryPoint(70.2, None), point(100, 23))
+    assert max(value for value in scan_history(history, "decode_rate", now=100)
+               if value is not None) == 121
+    for columns in (2, 61, 88, 500):
+        tracker = HistoryScaleTracker((model(),))
+        assert one_scale(tracker, snapshot(history), 100, columns).upper == 200
+        assert one_scale(tracker, snapshot(history), 101, columns).upper == 200
+        assert one_scale(tracker, snapshot(history), 105.999, columns).upper == 200
+        assert one_scale(tracker, snapshot(history), 106, columns).upper == 50
 
 
 def test_scale_value_is_frozen_and_preserves_arbitrary_precision_integer():
@@ -392,4 +474,5 @@ def test_history_and_scale_operations_do_not_access_files_processes_or_async_tas
         patch.setattr(asyncio, "create_task", forbidden)
         tracker = HistoryScaleTracker(models)
         assert bucket_history(data.objects[0].history, "decode_rate", now=100, columns=61)[-1] == 23
+        assert scan_history(data.objects[0].history, "decode_rate", now=100)[40] == 23
         assert tracker.update(data, now=100, columns=61) == (HistoryScale("chat", "decode_rate", 50),)

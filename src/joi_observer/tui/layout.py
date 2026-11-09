@@ -237,8 +237,8 @@ def compose_frame(
     空值/尚未采集显示 —，真实0显示0，applicable=False显示 N/A；仅 stale
     对象在各自预留状态槽显示 STALE，不展示 sampled_at/history时间、原因
     或任何错误诊断。正常/失败/恢复、不同模型类型共用同样区域高度。
-    正常字标占row0..3，Joi/::/Observer分别secondary/muted/primary，细线为
-    brand_shadow。紧凑页眉的row0显示单行Joi::Observer。
+    正常字标使用row0..3画布，Joi/::/Observer分别secondary/muted/primary。
+    影线原位置留空。紧凑页眉的row0显示单行Joi::Observer。
     Theme为纯状态文字'Theme: Hologram [t]'或'Theme: Moonlight [t]'，primary，
     每种主题按实际显示宽度定位，右端均为全页columns；不画可点击按钮。
     主机信息位于页眉倒数第二行，末行为全宽muted分隔线。
