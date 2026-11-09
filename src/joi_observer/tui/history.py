@@ -56,6 +56,42 @@ def bucket_history(
     return tuple(buckets)
 
 
+def scan_history(
+    history: tuple[HistoryPoint, ...],
+    field: str,
+    *,
+    now: float,
+) -> tuple[float | int | None, ...]:
+    """Return 60 fixed one-second slots indexed by the monotonic second modulo 60.
+
+    The current second and previous 59 seconds occupy distinct slots. Points
+    before floor(now)-59 or after now are excluded. Advancing to a new second
+    expires that slot's previous revolution, even when the new second has no
+    samples. A partial current second accepts observations immediately.
+
+    Values in the same second use their maximum. A missing or inapplicable
+    primary metric makes that whole second a gap. Zero remains an observed
+    value. All calculations use the input monotonic timestamps, with no I/O
+    or mutation and no dependence on the terminal's width.
+    """
+    _validate_clock_width(now, 60)
+    earliest = math.floor(now) - 59
+    buckets: list[float | int | None] = [None] * 60
+    gaps: set[int] = set()
+    for point in history:
+        if not earliest <= point.sampled_at <= now:
+            continue
+        index = math.floor(point.sampled_at) % 60
+        metric = next((metric for metric in point.metrics or () if metric.name == field), None)
+        if metric is None or metric.value is None or not metric.applicable:
+            gaps.add(index)
+            buckets[index] = None
+        elif index not in gaps:
+            current = buckets[index]
+            buckets[index] = metric.value if current is None else max(current, metric.value)
+    return tuple(buckets)
+
+
 def _validate_clock_width(now: float, columns: int) -> None:
     if (isinstance(now, bool) or not isinstance(now, (int, float)) or now < 0
             or (isinstance(now, float) and not math.isfinite(now))):
@@ -119,7 +155,7 @@ class HistoryScaleTracker:
 
         只读取 collector='vllm' 且 object_id 匹配配置 id 的历史；Chat
         使用 decode_rate，Embedding/Reranker 使用 rate。未配置对象和
-        其他 collector 不参与。只按 bucket_history 的同一窗口/分桶/
+        其他 collector 不参与。只按 scan_history 的同一窗口/分桶/
         缺口规则求可绘制峰值，不用最新 metrics 或对象 stale 猜测历史。
 
         目标上限是不小于有效桶峰值的最小1/2/5十进制档，最小1；全0
@@ -133,7 +169,7 @@ class HistoryScaleTracker:
         可重复调用；同一输入返回相等值，已返回的对象不能随后被修改。
 
         所有模型都推进，不依赖当前选择；尺度按模型id与指标隔离。
-        resize只改变桶结果，不重建会话或无故清空迟降计时。不会修改
+        显示宽度不影响固定秒桶、尺度或迟降计时。不会修改
         snapshot、模型配置或其历史，不执行 I/O，也不创建异步任务。
 
         now/columns 的合法性与 bucket_history 相同。now 小于上次成功
@@ -154,8 +190,8 @@ class HistoryScaleTracker:
             field = "decode_rate" if model.type == ModelType.CHAT else "rate"
             key = (model.id, field)
             obj = objects.get(model.id)
-            values = tuple(value for value in bucket_history(
-                obj.history if obj else (), field, now=now, columns=columns
+            values = tuple(value for value in scan_history(
+                obj.history if obj else (), field, now=now
             ) if value is not None)
             current = scales.get(key)
             if not values:

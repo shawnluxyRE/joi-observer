@@ -21,12 +21,12 @@ def inputs():
         ModelConfig("chat", ModelType.CHAT, "Chat", "http://offline.invalid:8000"),
         ModelConfig("embed", ModelType.EMBEDDING, "Embedding", "http://offline.invalid:8001"),
     ))
-    # The 121 peak leaves the real 60-second window after time 100. The
+    # The 121 peak's second leaves the fixed 60-slot sweep at time 101. The
     # remaining peak is 23, which asks for the 50-unit scale, not 23 itself.
     snapshot = StateSnapshot((
         ObjectSnapshot(ObjectKey("vllm", "chat"), (Metric("decode_rate", 23, "tok/s"),),
                        sampled_at=100, history=(
-                           HistoryPoint(40, (Metric("decode_rate", 121, "tok/s"),)),
+                           HistoryPoint(41, (Metric("decode_rate", 121, "tok/s"),)),
                            HistoryPoint(100, (Metric("decode_rate", 23, "tok/s"),)),
                        )),
         ObjectSnapshot(ObjectKey("vllm", "embed"), (Metric("rate", 7, "seq/s"),),
