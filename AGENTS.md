@@ -6,7 +6,7 @@
 .
 ├── src/joi_observer/         # Python 包目录
 │   ├── __main__.py           # 启动入口
-│   ├── config.py             # 采样间隔、服务地址等配置
+│   ├── config.yaml           # 采样间隔、服务地址等配置
 │   ├── monitor.py            # 调度采集、更新状态、通知刷新
 │   ├── data/                 # 数据对象与内存状态，不存放数据文件
 │   │   ├── models.py         # 硬件、模型、服务状态的数据对象
@@ -30,18 +30,38 @@
 - `data/state.py` 中的 `MonitorState` 是独立内存对象，保存最新数据、上次采样值及时间、最近约 60 秒的有界历史和错误状态；不使用数据库，不持久化监控数据。
 - 采集器独立于界面；未来 Web 看板共享同一状态对象，避免重复采集，且仅提供只读接口。
 
+# Info For Skills
+
+- project_root：D:\Documents\joi-observer
+- work_id：dev-0
+- work_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0
+- req_id：REQ-006
+- req_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-0\REQ-006
+- design_dir：D:\Documents\joi-observer\docs\design
+- requirements_path：D:\Documents\joi-observer\docs\dev-workflow\dev-0\requirements.md
+
 # Design
 
-- 设计稿：`docs/design/joi-observer.html`（精简 HTML 片段，作为布局、配色和交互参考；独立预览时按需导出完整 HTML）。
-- Ubuntu Terminal TUI：深色、等宽、紧凑分区，全英文；以当前 Neon Grid 总览为准。
-- 配色：背景 `#080E18`，正文 `#D4DDEB`，次要信息 `#8A9DB5`；冰蓝 `#7DDFFF` 为主色，浅紫 `#C6A7FF` 为辅色；仅 `QUEUED` 和大于 0 的等待数量用琥珀 `#FFA45B`，`WAITING` 标签与 0 使用普通文字色，不加感叹号。
-- 顶部：`Joi::Observer`（`Joi` 使用主题辅色，`::` 灰色，`Observer` 使用主题主色），主机信息右侧显示时间；右上角按钮切换 Moonlight（冰蓝 / 浅紫）与 Hologram（`#7B9FFF` / `#E570D0`），两种主题共用琥珀强调规则。
-- 上半区：左侧 GPU 列表，右侧依次为 Host Resources、Storage、Docker。GPU 分段条占可用宽度约一半，百分比在条末端，使用主题主色，显存灰色；CPU / RAM 条使用主题辅色，未填充段与 GPU 同灰色，RAM 已用量灰色、总量白色。Docker 最多显示 5 个容器的名称和状态，高度贴合内容，不留多余空行；剩余空间分配给 Storage。
-- 下半区：紫色 `vLLM` 标题；左侧模型列表，选中项冰蓝；右侧运行、排队、吞吐、延迟、KV Cache 与柱状历史图。路由信息浅紫，文案用 `Total`、`Avg queue`。
-- 底部仅保留 `vLLM` / `WebUI` 服务切换位（暂不实现切换）；最下方英文键位提示使用冰蓝。设计预览中的模拟标记不属于正式 UI。
+| 文档 | 维护内容 |
+| --- | --- |
+| [应用外壳](docs/design/application-shell.md) | 启动与退出、整页布局和最低尺寸、页眉、UI 帧调度 |
+| [主题](docs/design/theme.md) | 颜色角色、硬件条字形与轨道、终端配色降级及恢复 |
+| [硬件](docs/design/hardware.md) | 硬件采集、数值口径与精度、面板内部布局、GPU 关联 |
+| [Docker](docs/design/docker.md) | 容器采集与身份、生命周期、条目名称及状态槽 |
+| [vLLM](docs/design/vllm.md) | 服务指标与窗口、模型列表和详情坐标、数字强调、历史图 |
+| [导航](docs/design/navigation.md) | 会话选择、按键、服务入口与页脚 |
+| [配置](docs/design/configuration.md) | 配置查找、字段校验、默认值与示例 |
+| [状态](docs/design/monitor-state.md) | 调度、公共结果类型、只读快照与状态更新 |
+| [错误日志](docs/design/error-logging.md) | 采集错误分类、限频、文件格式与轮转 |
+
+[Neon Grid HTML](docs/design/joi-observer.html) 是视觉参考；正式 TUI 的采用与适配范围见[主题设计](docs/design/theme.md#原稿与正式终端的逐项对应)。
 
 # Rules
 
 - 禁止尝试连接任何服务器
+- 按当前用户指令，不生成或重建离线安装包，不更新已有GUI启动/回放入口；既有包和回放仍属此前版本，不包含本轮track变更。
 
 # Tests
+
+- 产品目标为 Ubuntu Server 24.04 amd64；必需验证在本地 Ubuntu 或 WSL Ubuntu 执行。Windows 工作区通过 WSL 运行测试，目录可用 `~/projects/tmp`。
+- 不要求维护原生 Windows 专用测试或执行 Windows 全量回归；通用非终端离线测试继续保留。
