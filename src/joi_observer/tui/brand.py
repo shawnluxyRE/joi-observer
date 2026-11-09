@@ -3,15 +3,14 @@
 import re
 
 
-# Each triple is Joi, the double colon, and Observer, including their shadows.
+# Each triple is Joi, the double colon, and Observer on the original 59×4 canvas.
 WORDMARK_ROWS = (
-    (" ▀▀█╷ ▄▄╮  ▀╮ ", "    ", "▄▀▀▄╮█╮    ▄▄▄╮ ▄▄╮ ▄╮▄▄╮▄╮  ▄╮ ▄▄╮ ▄╮▄▄╮"),
-    ("   █│█  █╮▀█│ ", "▀ ▀ ", "█  █│█▀▀▄╮▀▄▄╭╯█▄▄█╮█▀╭─╯█│  █│█▄▄█╮█▀╭─╯"),
-    ("▝▙▄▛│▀▄▄▀│▄█▄╮", "▀ ▀ ", "▀▄▄▀│█▄▄▀│▄▄▄▀╮▀▄▄▄│█╭╯  ╰▀▄▀╭╯▀▄▄▄│█╭╯  "),
-    (" ╶──╯╰───╯╰──╯", "    ", "╰───╯╰───╯╰───╯╰───╯╰╯    ╰──╯ ╰───╯╰╯   "),
+    (" ▀▀█  ▄▄   ▀  ", "    ", "▄▀▀▄ █     ▄▄▄  ▄▄  ▄ ▄▄ ▄   ▄  ▄▄  ▄ ▄▄ "),
+    ("   █ █  █ ▀█  ", "▀ ▀ ", "█  █ █▀▀▄ ▀▄▄  █▄▄█ █▀   █   █ █▄▄█ █▀   "),
+    ("▝▙▄▛ ▀▄▄▀ ▄█▄ ", "▀ ▀ ", "▀▄▄▀ █▄▄▀ ▄▄▄▀ ▀▄▄▄ █     ▀▄▀  ▀▄▄▄ █    "),
+    ("              ", "    ", "                                         "),
 )
-_SHADOW = "─│╭╮╰╯╷╶"
-_STROKES = re.compile(f"[{_SHADOW}]+|[^{_SHADOW} ]+")
+_STROKES = re.compile(r"[^ ]+")
 
 
 def wordmark_runs():
@@ -21,6 +20,5 @@ def wordmark_runs():
         for band, face in zip(bands, ("secondary", "muted", "primary"), strict=True):
             for match in _STROKES.finditer(band):
                 text = match.group()
-                role = "brand_shadow" if text[0] in _SHADOW else face
-                yield row, column + match.start(), text, role
+                yield row, column + match.start(), text, face
             column += len(band)

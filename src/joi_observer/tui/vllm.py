@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from joi_observer.config import AppConfig, ModelType
 from joi_observer.data.models import Metric, ObjectSnapshot, StateSnapshot
-from joi_observer.tui.history import HistoryScale, _scale_upper, bucket_history
+from joi_observer.tui.history import HistoryScale, _scale_upper, scan_history
 from joi_observer.tui.layout import Region, TextCell, ViewSelection, _clip, format_metric
 
 
@@ -57,12 +57,13 @@ def vllm_cells(
     最后一列取余。Chat标签DECODE / tok/s、PREFILL / tok/s、TTFT / s、
     KV CACHE / %；pooling为RATE / seq/s、Avg queue / s、Avg latency / s、
     KV CACHE / %（值N/A）。四列标签muted、值text；值仅数字/—/N/A，单位只放标签，所有类型仍显示
-    Avg queue。+11行留空，+12历史标题，+13..height-3柱图区，height-2相对时间轴。
-    最低height=16时保留1行柱图区；三个空行仅在右详情内容范围内，左栏不移位。
-    更高区域仅扩展柱图区与左栏容量。三类模型、正常/失败、空字段共用槽位。
+    Avg queue。+11行留空，+12历史标题，+13是明亮加粗的▼游标行，
+    +14..height-3为点阵折线，height-2为0s/15s/30s/45s/59s循环秒刻度。
+    最低height=16时仅有一行图区，▼覆盖当前位置的字符；较高图区独占游标行。
+    左侧6列预留纵轴数值和间距，足够高度时标出上限、一半与0。
     仅右+6行RUNNING/WAITING及右+10行四指标的真实数值加粗，包括0、科学记数
     和STALE保留旧数；—/N/A/…不加粗。加粗使用TextCell.bold，不改变颜色role；
-    左模型栏、caption、标签、状态和历史不增加加粗。
+    扫描游标也加粗。其余标签和历史曲线使用普通字重。
 
     只读取ObjectKey('vllm',config.id)；字段名为running/waiting/total、
     decode_rate/prefill_rate/rate、ttft_seconds/queue_seconds/latency_seconds、
@@ -82,16 +83,11 @@ def vllm_cells(
     缺队列数据保持未知状态—，不能默认READY。主题不改变amber规则。
     路由展示配置的名称和服务端口。
 
-    历史只取选中模型、相应主吞吐字段，保留[now-60,now]内的点；now须为
-    与HistoryPoint.sampled_at同域的有限非负单调秒数，不能传墙钟datetime。
-    无历史写—；相对时间轴固定-60s/0s，单点/空图也保留两端。短历史只绘制
-    真实时间位置、左侧留白，不用earliest..now拉伸；不显示采样绝对时间。
-    正值用竖柱，零值在基线用·，metrics=None或主字段None为留白缺口。
-    W为可用图区宽度，Δ=60/(W-1)，B=floor(now/Δ)，b=floor(sampled_at/Δ)，
-    列=W-1-(B-b)；先按真实闭窗口过滤再分箱，不因浮点误差丢掉合法端点。
-    同W/B时旧点横坐标不变，B增加1时统一左移1列；resize才重分箱。当前
-    部分桶立即收新点，最旧点过期不拉伸其他点。同箱取有效主吞吐最大值，若含缺口则该箱
-    留白，不能连线/插值/延续旧值。空白旧区间不补零，失败旧值不画新柱。
+    历史取选中模型的主吞吐字段，now与sampled_at同域。60个固定槽对应
+    单调整秒模60，范围为[floor(now)-59,now]。每秒推进▼，回绕覆盖旧槽，
+    已有槽位的横坐标固定。同秒max、缺口优先规则由scan_history统一处理。
+    折线使用每字符2×4的Braille点阵；有效0画基线点。连续有效秒之间连线，
+    空秒和缺样处断开，当前秒与其右侧上一圈旧数据之间断开。无有效样本显示—。
 
     history_scales是冻结HistoryScale元组，按model_id+field精确匹配主指标。
     None/空/无匹配项时按本帧有效桶峰值选一次性不小于它的1/2/5×10^n上限，
@@ -102,7 +98,7 @@ def vllm_cells(
     吞吐的尺度可超过浮点上限，使用任意精度整数且比例/格式化不能溢出。
     历史标题+12行右侧显示'Scale ≤ {upper} {unit}'，muted、右对齐、保留至少
     一列间隔；普通数值用十进制，超长上限可科学计数，不覆盖左侧标题或加行。
-    柱高按真实桶值/上限及已有1/8字符精度绘制；不强制峰值铺满整个高度。
+    点高按真实桶值/上限换算，采用整数比值避免浮点溢出。
     分桶与即时档位复用history模块；跨帧迟降只由应用会话维护。
 
     所有文字按终端显示宽度裁成单行，清理控制字符；不得输出诊断、采集
@@ -286,41 +282,93 @@ def _validated_scales(scales: tuple[HistoryScale, ...] | None) -> dict[tuple[str
 def _history_cells(obj: ObjectSnapshot | None, model_id: str, field: str, unit: str,
                    region: Region, start: int, end: int, now: float,
                    scales: dict[tuple[str, str], int]) -> tuple[TextCell, ...]:
-    """Render stable time buckets against a supplied or one-frame upper bound."""
+    """Render a stationary 60-second sweep with a one-second cursor."""
     history = obj.history if obj else ()
-    bins = bucket_history(history, field, now=now, columns=end - start)
+    bins = scan_history(history, field, now=now)
     maximum = max((value for value in bins if value is not None), default=0)
     upper = scales.get((model_id, field))
     if upper is None:
         upper = _scale_upper(maximum)
     elif upper < maximum:
         raise ValueError("History scale cannot clip the visible peak")
-    title = "DECODE HISTORY / tok/s" if field == "decode_rate" else "RATE HISTORY / seq/s"
+    title = "DECODE HISTORY | tok/s" if field == "decode_rate" else "RATE HISTORY | seq/s"
     label_width = end - start - len(title) - 1
     number = _bounded_number(Metric("scale", upper), label_width - len("Scale ≤ ") - len(unit) - 1)
     label = f"Scale ≤ {number} {unit}"
     cells = [TextCell(region.row + 12, start, title, "secondary"),
              TextCell(region.row + 12, end - len(label), label, "muted")]
-    top, bottom = region.row + 13, region.row + region.height - 3
-    height = bottom - top + 1
-    if not any(now - 60 <= point.sampled_at <= now for point in history):
-        cells.append(TextCell(bottom, start, "—", "muted"))
-    for index, value in enumerate(bins):
+    cursor_row, bottom = region.row + 13, region.row + region.height - 3
+    top = min(cursor_row + 1, bottom)
+    graph_start = start + 6
+    columns, rows = end - graph_start, bottom - top + 1
+    current_slot = math.floor(now) % 60
+    cursor_column = graph_start + ((current_slot * (columns * 2 - 1) + 29) // 59) // 2
+    raster = _sweep_raster(bins, current_slot, columns, rows, upper)
+    for (row, column), bits in sorted(raster.items()):
+        row, column = top + row, graph_start + column
+        if (row, column) != (cursor_row, cursor_column):
+            cells.append(TextCell(row, column, chr(0x2800 + bits), "primary"))
+    if not any(value is not None for value in bins):
+        column = graph_start + int(top == cursor_row and cursor_column == graph_start)
+        cells.append(TextCell(bottom, column, "—", "muted"))
+
+    if rows >= 2:
+        ticks = [(top, upper), (bottom, 0)]
+        if rows >= 3:
+            half = upper // 2 if upper % 2 == 0 else upper / 2
+            ticks.insert(1, (top + rows // 2, half))
+        for row, value in ticks:
+            tick = _bounded_number(Metric("scale", value), 5)
+            cells.append(TextCell(row, graph_start - 1 - len(tick), tick, "muted"))
+
+    cells.append(TextCell(cursor_row, cursor_column, "▼", "text", bold=True))
+    axis_row = region.row + region.height - 2
+    for second in (0, 15, 30, 45, 59):
+        tick = f"{second}s"
+        center = graph_start + ((second * (columns * 2 - 1) + 29) // 59) // 2
+        column = max(graph_start, min(end - len(tick), center - len(tick) // 2))
+        cells.append(TextCell(axis_row, column, tick, "muted"))
+    return tuple(cells)
+
+
+def _sweep_raster(bins: tuple[float | int | None, ...], current_slot: int,
+                  columns: int, rows: int, upper: int) -> dict[tuple[int, int], int]:
+    """Draw connected observations on a 2×4-dot character grid, stopping at gaps."""
+    raster: dict[tuple[int, int], int] = {}
+    bits = ((0, 1, 2, 6), (3, 4, 5, 7))
+    max_x, max_y = columns * 2 - 1, rows * 4 - 1
+
+    def dot(x: int, y: int) -> None:
+        key = (y // 4, x // 2)
+        raster[key] = raster.get(key, 0) | (1 << bits[x % 2][y % 4])
+
+    previous: tuple[int, int] | None = None
+    for slot, value in enumerate(bins):
         if value is None:
+            previous = None
             continue
-        if value == 0:
-            cells.append(TextCell(bottom, start + index, "·", "primary"))
-            continue
-        # Exact integer ratios avoid float overflow for huge scales and retain
-        # a visible eighth-cell for the smallest positive subnormal value.
+        x = (slot * max_x + 29) // 59
         numerator, denominator = value.as_integer_ratio() if type(value) is float else (value, 1)
         denominator *= upper
-        eighths = max(1, (numerator * height * 8 + denominator - 1) // denominator)
-        for offset in range(height):
-            filled = min(8, max(0, eighths - offset * 8))
-            if filled:
-                cells.append(TextCell(bottom - offset, start + index, "▁▂▃▄▅▆▇█"[filled - 1], "primary"))
-    axis_row = region.row + region.height - 2
-    cells.append(TextCell(axis_row, start, "-60s", "muted"))
-    cells.append(TextCell(axis_row, end - 2, "0s", "muted"))
-    return tuple(cells)
+        elevation = (2 * numerator * max_y + denominator) // (2 * denominator)
+        y = max_y - max(int(value > 0), elevation)
+        if previous is None or slot == current_slot + 1:
+            dot(x, y)
+        else:
+            x0, y0 = previous
+            dx, dy = abs(x - x0), -abs(y - y0)
+            sx, sy = (1 if x0 < x else -1), (1 if y0 < y else -1)
+            error = dx + dy
+            while True:
+                dot(x0, y0)
+                if (x0, y0) == (x, y):
+                    break
+                doubled = 2 * error
+                if doubled >= dy:
+                    error += dy
+                    x0 += sx
+                if doubled <= dx:
+                    error += dx
+                    y0 += sy
+        previous = (x, y)
+    return raster

@@ -75,7 +75,8 @@ def test_header_theme_and_local_clock_share_the_right_edge_and_roles(columns, th
         assert grid[0, 1] == ("▀", "secondary")
         assert grid[1, 14] == grid[1, 16] == ("▀", "muted")
         assert grid[0, 18] == ("▄", "primary")
-        assert grid[3, 1] == ("╶", "brand_shadow")
+        assert segment(frame, 3, 0, 59).isspace()
+        assert not any(cell.role == "brand_shadow" for cell in frame.cells)
     host_text = "H3C R5300 G6 / Ubuntu 24.04"
     assert segment(frame, host_row, 0, len(host_text)) == host_text
     assert {grid[host_row, column][1] for column in range(len(HOST.hostname))} == {"text"}

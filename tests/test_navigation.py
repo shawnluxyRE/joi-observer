@@ -16,6 +16,7 @@ from joi_observer.config import AppConfig, ModelConfig, ModelType
 from joi_observer.data.models import HistoryPoint, Metric, ObjectKey, ObjectSnapshot, StateSnapshot
 from joi_observer.tui.layout import HostInfo, TerminalSize, ViewSelection, compose_frame
 from joi_observer.tui.navigation import SessionViewActions
+from test_vllm_view import braille_points, scan_x
 
 
 NOW = datetime(2026, 11, 3, 16, 0, tzinfo=timezone.utc)
@@ -158,7 +159,7 @@ def sample_for_navigation():
               Metric("kv_cache_percent", 25, "%")) if chat else
              (Metric("latency_seconds", 0.75, "s"),))
         history = tuple(HistoryPoint(at, None if value is None else (Metric(primary, value, unit),))
-                        for at, value in zip((40, 100), rates))
+                        for at, value in zip((41, 100), rates))
         observations.append(ObjectSnapshot(ObjectKey("vllm", model.id), metrics,
                                            sampled_at=100, history=history))
     return AppConfig(models=configured, mount_points=()), StateSnapshot(cards + tuple(observations), 29)
@@ -186,25 +187,27 @@ def test_navigation_updates_type_units_history_and_gpu_roles_together():
         assert model.name in detail
         assert [cell.text for cell in right if cell.row == service.row + 3] == [f":{8000 + index}"]
         if model.type == ModelType.CHAT:
-            assert all(label in detail for label in ("DECODE / tok/s", "TTFT / s", "DECODE HISTORY / tok/s"))
+            assert all(label in detail for label in ("DECODE / tok/s", "TTFT / s", "DECODE HISTORY | tok/s"))
             assert [cell.text for cell in right if cell.row == service.row + 10] == ["10", "20", "0.25", "25"]
             assert "Avg latency" not in detail and "RATE HISTORY" not in detail
         else:
-            assert all(label in detail for label in ("RATE / seq/s", "Avg latency / s", "RATE HISTORY / seq/s"))
+            assert all(label in detail for label in ("RATE / seq/s", "Avg latency / s", "RATE HISTORY | seq/s"))
             assert [cell.text for cell in right if cell.row == service.row + 10] == ["0", "0.5", "0.75", "N/A"]
             assert "TTFT" not in detail and "DECODE" not in detail
         labels = [(cell.text, cell.role) for cell in frame.cells if cell.text in {"[0]", "[1]"}]
         expected_roles = (("primary", "muted"), ("muted", "primary"), ("muted", "muted"))[index]
         assert labels == list(zip(("[0]", "[1]"), expected_roles))
         history = [cell for cell in right if service.row + 13 <= cell.row <= service.row + service.height - 3]
-        zeros = [cell.column for cell in history if cell.text == "·"]
-        assert zeros == ([30] if index == 0 else [117])
-        bars = [cell.column for cell in history if cell.text in "▁▂▃▄▅▆▇█"]
-        assert set(bars) == ({117} if index == 0 else {30} if index == 1 else set())
+        dots = braille_points(history, service)
+        bottom = (service.height - 16) * 4 - 1
+        expected_dots = ({(scan_x(41, service), bottom), (scan_x(100, service), 0)},
+                         {(scan_x(41, service), 0), (scan_x(100, service), bottom)},
+                         {(scan_x(100, service), bottom)})[index]
+        assert dots == expected_dots
         axis = [(cell.column, cell.text) for cell in right
                 if cell.row == service.row + service.height - 2
                 and cell.column < service.column + service.width - 2]
-        assert axis == [(30, "-60s"), (116, "0s")]
+        assert [label for _, label in axis] == ["0s", "15s", "30s", "45s", "59s"]
         unit = "tok/s" if model.type == ModelType.CHAT else "seq/s"
         assert f"Scale ≤ {(10, 5, 1)[index]} {unit}" in detail
     assert all(frame.regions == frames[0].regions for frame in frames)

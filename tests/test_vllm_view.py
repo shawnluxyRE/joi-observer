@@ -124,17 +124,38 @@ def plot(cells, region=REGION):
                  if region.row + 13 <= cell.row <= region.row + region.height - 3)
 
 
-def bar_eighths(cells, column):
-    """Measure the visible vertical bar, including its fractional top cell."""
-    return sum("▁▂▃▄▅▆▇█".index(character) + 1
-               for (_, x), (character, _) in pixels(plot(cells)).items()
-               if x == column and character in "▁▂▃▄▅▆▇█")
+def braille_points(cells, region=REGION):
+    """Read lit terminal dots, independently of how the renderer joins samples."""
+    top = region.row + (14 if region.height > 16 else 13)
+    points = set()
+    offsets = ((0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2), (0, 3), (1, 3))
+    for (row_index, column), (character, role) in pixels(plot(cells, region)).items():
+        if not "\u2801" <= character <= "\u28ff":
+            continue
+        assert role == "primary"
+        bits = ord(character) - 0x2800
+        for bit, (x, y) in enumerate(offsets):
+            if bits & (1 << bit):
+                points.add((2 * (column - region.column - 36) + x, 4 * (row_index - top) + y))
+    return points
+
+
+def marker(cells):
+    marks = [cell for cell in cells if cell.text == "▼"]
+    assert len(marks) == 1 and marks[0].role == "text" and marks[0].bold
+    return marks[0]
+
+
+def scan_x(second, region=REGION):
+    return round((math.floor(second) % 60) * (2 * (region.width - 38) - 1) / 59)
 
 
 def assert_contained(cells, region=REGION):
     assert isinstance(cells, tuple)
     for cell in cells:
         assert isinstance(cell.text, str)
+        if cell.text == "▼":
+            assert cell.bold and cell.role == "text"
         assert all(not unicodedata.category(c).startswith("C") and c not in "\u2028\u2029"
                    for c in cell.text)
         assert all(region.row < row_index < region.row + region.height - 1
@@ -216,7 +237,7 @@ def test_stale_replaces_queued_without_diagnostics_or_amber_old_waiting():
     assert "7" in row(cells, 6)
     assert not any(cell.role == "amber" for cell in cells)
     for forbidden in ("97", "last", "ago", "timeout", "error", "STALE 3"):
-        assert forbidden not in content(cells)
+        assert forbidden not in content(cell for cell in cells if cell.row < REGION.row + 12)
 
 
 def test_unavailable_values_remain_dash_but_observed_zero_is_zero():
@@ -239,7 +260,7 @@ def test_unknown_denominators_and_raw_metrics_are_not_invented_or_dumped():
     counts = row(cells, 6)
     assert "/" not in counts
     for forbidden in ("internal_debug_counter", "123456789", "TP=", "max_num", "15", "MOCK DATA"):
-        assert forbidden not in content(cells)
+        assert forbidden not in content(cell for cell in cells if cell.row < REGION.row + 12)
 
 
 def test_configured_route_is_secondary_without_unknown_parameters():
@@ -339,30 +360,31 @@ def test_empty_configuration_has_one_compact_empty_message():
 @pytest.mark.parametrize("kind", list(ModelType))
 def test_history_uses_selected_primary_metric_on_fixed_sixty_second_axis(kind):
     history = (point(98, 1, kind), point(100, 3, kind))
-    cells = cells_for(object_snapshot(kind=kind, history=history), kind=kind)
-    assert any("█" in cell.text or any("▁" <= char <= "▇" for char in cell.text) for cell in plot(cells))
-    axis = row(cells, REGION.height - 2)
-    assert "-60s" in axis and "0s" in axis
-    assert "-2s" not in axis and "98" not in axis and "100" not in axis
-    # W=88 gives 60/87s buckets anchored at monotonic zero, not the first point.
-    assert {cell.column for cell in plot(cells)} == {114, 117}
-    assert bar_eighths(cells, 117) == 5  # 3/5 of the one-row minimum plot, rounded up to eighths.
-    assert f"Scale ≤ 5 {'tok/s' if kind == ModelType.CHAT else 'seq/s'}" in row(cells, 12)
+    region = replace(REGION, height=20)
+    cells = cells_for(object_snapshot(kind=kind, history=history), kind=kind, region=region)
+    points = braille_points(cells, region)
+    assert {x for x, _ in points} == {scan_x(98, region), scan_x(100, region)}
+    assert len(points) == 2
+    assert row(cells, region.height - 2, region).split() == ["0s", "15s", "30s", "45s", "59s"]
+    assert marker(cells).column == region.column + 36 + scan_x(100, region) // 2
+    unit = "tok/s" if kind == ModelType.CHAT else "seq/s"
+    prefix = "DECODE" if kind == ModelType.CHAT else "RATE"
+    assert f"{prefix} HISTORY | {unit}" in row(cells, 12, region)
+    assert f"Scale ≤ 5 {unit}" in row(cells, 12, region)
 
 
-def test_history_gap_is_blank_while_observed_zero_has_baseline_marker():
+def test_history_gap_is_blank_while_observed_zero_has_baseline_dot():
     zero = (point(98, 0), point(100, 5))
     gap = (HistoryPoint(98, None), point(100, 5))
     zero_cells = cells_for(object_snapshot(history=zero))
     gap_cells = cells_for(object_snapshot(history=gap))
-    assert "·" in content(plot(zero_cells))
-    assert "·" not in content(plot(gap_cells))
-    assert pixels(plot(zero_cells)) != pixels(plot(gap_cells))
+    assert (scan_x(98), 3) in braille_points(zero_cells)
+    assert not any(x == scan_x(98) for x, _ in braille_points(gap_cells))
 
 
 def test_unknown_primary_value_is_a_gap_not_an_observed_zero():
     cells = cells_for(object_snapshot(history=(point(98, None), point(100, 5))))
-    assert "·" not in content(plot(cells))
+    assert not any(x == scan_x(98) for x, _ in braille_points(cells))
 
 
 def test_mixed_gap_and_value_in_one_time_bin_does_not_fill_the_gap():
@@ -389,9 +411,9 @@ def test_old_and_future_history_points_are_not_drawn():
 def test_empty_history_is_unavailable_without_a_fabricated_zero_line():
     cells = cells_for(object_snapshot(history=()))
     assert "—" in content(plot(cells))
-    assert "·" not in content(plot(cells))
-    assert not any("█" in cell.text for cell in plot(cells))
-    assert row(cells, 14).split() == ["-60s", "0s"]
+    assert not braille_points(cells)
+    assert row(cells, 14).split() == ["0s", "15s", "30s", "45s", "59s"]
+    marker(cells)
 
 
 def test_switching_models_reuses_their_retained_history_without_mutating_snapshot():
@@ -404,9 +426,9 @@ def test_switching_models_reuses_their_retained_history_without_mutating_snapsho
     a = vllm_cells(sample, config(*models), REGION, ViewSelection("a"), now=NOW)
     b = vllm_cells(sample, config(*models), REGION, ViewSelection("b"), now=NOW)
     again = vllm_cells(sample, config(*models), REGION, ViewSelection("a"), now=NOW)
-    assert row(a, 14).split() == row(b, 14).split() == ["-60s", "0s"]
-    assert {cell.column for cell in plot(a)} == {114, 117}
-    assert {cell.column for cell in plot(b)} == {111, 117}
+    assert row(a, 14).split() == row(b, 14).split() == ["0s", "15s", "30s", "45s", "59s"]
+    assert {x for x, _ in braille_points(a)} == {scan_x(98)}
+    assert {x for x, _ in braille_points(b)} == {scan_x(96)}
     assert a == again and sample == before
 
 
@@ -486,23 +508,22 @@ def test_compose_frame_integrates_model_type_metrics_into_existing_half_page():
 
 
 def test_history_uses_time_spacing_and_maximum_of_a_valid_shared_bin():
-    endpoints = (point(40, 5), point(100, 10))
+    endpoints = (point(41, 5), point(100, 10))
     single = (endpoints[0], point(55, 8), endpoints[1])
-    same_bin = (endpoints[0], point(55 - 1e-9, 3), point(55, 8), endpoints[1])
+    same_bin = (endpoints[0], point(55.1, 3), point(55, 8), endpoints[1])
     expected = plot(cells_for(object_snapshot(history=single)))
     actual = plot(cells_for(object_snapshot(history=same_bin)))
     assert pixels(actual) == pixels(expected)
-    columns = sorted({cell.column for cell in expected})
-    assert len(columns) == 3
-    assert columns == [30, 51, 117]
+    assert {x for x, _ in braille_points(expected)} == {scan_x(41), scan_x(55)}
 
 
-def test_single_history_point_at_now_retains_fixed_axis_and_rightmost_position():
-    cells = cells_for(object_snapshot(history=(point(NOW, 0),)))
-    assert row(cells, 14).split() == ["-60s", "0s"]
-    assert "·" in content(plot(cells))
-    assert pixels(plot(cells)) == {(REGION.row + 13, 117): ("·", "primary")}
-    assert "Scale ≤ 1 tok/s" in row(cells, 12)
+def test_single_history_point_at_now_uses_fixed_phase_and_visible_marker():
+    region = replace(REGION, height=20)
+    cells = cells_for(object_snapshot(history=(point(NOW, 0),)), region=region)
+    assert row(cells, region.height - 2, region).split() == ["0s", "15s", "30s", "45s", "59s"]
+    assert braille_points(cells, region) == {(scan_x(NOW, region), 15)}
+    assert marker(cells).column == region.column + 36 + scan_x(NOW, region) // 2
+    assert "Scale ≤ 1 tok/s" in row(cells, 12, region)
 
 
 def test_compose_frame_uses_monotonic_default_and_explicit_clock_without_wall_conversion(monkeypatch):
@@ -512,8 +533,8 @@ def test_compose_frame_uses_monotonic_default_and_explicit_clock_without_wall_co
     default = compose_frame(*args)
     injected = compose_frame(*args, monotonic_now=NOW)
     assert default == injected
-    assert "-60s" in content(default.cells) and "0s" in content(default.cells)
-    assert "-2s" not in content(default.cells)
+    assert all(label in content(default.cells) for label in ("0s", "15s", "30s", "45s", "59s"))
+    assert not any(label in content(default.cells) for label in ("-60s", "游标", "分钟内"))
 
 
 @pytest.mark.parametrize("now", [-1, math.nan, math.inf, True, "100"])
@@ -528,25 +549,24 @@ def test_unknown_history_bin_excludes_its_other_values_from_plot_scale(kind):
     # A failed observation and a much larger valid observation share one time
     # bin. That whole bin is unavailable, including for vertical scaling.
     history = (point(40, 5, kind), HistoryPoint(70, None), point(100, 10, kind))
-    spike = (history[0], point(70 - 1e-9, 1e300, kind), history[1], history[2])
+    spike = (history[0], point(70 + 1e-9, 1e300, kind), history[1], history[2])
     baseline_cells = cells_for(object_snapshot(kind=kind, history=history), kind=kind)
     spike_cells = cells_for(object_snapshot(kind=kind, history=spike), kind=kind)
     assert pixels(plot(spike_cells)) == pixels(plot(baseline_cells))
-    assert "█" in content(plot(spike_cells))
     unit = "tok/s" if kind == ModelType.CHAT else "seq/s"
     assert f"Scale ≤ 10 {unit}" in row(spike_cells, 12)
 
 
 @pytest.mark.parametrize("kind", list(ModelType))
-def test_history_retains_both_closed_window_boundaries_and_excludes_adjacent_points(kind):
-    boundary = (point(NOW - 60, 0, kind), point(NOW, 5, kind))
-    outside = (point(NOW - 60 - 1e-6, 1e300, kind), *boundary,
+def test_history_retains_current_scan_cycle_and_excludes_expired_and_future_points(kind):
+    boundary = (point(NOW - 59, 0, kind), point(NOW, 5, kind))
+    outside = (point(NOW - 59 - 1e-6, 1e300, kind), *boundary,
                point(NOW + 1e-6, 1e300, kind))
     cells = cells_for(object_snapshot(kind=kind, history=outside), kind=kind)
     expected = cells_for(object_snapshot(kind=kind, history=boundary), kind=kind)
     assert pixels(plot(cells)) == pixels(plot(expected))
-    assert "·" in content(plot(cells)) and "█" in content(plot(cells))
-    assert "-60s" in row(cells, REGION.height - 2)
+    assert (scan_x(NOW - 59), 3) in braille_points(cells)
+    assert row(cells, REGION.height - 2).split() == ["0s", "15s", "30s", "45s", "59s"]
 
 
 @pytest.mark.parametrize("height", [37, 49])
@@ -570,54 +590,97 @@ def test_selected_last_model_keeps_odd_page_half_and_all_detail_slots(height, ki
     assert "QUEUED" in row(cells, 2, service)
     assert "RUNNING" in row(cells, 6, service) and "Total" in row(cells, 7, service)
     assert "HISTORY" in row(cells, 12, service)
-    assert "-60s" in row(cells, service.height - 2, service)
-    assert "0s" in row(cells, service.height - 2, service)
+    assert row(cells, service.height - 2, service).split() == ["0s", "15s", "30s", "45s", "59s"]
 
 
-def test_history_stays_in_fixed_buckets_until_current_bucket_advances():
+def test_history_points_keep_their_columns_while_only_marker_advances():
     item = object_snapshot(history=(point(60, 5), point(98, 0), point(100, 10)))
     before = deepcopy(item)
-    first = pixels(plot(cells_for(item, now=100)))
-    same_bucket = pixels(plot(cells_for(item, now=100.1)))
-    next_bucket = pixels(plot(cells_for(item, now=100.81)))
+    region = replace(REGION, height=20)
+    first = cells_for(item, now=100, region=region)
+    same_bucket = cells_for(item, now=100.99, region=region)
+    next_bucket = cells_for(item, now=101, region=region)
     assert first == same_bucket
-    assert {column for _, column in first} == {59, 114, 117}
-    assert next_bucket == {(row_index, column - 1): pixel
-                           for (row_index, column), pixel in first.items()}
+    assert braille_points(first, region) == braille_points(next_bucket, region)
+    assert marker(first).column != marker(next_bucket).column
     assert item == before
 
 
 def test_expiring_first_point_does_not_stretch_remaining_history():
-    item = object_snapshot(history=(point(40, 0), point(60, 5), point(100, 10)))
-    first = pixels(plot(cells_for(item, now=100)))
-    expired = pixels(plot(cells_for(item, now=100.1)))
-    assert expired == {coordinate: pixel for coordinate, pixel in first.items() if coordinate[1] != 30}
-    assert {column for _, column in expired} == {59, 117}
+    item = object_snapshot(history=(point(41, 0), point(60, 5), point(100, 10)))
+    region = replace(REGION, height=20)
+    first = braille_points(cells_for(item, now=100, region=region), region)
+    expired = braille_points(cells_for(item, now=101, region=region), region)
+    assert expired == {coordinate for coordinate in first if coordinate[0] != scan_x(41, region)}
+
+
+def test_scan_wrap_keeps_previous_points_and_never_connects_opposite_edges():
+    region = replace(REGION, height=22)
+    history = (point(58, 2), point(59, 4), point(60, 1))
+    item = object_snapshot(history=history)
+    before = cells_for(item, region=region, now=59)
+    wrapped = cells_for(item, region=region, now=60)
+    previous_dots = braille_points(before, region)
+    wrapped_dots = braille_points(wrapped, region)
+    assert marker(before).column == region.column + region.width - 3
+    assert marker(wrapped).column == region.column + 36
+    assert previous_dots <= wrapped_dots
+    assert wrapped_dots - previous_dots == {(scan_x(60, region), 18)}
+    assert not any(1 < x < scan_x(58, region) for x, _ in wrapped_dots)
+
+
+def test_scan_does_not_join_either_side_of_unknown_samples_or_current_phase():
+    region = replace(REGION, height=22)
+    connected = cells_for(object_snapshot(history=(point(97, 1), point(98, 5))),
+                          region=region, now=100)
+    missing = cells_for(object_snapshot(history=(point(97, 1), HistoryPoint(98, None), point(99, 5))),
+                        region=region, now=100)
+    assert len(braille_points(connected, region)) > 2
+    assert len(braille_points(missing, region)) == 2
+    # Adjacent physical columns 40/41 represent different scan cycles.
+    seam = cells_for(object_snapshot(history=(point(100, 1), point(41, 5))),
+                     region=region, now=100)
+    assert len(braille_points(seam, region)) == 2
+
+
+def test_minimum_plot_preserves_bold_marker_without_duplicate_draws_or_extra_text():
+    cells = cells_for(object_snapshot(history=(point(99, 2), point(100, 3))))
+    cursor = marker(cells)
+    assert cursor.row == REGION.row + 13
+    occupied = set()
+    for cell in plot(cells):
+        coordinates = set(pixels((cell,)))
+        assert not coordinates & occupied
+        occupied.update(coordinates)
+    assert cursor.column == 36 + scan_x(100) // 2
+    assert not any(token in content(cells) for token in ("当前", "游标", "分钟内", "│▼"))
+    assert not any(cell.text == "│" for cell in plot(cells))
 
 
 def test_bucket_boundary_keeps_left_value_separate_from_gap_on_and_after_boundary():
-    # 60s is an exactly representable bucket boundary: before x58, on/after x59.
     boundary = 60
     item = object_snapshot(history=(point(boundary - 1e-6, 5), HistoryPoint(boundary, None),
                                     point(boundary + 1e-6, 1e300), point(100, 10)))
-    cells = cells_for(item)
-    assert {cell.column for cell in plot(cells)} == {58, 117}
-    assert bar_eighths(cells, 58) == 4
-    assert bar_eighths(cells, 117) == 8
+    region = replace(REGION, height=20)
+    cells = cells_for(item, region=region)
+    assert {x for x, _ in braille_points(cells, region)} == {scan_x(59, region), scan_x(100, region)}
+    assert not any(x == scan_x(60, region) for x, _ in braille_points(cells, region))
     assert "Scale ≤ 10 tok/s" in row(cells, 12)
 
 
-@pytest.mark.parametrize("maximum,upper,eighths", (
-    (0, 1, 0), (0.25, 1, 2), (1, 1, 8), (1.1, 2, 5),
-    (2, 2, 8), (3, 5, 5), (23, 50, 4), (121, 200, 5),
+@pytest.mark.parametrize("maximum,upper", (
+    (0, 1), (0.25, 1), (1, 1), (1.1, 2),
+    (2, 2), (3, 5), (23, 50), (121, 200),
 ))
-def test_pure_history_uses_smallest_nice_scale_without_stretching_peak(maximum, upper, eighths):
-    cells = cells_for(object_snapshot(history=(point(100, maximum),)))
+def test_pure_history_uses_smallest_nice_scale_without_stretching_peak(maximum, upper):
+    region = replace(REGION, height=20)
+    cells = cells_for(object_snapshot(history=(point(100, maximum),)), region=region)
     assert f"Scale ≤ {upper} tok/s" in row(cells, 12)
-    assert bar_eighths(cells, 117) == eighths
-    assert {cell.column for cell in plot(cells)} == {117}
-    if maximum == 0:
-        assert pixels(plot(cells)) == {(REGION.row + 13, 117): ("·", "primary")}
+    points = braille_points(cells, region)
+    assert len(points) == 1
+    x, y = next(iter(points))
+    assert x == scan_x(100, region)
+    assert abs(y - (1 - maximum / upper) * 15) <= 1
 
 
 def test_pure_rendering_does_not_keep_hidden_scale_or_delay_a_lower_default():
@@ -625,17 +688,18 @@ def test_pure_rendering_does_not_keep_hidden_scale_or_delay_a_lower_default():
     low = object_snapshot(history=(point(100, 23),))
     before = deepcopy((high, low))
     assert "Scale ≤ 200 tok/s" in row(cells_for(high), 12)
-    lower = cells_for(low)
+    region = replace(REGION, height=20)
+    lower = cells_for(low, region=region)
     assert "Scale ≤ 50 tok/s" in row(lower, 12)
-    assert bar_eighths(lower, 117) == 4
+    assert len(braille_points(lower, region)) == 1
     cells_for(high)
-    assert cells_for(low) == lower
+    assert cells_for(low, region=region) == lower
     assert (high, low) == before
 
 
 @pytest.mark.parametrize("kind", tuple(ModelType), ids=lambda kind: kind.value)
-@pytest.mark.parametrize("region", (REGION, Region("service", 22, 5, 160, 20)))
-def test_explicit_scale_sets_bar_height_and_muted_right_aligned_label(kind, region):
+@pytest.mark.parametrize("region", (replace(REGION, height=20), Region("service", 22, 5, 160, 24)))
+def test_explicit_scale_sets_point_height_and_muted_right_aligned_label(kind, region):
     from joi_observer.tui.history import HistoryScale
 
     field, unit = ("decode_rate", "tok/s") if kind == ModelType.CHAT else ("rate", "seq/s")
@@ -644,20 +708,18 @@ def test_explicit_scale_sets_bar_height_and_muted_right_aligned_label(kind, regi
     scales = (HistoryScale("chat", field, 200),)
     before = deepcopy((item, view, scales))
     cells = cells_for(item, kind=kind, region=region, view=view, history_scales=scales)
-    title = next(cell for cell in cells if "HISTORY /" in cell.text)
+    title = next(cell for cell in cells if "HISTORY |" in cell.text)
     label = next(cell for cell in cells if cell.text == f"Scale ≤ 200 {unit}")
     assert label.row == title.row == region.row + 12
     assert label.role == "muted"
     assert label.column + len(label.text) == region.column + region.width - 2
     assert title.column + len(title.text) < label.column
-    # A value of 100 against the explicit 200 upper uses exactly half the
-    # remaining plot height, including a half block for odd plot heights.
-    bars = pixels(plot(cells, region))
-    assert {x for _, x in bars} == {region.column + region.width - 3}
-    assert len(bars) == (region.height - 14) // 2
-    assert sum("▁▂▃▄▅▆▇█".index(character) + 1 for character, _ in bars.values()) == (region.height - 15) * 4
-    assert all(role == "primary" for _, role in bars.values())
-    assert sum(character == "▄" for character, _ in bars.values()) == 1
+    points = braille_points(cells, region)
+    assert len(points) == 1
+    x, y = next(iter(points))
+    assert x == scan_x(100, region)
+    dot_height = (region.height - 16) * 4
+    assert abs(y - (dot_height - 1) / 2) <= 1
     assert (item, view, scales) == before
     assert_contained(cells, region)
 
@@ -670,13 +732,13 @@ def test_explicit_scales_match_model_and_field_and_flow_through_compose_frame():
     unrelated = (HistoryScale("other", "decode_rate", 1000), HistoryScale("chat", "rate", 500))
     matching = unrelated + (HistoryScale("chat", "decode_rate", 200),)
     before = deepcopy((sample, configured, view, matching))
-    baseline = cells_for(item)
-    assert cells_for(item, history_scales=()) == baseline
-    assert cells_for(item, history_scales=unrelated) == baseline
-    explicit = cells_for(item, view=view, history_scales=matching)
-    assert bar_eighths(baseline, 117) == 4
-    assert bar_eighths(explicit, 117) == 1
-    frame = compose_frame(sample, configured, TerminalSize(120, 36), HostInfo("offline", "Ubuntu"),
+    region = Region("service", 22, 0, 120, 20)
+    baseline = cells_for(item, region=region)
+    assert cells_for(item, region=region, history_scales=()) == baseline
+    assert cells_for(item, region=region, history_scales=unrelated) == baseline
+    explicit = cells_for(item, region=region, view=view, history_scales=matching)
+    assert next(iter(braille_points(baseline, region)))[1] < next(iter(braille_points(explicit, region)))[1]
+    frame = compose_frame(sample, configured, TerminalSize(120, 44), HostInfo("offline", "Ubuntu"),
                           WALL_NOW, view=view, monotonic_now=100, history_scales=matching)
     assert set(explicit).issubset(frame.cells)
     assert (sample, configured, view, matching) == before
@@ -705,16 +767,17 @@ def test_large_finite_history_uses_bounded_scientific_scale_label_without_overfl
     from joi_observer.tui.history import HistoryScale
 
     scales = (HistoryScale("chat", "decode_rate", 2 * 10**300),) if explicit else None
-    cells = cells_for(object_snapshot(history=(point(100, maximum),)), history_scales=scales)
-    assert bar_eighths(cells, 117) > 0
-    title = next(cell for cell in cells if "HISTORY /" in cell.text)
+    region = replace(REGION, height=20)
+    cells = cells_for(object_snapshot(history=(point(100, maximum),)), region=region, history_scales=scales)
+    assert len(braille_points(cells, region)) == 1
+    title = next(cell for cell in cells if "HISTORY |" in cell.text)
     label = next(cell for cell in cells if cell.text.startswith("Scale ≤ "))
     assert label.role == "muted" and label.row == title.row
     assert label.column + len(label.text) == REGION.column + REGION.width - 2
     assert title.column + len(title.text) < label.column
     assert label.text.endswith(" tok/s")
     assert "inf" not in label.text.lower() and "nan" not in label.text.lower()
-    assert_contained(cells)
+    assert_contained(cells, region)
 
 
 @pytest.mark.parametrize("explicit", (False, True), ids=("automatic", "explicit"))
@@ -725,10 +788,12 @@ def test_largest_finite_float_uses_arbitrary_precision_scale_without_overflow(ex
     scales = (HistoryScale("chat", "decode_rate", upper),) if explicit else None
     item = object_snapshot(history=(point(100, sys.float_info.max),))
     before = deepcopy((item, scales))
-    cells = cells_for(item, history_scales=scales)
-    assert bar_eighths(cells, 117) == 8
-    assert "·" not in content(plot(cells))
-    title = next(cell for cell in cells if "HISTORY /" in cell.text)
+    region = replace(REGION, height=20)
+    cells = cells_for(item, region=region, history_scales=scales)
+    points = braille_points(cells, region)
+    assert len(points) == 1
+    assert next(iter(points))[1] <= 2
+    title = next(cell for cell in cells if "HISTORY |" in cell.text)
     label = next(cell for cell in cells if cell.text.startswith("Scale ≤ "))
     assert label.role == "muted" and label.row == title.row
     assert label.column + len(label.text) == REGION.column + REGION.width - 2
@@ -738,11 +803,11 @@ def test_largest_finite_float_uses_arbitrary_precision_scale_without_overflow(ex
     # upper to an overflowing binary float or fixing cosmetic exponent syntax.
     assert Decimal(label.text.removeprefix("Scale ≤ ").removesuffix(" tok/s")) == Decimal(upper)
     assert (item, scales) == before
-    assert_contained(cells)
+    assert_contained(cells, region)
 
 
 @pytest.mark.parametrize("mode", ("automatic-minimum", "automatic-large", "explicit-large"))
-def test_smallest_positive_float_stays_one_eighth_even_when_ratio_underflows(mode):
+def test_smallest_positive_float_stays_visible_when_ratio_underflows(mode):
     from joi_observer.tui.history import HistoryScale
 
     tiny = math.nextafter(0.0, 1.0)
@@ -750,11 +815,13 @@ def test_smallest_positive_float_stays_one_eighth_even_when_ratio_underflows(mod
     scales = (HistoryScale("chat", "decode_rate", 2 * 10**308),) if mode == "explicit-large" else None
     item = object_snapshot(history=history)
     before = deepcopy((item, scales))
-    cells = cells_for(item, history_scales=scales)
-    actual = {coordinate: pixel for coordinate, pixel in pixels(plot(cells)).items() if coordinate[1] == 117}
-    assert actual == {(REGION.row + 13, 117): ("▁", "primary")}
+    region = replace(REGION, height=20)
+    cells = cells_for(item, region=region, history_scales=scales)
+    actual = {(x, y) for x, y in braille_points(cells, region) if x == scan_x(100, region)}
+    assert len(actual) == 1
+    assert next(iter(actual))[1] == 14
     assert (item, scales) == before
-    assert_contained(cells)
+    assert_contained(cells, region)
 
 
 @pytest.mark.parametrize("region", (REGION, Region("service", 22, 5, 160, 20)))
@@ -825,7 +892,7 @@ def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(regio
             bold_positions.add((value_cells[0].row, value_cells[0].column))
         assert value_cells[0].column + len(value) <= stop
     assert "[" not in row(cells, 2, region)
-    assert {(cell.row, cell.column) for cell in cells if cell.bold} == bold_positions
+    assert {(cell.row, cell.column) for cell in cells if cell.bold and cell.text != "▼"} == bold_positions
     assert_contained(cells, region)
 
 
@@ -890,7 +957,7 @@ def test_all_model_types_keep_missing_and_zero_values_in_their_four_fixed_slots(
         (REGION.row + 6, 72), (REGION.row + 6, 117),
         *((REGION.row + 10, start) for start in ((30, 52, 74, 96) if kind == ModelType.CHAT else (30, 52, 74))),
     }
-    assert {(cell.row, cell.column) for cell in cells if cell.bold} == expected_bold
+    assert {(cell.row, cell.column) for cell in cells if cell.bold and cell.text != "▼"} == expected_bold
 
 
 @pytest.mark.parametrize("kind", tuple(ModelType), ids=lambda kind: kind.value)
@@ -898,7 +965,7 @@ def test_all_model_types_keep_missing_and_zero_values_in_their_four_fixed_slots(
 def test_statistic_lines_caption_ownership_and_title_status_edge(kind, stale):
     # A focused check reaches the detail contract independently of the new rail.
     cells = cells_for(object_snapshot(kind=kind, stale=stale), kind=kind)
-    assert {(cell.row, cell.column) for cell in cells if cell.bold} == {
+    assert {(cell.row, cell.column) for cell in cells if cell.bold and cell.text != "▼"} == {
         (REGION.row + 6, 72), (REGION.row + 6, 117),
         *((REGION.row + 10, start) for start in ((30, 52, 74, 96) if kind == ModelType.CHAT else (30, 52, 74))),
     }
@@ -961,7 +1028,7 @@ def test_large_latest_statistics_and_metrics_keep_exponents_and_stay_inside_slot
     else:
         assert slot_text(cells, REGION.row + 7, 76, 118).strip() == "Unit: seq"
     assert item == before
-    emphasized = [cell for cell in cells if cell.bold]
+    emphasized = [cell for cell in cells if cell.bold and cell.text != "▼"]
     assert len(emphasized) == (6 if kind == ModelType.CHAT else 5)
     assert all(cell.column >= 30 and cell.row in (REGION.row + 6, REGION.row + 10) for cell in emphasized)
     assert sum("e" in cell.text for cell in emphasized) == 5
@@ -982,7 +1049,7 @@ def test_rail_value_too_wide_even_after_short_label_uses_explicit_ellipsis():
 def test_right_metric_text_placeholders_and_elision_are_not_emphasized():
     cells = cells_for(object_snapshot(decode_rate="123", prefill_rate="x" * 100, ttft_seconds=None))
     assert row(cells, 10).split() == ["123", "…", "—", "25"]
-    assert {(cell.row, cell.column) for cell in cells if cell.bold} == {
+    assert {(cell.row, cell.column) for cell in cells if cell.bold and cell.text != "▼"} == {
         (REGION.row + 6, 72), (REGION.row + 6, 117), (REGION.row + 10, 96),
     }
 
