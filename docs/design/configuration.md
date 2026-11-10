@@ -1,7 +1,7 @@
 # Configuration 模块设计
 
 - 关联需求：dev-0 / REQ-001，AC-105、AC-106、AC-107、AC-109、AC-113；为 REQ-002～REQ-005 提供配置载体，并衔接 AC-207、AC-301、AC-304。
-- 修订：v1.5，2026-11-05；合并模型身份字段契约，采集匹配与显示几何改为引用所属模块；配置行为不变。
+- 修订：v1.6，2026-11-10，默认配置改为系统共享路径。
 - 相关代码：`src/joi_observer/config.py`、`src/joi_observer/examples/config.yaml`。
 - 关联模块：启动与终端、采样调度、采集错误日志。
 
@@ -17,7 +17,7 @@
 flowchart LR
     CLI[CLI 参数与运行目录] --> Resolve[resolve_config_path]
     Resolve --> Load[load_config]
-    YAML[用户 config.yaml] --> Load
+    YAML[选中的 config.yaml] --> Load
     Load --> Config[AppConfig 冻结快照]
     Config --> Runtime[启动与 Monitor]
     Config --> Log[采集 ERROR 文件日志]
@@ -26,9 +26,9 @@ flowchart LR
 
 ## 配置选择与失败处理
 
-按 `--config PATH`、当前目录 `config.yaml`、`~/.joi-observer/config.yaml` 的顺序选择。显式相对路径以当前目录为基准，`~` 按运行用户展开。只选择第一个存在的候选；其内容非法、无读取权限或为目录都直接报错，不能改用低优先级文件。显式路径不存在同样报错。
+按 `--config PATH`、当前目录的 `config.yaml`、系统共享的 `/etc/joi-observer/config.yaml` 的顺序选择。显式相对路径以当前目录为基准，`~` 按运行用户展开。原用户配置可通过 `--config ~/.joi-observer/config.yaml` 指定。只选择第一个存在的候选。内容非法、无读取权限或为目录时直接报错，不能改用低优先级文件。显式路径不存在同样报错。
 
-未找到默认文件时，报告尝试过的当前目录路径、用户目录期望路径以及安装包内示例的实际位置。提示发生在进入全屏前，不初始化采集、不记录 ERROR、不自动复制文件。读取成功也不证明 GPU、挂载点、容器或 URL 可用。
+未找到默认文件时，报告尝试过的当前目录路径、系统共享路径以及安装包内示例的实际位置。提示发生在进入全屏前，不初始化采集、不记录 ERROR、不自动复制文件。读取成功也不证明 GPU、挂载点、容器或 URL 可用。
 
 `ConfigError` 统一提供绝对文件路径、字段路径和可取得的 YAML 行列。错误文本为英文，包含定位及修复原因；不直接回显 YAML 源行或敏感值。字段路径使用零起始数组索引，如 `models[1].id`；YAML 行列从 1 开始。日志目录的可写性失败属于启动降级，由日志模块处理，不能作为配置错误阻断 TUI。
 
@@ -49,7 +49,7 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 | `mount_points` | `["/", "/data"]` | 有序、互异的 POSIX 绝对路径，禁止 `..`、控制字符和首尾空白；按上文前三项规则纳入，`[]` 为关闭挂载项 |
 | `containers` | `[]` | 按上文规则完整保留有序列表，每项必填 `id`、`name` |
 | `models` | `[]` | 有序模型列表；每项必填 `id`、`type`、`name`、`base_url`，可选 `gpu_ids`、`served_model_name` |
-| `logging.directory` | `~/.joi-observer` | 运行平台绝对路径或 `~`、`~/...`；展开后返回 Path，不创建；不展开环境变量或 `~other` |
+| `logging.directory` | `~/.joi-observer` | 接受运行平台绝对路径或 `~`、`~/...`。`~` 按运行用户展开，因此共享配置采用默认值时，各用户的日志仍分别写入各自的目录。返回 Path，不创建目录，也不展开环境变量或 `~other` |
 | `logging.max_bytes` | `10000000` | 整数且至少 1024 字节；十进制 10 MB 默认阈值，保证可容纳一条有界日志 |
 | `logging.backup_count` | `3` | 正整数，禁止 0，确保轮转始终有界 |
 
@@ -67,7 +67,7 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 
 ## 示例来源与使用
 
-示例随 wheel 包含于 `joi_observer/examples/config.yaml`。用户可通过 CLI 报告的绝对示例位置手工复制到 `~/.joi-observer/config.yaml` 或自己的工作目录，然后编辑。示例注释说明挂载点仅前三项、容器全部采集但显示受面板容量限制；containers现提供一条有效YAML示例`id: chat-container`、`name: flash-next-vllm`，须替换为真实容器名称或完整ID；不监控时显式使用`containers: []`。这仅改变示例内容，解析器省略containers的默认值仍为[]。不会自动安装驱动、更改 Docker 权限或创建监控服务。
+示例随 wheel 包含于 `joi_observer/examples/config.yaml`。`joi-observer --example-config` 输出示例的绝对路径。管理员可将示例复制到 `/etc/joi-observer/config.yaml` 并编辑，供本机用户共享。用户也可将示例复制为工作目录的 `config.yaml`。示例注释说明挂载点仅前三项、容器全部采集但显示受面板容量限制；containers现提供一条有效YAML示例`id: chat-container`、`name: flash-next-vllm`，须替换为真实容器名称或完整ID；不监控时显式使用`containers: []`。这仅改变示例内容，解析器省略containers的默认值仍为[]。不会自动安装驱动、更改 Docker 权限或创建监控服务。
 
 三个模型名和回环端口来自本地 `D:\Documents\llm_server\Ubuntu_Server_03_显卡驱动.md` 的 8.2、9.3 节；`Ubuntu_Server_04_服务部署.md` 的 3.3 节仅交叉核对路由，不采用 LiteLLM 作为采集入口。上述资料只读查看，未访问 URL、执行部署命令或确认服务在线。容器示例名称用于演示配置结构，不代表自动发现或已确认存在；用户按实际部署替换。
 
@@ -75,13 +75,13 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 
 | 接口或符号 | 代码与注释位置 | 关联验收与黑盒用例 |
 | --- | --- | --- |
-| `resolve_config_path` | `config.py` 同名函数 | AC-113；显式/工作目录/用户目录优先级、缺少文件、目录误配和禁止回退 |
+| `resolve_config_path` | `config.py` 同名函数 | AC-113，显式路径、工作目录及系统共享路径的优先级，缺少文件、目录误配和禁止回退 |
 | `load_config` / `ConfigError` | `config.py` 同名函数与异常 | AC-105、AC-106及衔接AC-207/301；挂载点前三项、完整容器列表及重复 ID、重启读取变更、三类模型、非法字段/数值/YAML/URL |
 | `ModelConfig.served_model_name` | `config.py`、`tests/test_vllm_config.py` | 省略回退、显式身份校验及展示名与服务身份分离 |
 | `LogConfig` | `config.py` 同名数据类 | AC-107、AC-109；默认日志路径、展开、自定义目录和轮转边界、不创建文件 |
 | `example_config_path` | `config.py` 同名函数 | AC-113；资源存在，复制后可读取三个模型 |
 
-测试入口：`python -m pytest tests/test_config.py tests/test_config_boundaries.py`。测试使用pytest临时目录和本地字符串，替换home隔离用户文件，实际调用load_config。需要本地PyYAML和pytest；现有配置回归应通过，REQ-002工厂测试另外覆盖挂载来源数量和身份。未实现业务失败不能混同环境错误。
+配置测试可运行 `python -m pytest tests/test_config.py tests/test_config_boundaries.py`。测试使用 pytest 临时目录和本地字符串，替换共享配置路径和 home 以隔离真实文件，并调用 `load_config`。需要本地 PyYAML 和 pytest。REQ-002 工厂测试另外覆盖挂载来源数量和身份。未实现业务失败不能混同环境错误。
 
 `test_config.py` 覆盖挂载点 0～3 项和超量截断、合法 YAML 尾项的应用层忽略、前三项错误不补位，以及容器 0/1/5/6/10 项完整保留、后续项全部参与结构及 ID 检查；保持源文件不变。配置快照只保存前三个挂载点，因此后续采集器不能取得第四项作为失败补位；实际采集范围及 Docker 隐藏项持续更新仍需启动组合根/REQ-002/REQ-003 集成测试验证。
 

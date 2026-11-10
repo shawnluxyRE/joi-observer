@@ -21,6 +21,8 @@ from urllib.parse import urlsplit
 import yaml
 
 
+DEFAULT_CONFIG_PATH = Path("/etc/joi-observer/config.yaml")
+
 # SafeLoader's standard scalar constructors use native exceptions for malformed
 # input: empty/sign-only numbers can raise IndexError, and an unmatched timestamp
 # can raise AttributeError. Keep the node and document boundaries in agreement.
@@ -161,28 +163,28 @@ class AppConfig:
 def resolve_config_path(
     explicit: str | Path | None, *, cwd: Path, home: Path
 ) -> Path:
-    """选择本地用户配置，绝不将包内示例作为默认目标。
+    """选择本地配置，绝不将包内示例作为默认目标。
 
     Args:
         explicit: --config 的原始路径；None 表示使用默认查找。相对路径
             相对 cwd，~/... 相对给定 home；空字符串非法，不展开环境变量。
         cwd: 绝对当前目录，由 CLI 获取；无副作用，不更改进程工作目录。
-        home: 绝对用户主目录，由 CLI 获取，便于离线测试隔离用户文件。
+        home: 绝对用户主目录，由 CLI 获取，用于展开显式路径中的 ~。
 
     Returns:
         绝对配置路径。优先级为 explicit > cwd/config.yaml >
-        home/.joi-observer/config.yaml。存在的高优先级候选即被选中，
+        /etc/joi-observer/config.yaml。存在的高优先级候选即被选中，
         即使不可读/非法也不回退；文件内容由 load_config 解析。
 
     Raises:
         ConfigError: 显式路径不存在、候选是目录、无候选或路径无效。
-            无默认文件时 path 指向 home/.joi-observer/config.yaml，消息
+            无默认文件时 path 指向 /etc/joi-observer/config.yaml，消息
             需列出 cwd 候选、期望路径及 example_config_path() 的位置，
             使 CLI 可提示复制示例。explicit 缺失只报告该指定路径，不回退。
 
     本函数仅查找文件，不读配置内容、不写文件、不联网、不采集。
     """
-    expected = home / ".joi-observer" / "config.yaml"
+    expected = DEFAULT_CONFIG_PATH
     if explicit is not None:
         raw = str(explicit)
         if not raw or any(not c.isprintable() for c in raw):
