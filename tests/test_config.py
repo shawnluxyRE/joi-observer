@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import joi_observer.config as config_module
 from joi_observer.config import (
     AppConfig,
     ConfigError,
@@ -44,21 +45,32 @@ def test_explicit_config_wins_and_relative_path_uses_cwd(tmp_path):
     assert resolve_config_path("custom.yaml", cwd=tmp_path, home=home) == chosen
 
 
-def test_cwd_config_wins_over_home_config(tmp_path):
-    home = tmp_path / "home"
-    (home / ".joi-observer").mkdir(parents=True)
-    (home / ".joi-observer" / "config.yaml").write_text("{}", encoding="utf-8")
+def test_default_config_path_is_shared():
+    assert config_module.DEFAULT_CONFIG_PATH == Path("/etc/joi-observer/config.yaml")
+
+
+@pytest.fixture
+def shared_config_path(tmp_path, monkeypatch):
+    path = tmp_path / "shared" / "config.yaml"
+    path.parent.mkdir()
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", path)
+    return path
+
+
+def test_cwd_config_wins_over_shared_config(tmp_path, shared_config_path):
+    shared_config_path.write_text("{}", encoding="utf-8")
     local = write_config(tmp_path, "{}")
-    assert resolve_config_path(None, cwd=tmp_path, home=home) == local
+    assert resolve_config_path(None, cwd=tmp_path, home=tmp_path / "home") == local
 
 
-def test_home_config_used_only_when_cwd_candidate_absent(tmp_path):
+def test_shared_config_is_default_and_explicit_home_path_still_works(tmp_path, shared_config_path):
     home = tmp_path / "home"
-    (home / ".joi-observer").mkdir(parents=True)
-    expected = home / ".joi-observer" / "config.yaml"
-    expected.write_text("{}", encoding="utf-8")
-    assert resolve_config_path(None, cwd=tmp_path, home=home) == expected
-    assert resolve_config_path("~/.joi-observer/config.yaml", cwd=tmp_path, home=home) == expected
+    legacy_config = home / ".joi-observer" / "config.yaml"
+    legacy_config.parent.mkdir(parents=True)
+    legacy_config.write_text("{}", encoding="utf-8")
+    shared_config_path.write_text("{}", encoding="utf-8")
+    assert resolve_config_path(None, cwd=tmp_path, home=home) == shared_config_path
+    assert resolve_config_path("~/.joi-observer/config.yaml", cwd=tmp_path, home=home) == legacy_config
 
 
 def test_missing_explicit_file_never_falls_back(tmp_path):
@@ -70,16 +82,20 @@ def test_missing_explicit_file_never_falls_back(tmp_path):
     assert str(missing) in str(caught.value)
 
 
-def test_no_user_config_reports_expected_and_example_locations(tmp_path):
+def test_missing_shared_config_reports_expected_path_without_home_fallback(tmp_path, shared_config_path):
     home = tmp_path / "home"
+    legacy_config = home / ".joi-observer" / "config.yaml"
+    legacy_config.parent.mkdir(parents=True)
+    legacy_config.write_text("{}", encoding="utf-8")
     with pytest.raises(ConfigError) as caught:
         resolve_config_path(None, cwd=tmp_path, home=home)
-    assert caught.value.path == home / ".joi-observer" / "config.yaml"
+    assert caught.value.path == shared_config_path
     assert str(tmp_path / "config.yaml") in str(caught.value)
     assert str(example_config_path()) in str(caught.value)
 
 
-def test_directory_candidate_is_error_and_does_not_fall_back(tmp_path):
+def test_directory_candidate_is_error_and_does_not_fall_back(tmp_path, shared_config_path):
+    shared_config_path.write_text("{}", encoding="utf-8")
     (tmp_path / "config.yaml").mkdir()
     with pytest.raises(ConfigError) as caught:
         resolve_config_path(None, cwd=tmp_path, home=tmp_path / "home")

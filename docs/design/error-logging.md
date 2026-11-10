@@ -7,7 +7,7 @@
 
 ## 职责与依赖
 
-只接收 Monitor 已分类的真实采集失败，将诊断追加到用户配置目录的 `error.log`。
+只接收 Monitor 已分类的真实采集失败，将诊断追加到 `logging.directory` 下的 `error.log`。
 日志不属于监控快照，不向 TUI、stdout/stderr 或 root logger 传播。启动/退出、正常采样、
 恢复、无负载、已知不支持/不适用字段、成功取得的 Exited 状态均没有日志事件。
 

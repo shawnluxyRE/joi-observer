@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+import joi_observer.config as config_module
 from joi_observer.cli import CliDependencies, main
 
 
@@ -60,23 +61,28 @@ def valid_config(tmp_path: Path, content="{}\n"):
     return path
 
 
-def test_valid_configuration_runs_directly_and_closes(tmp_path):
-    valid_config(tmp_path)
-    deps, runtime, configs = environment(tmp_path)
+def test_shared_configuration_runs_directly_and_closes(tmp_path, monkeypatch):
+    config_path = valid_config(tmp_path, "sample_interval: 2\n")
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", config_path)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    deps, runtime, configs = environment(cwd)
     assert main([], dependencies=deps) == 0
     assert runtime.calls == ["prepare", "run", "close"]
     assert len(configs) == 1
-    assert configs[0].sample_interval == 1.0
+    assert configs[0].sample_interval == 2.0
     assert deps.stdout.getvalue() == deps.stderr.getvalue() == ""
 
 
-def test_missing_configuration_exits_before_runtime_and_names_example(tmp_path):
+def test_missing_configuration_exits_before_runtime_and_names_example(tmp_path, monkeypatch):
+    config_path = tmp_path / "shared" / "config.yaml"
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", config_path)
     deps, runtime, configs = environment(tmp_path)
     assert main([], dependencies=deps) == 2
     error = deps.stderr.getvalue()
     assert "config.yaml" in error
     assert "example" in error.lower()
-    assert str(tmp_path / "home" / ".joi-observer" / "config.yaml") in error
+    assert str(config_path) in error
     assert configs == runtime.calls == []
 
 
