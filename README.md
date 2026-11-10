@@ -8,48 +8,44 @@
 
 ## 安装与启动
 
-以下步骤在被监控的 **Ubuntu Server 24.04 amd64** 服务器上执行，安装过程需要联网访问 Ubuntu 软件源、GitHub、uv 下载站及 Python 包源。
+首次在被监控的 **Ubuntu Server 24.04 amd64** 服务器上安装时，按第 1 到 4 节操作。以 root 身份执行安装和配置，所有本机用户均可使用已安装的命令。
 
-GPU 监控需要服务器已有可用的 NVIDIA 驱动和 `nvidia-smi`；Docker 监控需要 Docker CLI 及当前用户访问本机 Docker socket 的权限；vLLM 服务需提前部署。
-Joi::Observer 不负责安装或启动这些服务。建议将终端放大到至少 120 列 × 40 行，GPU 较多时按界面提示继续放大。
+GPU 监控需要可用的 NVIDIA 驱动和 `nvidia-smi`。Docker 监控需要 Docker CLI，vLLM 监控需要已部署的服务。
 
 ### 1. 安装系统依赖和 uv
 
 ```bash
-sudo apt update
-sudo apt install -y git curl ca-certificates python3 python3-venv vim
+apt update
+apt install -y git curl ca-certificates python3 python3-venv
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
 . "$HOME/.local/bin/env"
 uv --version
 ```
 
-uv 按[官方安装方式](https://docs.astral.sh/uv/getting-started/installation/)安装到当前用户目录；加载环境脚本后，当前终端即可使用。
+### 2. 为所有用户安装 Joi::Observer
 
-### 2. 安装工具
-
-将项目克隆到所选位置，然后进入仓库根目录（包含 `pyproject.toml` 的目录）执行：
+将项目克隆到所选位置，进入仓库根目录后执行下列命令。
 
 ```bash
-uv tool install --python /usr/bin/python3 .
-uv tool update-shell
-export PATH="$(uv tool dir --bin):$PATH"
+umask 022
+install -d -m 0755 /opt/joi-observer-tool
+UV_TOOL_DIR=/opt/joi-observer-tool \
+UV_TOOL_BIN_DIR=/usr/local/bin \
+uv tool install --python /usr/bin/python3 --link-mode copy .
 joi-observer --version
 ```
 
-`uv tool install` 会为工具创建独立环境，并联网下载所需依赖；不需要另外准备离线 wheel 包。安装完成后，命令可直接使用，无需激活虚拟环境或进入源码目录。工具安装和命令路径说明见[uv 官方文档](https://docs.astral.sh/uv/guides/tools/#installing-tools)。
+### 3. 创建共享配置
 
-### 3. 创建并修改监控配置
-
-首次使用先复制随包示例，再按服务器实际部署修改：
+复制随包示例，让所有本机用户都能读取配置。
 
 ```bash
-mkdir -p ~/.joi-observer
-cp "$(joi-observer --example-config)" ~/.joi-observer/config.yaml
-vim ~/.joi-observer/config.yaml
+install -d -m 0755 /etc/joi-observer
+install -m 0644 "$(/usr/local/bin/joi-observer --example-config)" /etc/joi-observer/config.yaml
 ```
 
-启动前检查以下项目：
+编辑 `/etc/joi-observer/config.yaml`，按服务器实际部署填写以下项目。
 
 | 配置项 | 如何填写 |
 | --- | --- |
@@ -59,8 +55,6 @@ vim ~/.joi-observer/config.yaml
 | `gpu_ids` | 为模型填写已确认的 GPU 索引字符串或完整 UUID，用于关联高亮。 |
 | `logging.directory` | 填当前用户可写的目录，默认 `~/.joi-observer`。 |
 
-默认每秒采样一次，每个对象超时 3 秒。
-
 ### 4. 启动和日常使用
 
 在服务器的交互式终端中启动
@@ -69,21 +63,24 @@ vim ~/.joi-observer/config.yaml
 joi-observer
 ```
 
-默认先查找当前目录的 `config.yaml`，再查找 `~/.joi-observer/config.yaml`；若需要固定使用某份配置，继续带上 `--config`。
-
-↑↓ 选择模型，`t` 切换主题，`q` 退出。终端过小时按提示放大。某个对象显示 STALE 时，可查看 `~/.joi-observer/error.log` 中的采集错误。
+配置按 `--config` 指定的文件、当前目录的 `config.yaml`、系统默认的 `/etc/joi-observer/config.yaml` 的顺序查找。
 
 ### 5. 更新已安装版本
 
-退出正在运行的 Joi::Observer，进入此前克隆的仓库根目录，拉取更新并重新安装：
+退出正在运行的 Joi::Observer。以 root 身份进入此前克隆的仓库根目录，拉取更新并重新安装。
 
 ```bash
-git pull --ff-only
-uv tool install --force --python /usr/bin/python3 .
-joi-observer --version
+. "$HOME/.local/bin/env"
+umask 022
+git pull --ff-only &&
+  UV_TOOL_DIR=/opt/joi-observer-tool \
+  UV_TOOL_BIN_DIR=/usr/local/bin \
+  uv tool install --force --refresh-package joi-observer \
+    --python /usr/bin/python3 --link-mode copy . &&
+  joi-observer --version
 ```
 
-更新后重新启动即可；`~/.joi-observer/config.yaml` 会保留，不需要重新复制示例。
+更新完成后，各用户重新运行 `joi-observer` 即可。
 
 ## 模型导航与键位
 
