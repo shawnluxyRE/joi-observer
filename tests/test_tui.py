@@ -105,7 +105,7 @@ def test_full_page_halves_include_header_switch_footer_and_gaps(height, upper, l
     assert (regions["storage"].row, regions["storage"].height) == (header + 6, 6)
     assert (regions["docker"].row, regions["docker"].height) == (header + 12, docker_rows + 3)
     assert regions["storage"].row + regions["storage"].height == regions["docker"].row
-    assert visible_container_names(frame) == [f"container-{i}" for i in range(docker_rows)]
+    assert visible_container_ids(frame) == [f"c{i}" for i in range(docker_rows)]
     assert (regions["service"].row, regions["service"].height) == (upper, lower - 2)
     assert (regions["service_switch"].row, regions["service_switch"].height) == (height - 2, 1)
     assert (regions["footer"].row, regions["footer"].height) == (height - 1, 1)
@@ -183,8 +183,11 @@ def docker_snapshot(count=10, *, stale_index=None):
                                for index in range(count)))
 
 
-def visible_container_names(frame):
-    return [cell.text for cell in frame.cells if cell.text.startswith("container-")]
+def visible_container_ids(frame):
+    docker = next(region for region in frame.regions if region.name == "docker")
+    return [cell.text for cell in frame.cells
+            if docker.row + 2 <= cell.row < docker.row + docker.height - 1
+            and cell.column == docker.column + 2 and cell.text != "No containers configured"]
 
 
 def test_docker_resize_shows_prefix_four_then_six_then_three_from_same_latest_snapshot():
@@ -193,11 +196,12 @@ def test_docker_resize_shows_prefix_four_then_six_then_three_from_same_latest_sn
     frames = [compose_frame(data, config, TerminalSize(120, height), HOST, NOW) for height in (50, 54, 48)]
     for frame, capacity in zip(frames, (4, 6, 3)):
         assert not frame.too_small
-        assert visible_container_names(frame) == [f"container-{index}" for index in range(capacity)]
+        assert visible_container_ids(frame) == [f"c{index}" for index in range(capacity)]
+        assert not any(cell.text == item.name for cell in frame.cells for item in config.containers)
         regions = {region.name: region for region in frame.regions}
         docker, service = regions["docker"], regions["service"]
         assert all(docker.row + 2 <= cell.row < docker.row + docker.height - 1
-                   for cell in frame.cells if cell.text.startswith("container-"))
+                   for cell in frame.cells if cell.text in visible_container_ids(frame))
         assert docker.row + docker.height == service.row
         displayed = text(frame).lower()
         assert all(word not in displayed for word in ("enlarge", "hidden", "more", "overflow", "page ", "...", "…"))
@@ -212,7 +216,7 @@ def test_zero_docker_content_capacity_does_not_draw_entries_empty_state_or_promp
     assert not frame.too_small
     docker = next(region for region in frame.regions if region.name == "docker")
     assert docker.height == 3
-    assert visible_container_names(frame) == []
+    assert visible_container_ids(frame) == []
     assert "No containers configured" not in text(frame)
     assert "Enlarge" not in text(frame)
 
@@ -230,9 +234,9 @@ def test_docker_failures_keep_prefix_order_and_other_regions_unchanged():
     frames = [compose_frame(docker_snapshot(stale_index=index), config, TerminalSize(120, 50), HOST, NOW)
               for index in (None, 0, None)]
     assert all(frame.regions == frames[0].regions for frame in frames)
-    assert all(visible_container_names(frame) == [f"container-{index}" for index in range(4)] for frame in frames)
+    assert all(visible_container_ids(frame) == [f"c{index}" for index in range(4)] for frame in frames)
     assert "STALE" not in text(frames[0]) and "STALE" in text(frames[1]) and "STALE" not in text(frames[2])
-    assert all("container-4" not in text(frame) for frame in frames)
+    assert all("c4" not in visible_container_ids(frame) for frame in frames)
 
 
 @pytest.mark.parametrize("columns,height", [(120, 36), (121, 37), (140, 44), (120, 45), (120, 48)])
@@ -288,7 +292,7 @@ def test_four_gpu_minimum_keeps_all_cards_even_when_no_container_fits():
                           gpu_slots=("0", "1", "2", "3"))
     assert not frame.too_small and frame.minimum_size == TerminalSize(120, 36)
     assert [cell.text for cell in frame.cells if cell.text.startswith("[")] == ["[0]", "[1]", "[2]", "[3]"]
-    assert visible_container_names(frame) == []
+    assert visible_container_ids(frame) == []
 
 
 @pytest.mark.parametrize("gpu_count,minimum_rows", [(5, 39), (6, 45), (10, 69)])

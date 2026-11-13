@@ -50,7 +50,7 @@ install -m 0644 "$(/usr/local/bin/joi-observer --example-config)" /etc/joi-obser
 | 配置项 | 如何填写 |
 | --- | --- |
 | `mount_points` | 填实际存在的挂载点，例如 `["/"]`。最多监控配置的前三项。 |
-| `containers` | 填真实容器名称或完整 ID；不监控容器时设为 `[]`。 |
+| `containers` | `id` 用作 TUI 显示名称，`name` 填真实容器名称或完整 ID；不监控容器时设为 `[]`。 |
 | `models` | 只保留需要监控的模型，填写对应类型、展示名、真实服务名及直接 vLLM 地址；地址不带 `/v1` 或 `/metrics`，不填网关地址。 |
 | `gpu_ids` | 为模型填写已确认的 GPU 索引字符串或完整 UUID，用于关联高亮。 |
 | `logging.directory` | 填当前用户可写的目录，默认 `~/.joi-observer`。 |

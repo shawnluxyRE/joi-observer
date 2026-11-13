@@ -250,8 +250,16 @@
 #joi-designs .neon-metrics .metric-label { display:block; color:var(--dim); font-size:11px; }
 #joi-designs .neon-metrics .metric-value { display:block; font-size:16px; font-variant-numeric:tabular-nums; }
 #joi-designs .neon .history-block { flex:1; display:flex; flex-direction:column; min-height:0; margin-bottom:0; padding:8px 10px; }
-#joi-designs .neon .history-graph { flex:1; min-height:12px; gap:6px; margin:5px 0; color:var(--accent); }
-#joi-designs .neon .history-graph .history-column { flex:1; max-width:13px; min-width:0; display:block; background:var(--accent); }
+#joi-designs .neon .history-graph { flex:1; min-height:100px; height:0; display:block; margin:5px 0; color:var(--accent); }
+#joi-designs .neon .history-plot { position:relative; width:100%; border:0; padding:0; background:transparent; text-align:left; cursor:grab; touch-action:pan-y; user-select:none; overflow:hidden; }
+#joi-designs .neon .history-plot[data-dragging="true"] { cursor:grabbing; }
+#joi-designs .neon .history-svg { position:absolute; inset:0; display:block; width:100%; height:100%; font:inherit; }
+#joi-designs .neon .history-svg text { fill:var(--dim); font:inherit; font-size:11px; }
+#joi-designs .neon .history-grid { stroke:var(--line); stroke-width:0.6; opacity:0.7; }
+#joi-designs .neon .history-curve { fill:none; stroke:var(--accent); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+#joi-designs .neon .history-dot { fill:var(--accent); }
+#joi-designs .neon .history-crosshair { stroke:var(--dim); stroke-width:1; opacity:0.6; }
+#joi-designs .neon .history-sample { color:var(--ink); font-variant-numeric:tabular-nums; }
 #joi-designs .neon-service-tabs { display:flex; gap:14px; margin-top:8px; }
 #joi-designs .neon-service-tabs button { padding:5px 12px; background:transparent; border:0; border-bottom:2px solid transparent; color:var(--dim); }
 #joi-designs .neon-service-tabs button[aria-selected="true"] { color:var(--accent); border-bottom-color:var(--accent); }
@@ -341,7 +349,108 @@
     {name:'litellm',status:'Running'},
     {name:'open-webui',status:'Restarting'}
   ];
-  const state = { neonModel:'chat', amberModel:'chat', gpuId:4, health:'fresh', theme:'hologram' };
+  const state = { neonModel:'chat', amberModel:'chat', gpuId:4, health:'fresh', theme:'hologram', historyStart:120 };
+  // The design preview has 180 seconds of mock history; each view spans 60 seconds.
+  const historyMaximum = {chat:200, embed:6, rank:8};
+  const historySeries = new Map(models.map((model, modelIndex) => {
+    const points = Array.from({length:181}, (_, i) => ({
+      time:i-180,
+      value:historyMaximum[model.id]*(0.57+0.15*Math.sin(i*0.11+modelIndex)
+        +0.10*Math.sin(i*0.34+1.4)+0.035*Math.sin(i*1.17))
+    }));
+    const shift = Number(model.throughput)-points[180].value;
+    for(let i=174;i<=180;i++) points[i].value+=shift*(i-173)/7;
+    return [model.id, points];
+  }));
+  let historyObserver = null;
+  const clampHistory = value => Math.max(0, Math.min(120, value));
+  const historyTime = time => Math.abs(time)<0.05 ? '0s' : `−${Math.round(Math.abs(time))}s`;
+  function historyCurve(points) {
+    const deltas=points.slice(1).map((point,i)=>(point.y-points[i].y)/(point.x-points[i].x));
+    const slopes=points.map((_,i)=>i===0?deltas[0]:i===points.length-1?deltas[deltas.length-1]
+      :deltas[i-1]*deltas[i]<=0?0:2*deltas[i-1]*deltas[i]/(deltas[i-1]+deltas[i]));
+    let path=`M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+    for(let i=0;i<points.length-1;i++) {
+      const a=points[i], b=points[i+1], step=(b.x-a.x)/3;
+      path+=` C ${(a.x+step).toFixed(2)} ${(a.y+step*slopes[i]).toFixed(2)} ${(b.x-step).toFixed(2)} ${(b.y-step*slopes[i+1]).toFixed(2)} ${b.x.toFixed(2)} ${b.y.toFixed(2)}`;
+    }
+    return path;
+  }
+  function mountNeonHistory(model) {
+    const plot=neon.querySelector('[data-history-pan]');
+    const svg=plot.querySelector('svg');
+    const sample=neon.querySelector('[data-history-sample]');
+    const windowLabel=neon.querySelector('[data-history-window]');
+    const data=historySeries.get(model.id), maximum=historyMaximum[model.id];
+    const unit=model.id==='chat'?'tok/s':'seq/s';
+    let drag=null, hoverTime=null, plotWidth=1, plotLeft=30;
+    function valueAt(time) {
+      const offset=Math.max(0,Math.min(180,time+180));
+      const low=Math.floor(offset), high=Math.min(180,low+1);
+      return data[low].value+(data[high].value-data[low].value)*(offset-low);
+    }
+    function draw() {
+      const box=plot.getBoundingClientRect();
+      const width=Math.max(120,box.width), height=Math.max(100,box.height);
+      const left=30, right=width-12, top=12, bottom=height-24;
+      const start=state.historyStart-180, end=start+60;
+      const x=time=>left+(time-start)/60*(right-left);
+      const y=value=>bottom-value/maximum*(bottom-top);
+      plotWidth=right-left; plotLeft=left;
+      const points=data.map(point=>({x:x(point.time),y:y(point.value)}));
+      const line=historyCurve(points);
+      const area=`${line} L ${points[points.length-1].x.toFixed(2)} ${bottom} L ${points[0].x.toFixed(2)} ${bottom} Z`;
+      const time=hoverTime===null?end:Math.max(start,Math.min(end,hoverTime));
+      const value=valueAt(time);
+      const ticks=width<340?[0,30,60]:[0,15,30,45,60];
+      svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
+      svg.innerHTML=`<title>${model.short} throughput history (mock data)</title><desc>A 60 second window from ${historyTime(start)} to ${historyTime(end)}. Drag horizontally or use Left and Right arrow keys to pan through 180 seconds of mock history.</desc>
+        <defs><linearGradient id="neon-history-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" style="stop-color:var(--accent);stop-opacity:.46"/><stop offset="56%" style="stop-color:var(--accent);stop-opacity:.21"/><stop offset="100%" style="stop-color:var(--accent);stop-opacity:.025"/></linearGradient><clipPath id="neon-history-clip"><rect x="${left}" y="${top-3}" width="${right-left}" height="${bottom-top+6}"/></clipPath></defs>
+        ${[0,1,2,3,4].map(index=>{const tick=maximum*index/4;return `<line class="history-grid" x1="${left}" x2="${right}" y1="${y(tick)}" y2="${y(tick)}"/><text x="${left-7}" y="${y(tick)+4}" text-anchor="end">${Number(tick.toFixed(1))}</text>`;}).join('')}
+        <g clip-path="url(#neon-history-clip)" pointer-events="none"><path d="${area}" fill="url(#neon-history-fill)"/><path class="history-curve" d="${line}"/>${hoverTime!==null?`<line class="history-crosshair" x1="${x(time)}" x2="${x(time)}" y1="${top}" y2="${bottom}"/>`:''}</g><circle class="history-dot" cx="${x(time)}" cy="${y(value)}" r="3" pointer-events="none"/>
+        ${ticks.map((tick,index)=>`<text x="${x(start+tick)}" y="${height-4}" text-anchor="${index===0?'start':index===ticks.length-1?'end':'middle'}">${historyTime(start+tick)}</text>`).join('')}`;
+      sample.textContent=`${value.toFixed(1)} ${unit}${hoverTime===null?'':` · ${historyTime(time)}`}`;
+      const label=state.historyStart>119.95?'LATEST · 60s WINDOW':`${historyTime(start)} → ${historyTime(end)}`;
+      if(windowLabel.textContent!==label) windowLabel.textContent=label;
+      plot.dataset.windowStart=start.toFixed(2);
+      plot.dataset.windowEnd=end.toFixed(2);
+    }
+    plot.addEventListener('pointerdown',event=>{
+      if(event.button!==0)return;
+      drag={x:event.clientX,start:state.historyStart}; hoverTime=null;
+      plot.dataset.dragging='true'; plot.setPointerCapture(event.pointerId);
+    });
+    plot.addEventListener('pointermove',event=>{
+      if(drag)state.historyStart=clampHistory(drag.start-(event.clientX-drag.x)/plotWidth*60);
+      else hoverTime=state.historyStart-180+(event.clientX-plot.getBoundingClientRect().left-plotLeft)/plotWidth*60;
+      draw();
+    });
+    function finishDrag() {
+      if(!drag)return;
+      drag=null; hoverTime=null; delete plot.dataset.dragging; draw(); save();
+    }
+    plot.addEventListener('pointerup',finishDrag);
+    plot.addEventListener('pointercancel',finishDrag);
+    plot.addEventListener('lostpointercapture',finishDrag);
+    plot.addEventListener('pointerleave',()=>{if(!drag){hoverTime=null;draw();}});
+    plot.addEventListener('keydown',event=>{
+      const amount=event.shiftKey?30:5;
+      const changes={ArrowLeft:state.historyStart-amount,ArrowRight:state.historyStart+amount,Home:0,End:120};
+      if(!(event.key in changes))return;
+      event.preventDefault(); state.historyStart=clampHistory(changes[event.key]); hoverTime=null; draw(); save();
+    });
+    plot.addEventListener('wheel',event=>{
+      const delta=Math.abs(event.deltaX)>0.1?event.deltaX:event.shiftKey?event.deltaY:0;
+      if(!delta)return;
+      event.preventDefault(); state.historyStart=clampHistory(state.historyStart+delta/plotWidth*60);
+      hoverTime=null; draw(); save();
+    },{passive:false});
+    draw();
+    if(typeof ResizeObserver!=='undefined') {
+      historyObserver=new ResizeObserver(draw);
+      historyObserver.observe(plot);
+    }
+  }
   function bar(percent,n=16) { const used=Math.round(Math.max(0,Math.min(100,percent))*n/100); return Array.from({length:n},(_,i)=>`<span class="gpu-segment${i<used?' filled':''}"></span>`).join(''); }
   function gpuRow(g, devices) {
     return `<div class="gpu-row ${devices.includes(g.id) ? 'linked' : ''}">
@@ -366,6 +475,7 @@
     return `<table aria-label="Model activity and queues (mock data)"><thead><tr><th>MODEL / ENDPOINT</th><th>RUN</th><th>WAIT</th><th class="narrow-hide">KV</th><th>${compact?'RATE':'GEN tok/s'}</th><th class="optional">${compact?'HEALTH':'TTFT'}</th><th class="narrow-hide">GPU</th></tr></thead><tbody>${models.map(m=>`<tr class="${m.id===selected?'selected':''}" data-model="${m.id}"><td><button type="button" class="row-button cursor-interaction" data-model="${m.id}" aria-pressed="${m.id===selected}">${m.id===selected?'› ':'  '}${m.name}</button></td><td>${stale?'—':m.run}</td><td class="${m.wait>0?'warn':''}">${stale?'—':m.wait}</td><td class="narrow-hide">${stale?'—':m.kv}</td><td>${stale?'—':(compact?m.throughput+'<span class="dim tiny"> '+m.unit+'</span>':(m.id==='chat'?m.throughput:'—'))}</td><td class="optional ${stale?'status-stale':''}">${compact?(stale?'STALE':'OK'):m.ttft}</td><td class="narrow-hide">${m.devices.length===4?'0–3':'4'}</td></tr>`).join('')}</tbody></table>`;
   }
   function renderNeon() {
+    historyObserver?.disconnect();
     const m=models.find(m=>m.id===state.neonModel);
     neon.querySelectorAll('.host-meter').forEach(meter=>{meter.innerHTML=bar(Number(meter.dataset.percent),20);});
     neon.querySelector('.docker-list').innerHTML=containers.slice(0,5).map(container=>`<div class="docker-row"><span class="docker-name">${container.name}</span><span class="docker-status ${container.status==='Running'?'running':''}">${container.status}</span></div>`).join('');
@@ -383,7 +493,8 @@
         <div class="neon-queue"><span class="queue-label">WAITING</span><strong class="${m.wait>0?'warn':''}">${m.wait}</strong><span class="queue-caption">${m.id==='chat'?`Avg queue ${m.queue}`:'Unit: requests'}</span></div>
       </div>
       <div class="neon-metrics">${metrics.map(([label,value])=>`<div><span class="metric-label">${label}</span><span class="metric-value">${value}</span></div>`).join('')}</div>
-      <div class="history-block"><div class="history-heading"><span>${m.id==='chat'?'DECODE':'REQUEST'} HISTORY | ${m.id==='chat'?'tok/s':'seq/s'}</span><span></span></div><div class="history-graph" role="img" aria-label="${m.short} throughput over 60 seconds (mock data)">${Array.from(m.history).map(c=>`<span class="history-column" style="height:${(c.charCodeAt(0)-0x2580)*6}px"></span>`).join('')}</div><div class="history-heading"><span>−60s</span><span>0s</span></div></div>`;
+      <div class="history-block"><div class="history-heading"><span>${m.id==='chat'?'DECODE':'REQUEST'} HISTORY | ${m.id==='chat'?'tok/s':'seq/s'}</span><span class="history-sample" data-history-sample></span></div><button type="button" class="history-graph history-plot" data-history-pan aria-label="${m.short} throughput history. Drag horizontally or use Left and Right arrow keys to pan; Home shows the oldest history and End shows the latest."><svg class="history-svg" role="img" aria-label="${m.short} throughput history curve with gradient area fill (mock data)"></svg></button><div class="history-heading"><span>← → PAN HISTORY</span><span data-history-window aria-live="polite"></span></div></div>`;
+    mountNeonHistory(m);
   }
   function renderAmber() {
     const m=models.find(m=>m.id===state.amberModel);
@@ -404,8 +515,8 @@
     status.textContent=state.health==='stale'?'STALE · 12s ago':'OK · 0.4s ago';
   }
   function renderAll(){renderTheme();renderNeon();renderAmber();renderMatrix();}
-  function save(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{selectedNeonModel:state.neonModel,selectedAmberModel:state.amberModel,selectedGpu:state.gpuId,sampleState:state.health,theme:state.theme},privateContent:{...state}}).catch(()=>{});}
-  function restore(saved){const p=saved?.privateContent;if(!p)return;if(models.some(m=>m.id===p.neonModel))state.neonModel=p.neonModel;if(models.some(m=>m.id===p.amberModel))state.amberModel=p.amberModel;if(gpu.some(g=>g.id===p.gpuId))state.gpuId=p.gpuId;if(['fresh','stale'].includes(p.health))state.health=p.health;if(['moonlight','hologram'].includes(p.theme))state.theme=p.theme;}
+  function save(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{selectedNeonModel:state.neonModel,selectedAmberModel:state.amberModel,selectedGpu:state.gpuId,sampleState:state.health,theme:state.theme,historyWindow:{from:state.historyStart-180,to:state.historyStart-120}},privateContent:{...state}}).catch(()=>{});}
+  function restore(saved){const p=saved?.privateContent;if(!p)return;if(models.some(m=>m.id===p.neonModel))state.neonModel=p.neonModel;if(models.some(m=>m.id===p.amberModel))state.amberModel=p.amberModel;if(gpu.some(g=>g.id===p.gpuId))state.gpuId=p.gpuId;if(['fresh','stale'].includes(p.health))state.health=p.health;if(['moonlight','hologram'].includes(p.theme))state.theme=p.theme;if(Number.isFinite(p.historyStart))state.historyStart=clampHistory(p.historyStart);}
   restore(window.openai?.widgetState);
   renderAll();
   neon.addEventListener('click',e=>{if(e.target.closest('button[data-theme-toggle]')){state.theme=state.theme==='moonlight'?'hologram':'moonlight';renderTheme();save();return;}const b=e.target.closest('button[data-model]');if(!b)return;state.neonModel=b.dataset.model;renderNeon();neon.querySelector(`button[data-model="${state.neonModel}"]`)?.focus();save();});

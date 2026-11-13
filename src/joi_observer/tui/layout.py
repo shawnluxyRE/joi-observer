@@ -375,7 +375,7 @@ def compose_frame(
         row = docker.row + 2 + index
         state = "STALE" if obj and obj.stale else (
             format_metric(obj.metrics[0]) if obj and obj.metrics else "—")
-        region_put(docker, row, docker.column + 2, container.name, "text", docker.width - 19)
+        region_put(docker, row, docker.column + 2, container.id, "text", docker.width - 19)
         state = _clip(state, 14)
         state_role = ("primary" if state == "Running" and obj is not None
                       and not obj.stale and obj.sampled_at is not None else "text")

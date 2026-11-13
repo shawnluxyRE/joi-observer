@@ -139,9 +139,9 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 ## 逐行展示
 
-面板容量、可见前缀、空配置/零容量以及缩放行为统一见[应用外壳](application-shell.md#可验证的字符容量)。每个可见容器占一行，名称沿用 `ContainerConfig.name`；有可用内容行且未配置容器时，空态文案为 `No containers configured`。
+面板容量、可见前缀、空配置/零容量以及缩放行为统一见[应用外壳](application-shell.md#可验证的字符容量)。每个可见容器占一行，名称显示配置的 `ContainerConfig.id`；`ContainerConfig.name` 仅作为实际容器查询目标。有可用内容行且未配置容器时，空态文案为 `No containers configured`。
 
-内容左端 `L=region.column+2`、右端 `R=region.column+region.width-2`（不含 R）。状态固定占 `[R-14,R)`，全部生命周期、未知 `—` 和 `STALE` 均按文字宽度右对齐到 R。名称在 `[L,R-15)` 内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长 Unicode 名不能覆盖状态。状态变化、失败恢复及 resize 不会重排配置前缀或增加行。
+内容左端 `L=region.column+2`、右端 `R=region.column+region.width-2`（不含 R）。状态固定占 `[R-14,R)`，全部生命周期、未知 `—` 和 `STALE` 均按文字宽度右对齐到 R。显示的配置 ID 在 `[L,R-15)` 内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长 ID 不能覆盖状态。状态变化、失败恢复及 resize 不会重排配置前缀或增加行。
 
 STALE 优先替换旧生命周期，只显示该状态文字，无错误原因或时间；初始无对象/无状态使用 `—`。成功 Exited/Dead 仍显示生命周期，不误报采集失败。状态新鲜性及颜色角色统一遵守[主题角色表](theme.md#color-roles)，本模块不维护另一份颜色映射。
 
@@ -153,7 +153,7 @@ STALE 优先替换旧生命周期，只显示该状态文字，无错误原因�
 | DockerCollector / build_docker_collectors | 同上 | 固定单次只读命令、全量顺序、重复目标不同 id、无 IO 构造、失败恢复、取消、关闭 |
 | LocalDockerCommand | `tests/test_docker_command.py` | 仅替换 asyncio 子进程创建端口；参数/环境、原始字节、并发排空、两流上限、超时/取消/close 回收 |
 | Collector→Monitor→State→Frame/Log | `tests/test_docker_integration.py` | 真实采集业务入口与离线命令样本；隐藏项采样/日志、容量变化、恢复及错误净化 |
-| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 全7种生命周期、初始未知、STALE、长名称、两主题、多宽、14格槽内统一右对齐；核对主题角色和外壳容量契约 |
+| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 配置 ID 显示、全7种生命周期、初始未知、STALE、长 ID、两主题、多宽、14格槽内统一右对齐；核对主题角色和外壳容量契约 |
 | ApplicationRuntime | 同上 | 用fake命令与终端运行真实生产组装，验证全部容器实际采样及隔离、恢复、退出清理 |
 | 配置与容量 | `tests/test_config.py`、`test_config_boundaries.py`、`test_tui.py`、`test_integration.py` | 复用 REQ-001 的 1/5/6/10 项完整保留、空态、0 容量、半页、配置不修改等测试 |
 

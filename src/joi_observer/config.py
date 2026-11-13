@@ -72,7 +72,8 @@ class ContainerConfig:
     """一项显式容器配置。
 
     id 是应用内稳定标识，符合 [A-Za-z0-9][A-Za-z0-9_.-]{0,63}，在实际
-    完整 containers 列表中唯一。name 是真实 Docker 名称或完整容器 ID，1～128
+    完整 containers 列表中唯一，同时作为 TUI Docker 区域的显示名称。
+    name 是真实 Docker 名称或完整容器 ID，1～128
     个可打印字符，不含控制字符/首尾空白；不能把 Compose 项目名当成
     真实容器名。匹配及生命周期采集交由 REQ-003，读取配置不访问 Docker。
     REQ-003 按响应 Name（去除唯一的前导 /）或完整 64 位小写十六进制 Id

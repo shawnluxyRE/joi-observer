@@ -211,7 +211,7 @@ Python的`setupterm`会缓存首次成功结果，后续同进程调用不能视
 | neon-queues | [运行/等待统计](vllm.md#10-展示与固定布局) | vllm_view |
 | queue / divider | [分隔线与留白](vllm.md#10-展示与固定布局) | vllm_view、tui |
 | neon-metrics | [类型字段、数值强调与槽位](vllm.md#10-展示与固定布局) | vllm_view、theme_view |
-| history-block | [历史显示与尺度](vllm.md#vllm-history) | history_presentation、vllm_view/pty |
+| history-block | HTML 使用可平移的平滑曲线及主色渐隐填充；正式 TUI 保持[历史显示与尺度](vllm.md#vllm-history)契约 | history_presentation、vllm_view/pty |
 | neon-service-tabs / keybar | [服务入口与键位](navigation.md#服务入口与键位呈现) | service_footer、navigation_app |
 | resize / long text / partial values | [整页边界](application-shell.md#可验证的字符容量)、[硬件裁切](hardware.md#硬件显示与模型关联)、[服务裁切](vllm.md#10-展示与固定布局) | html_hardware_layout、vllm_view、html_shell_layout、tui |
 

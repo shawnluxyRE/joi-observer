@@ -439,7 +439,8 @@ def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_
                         and has_capacity_numbers(region_text(terminal.frames[-1], "storage"), "25", "100")
                         and "Running" in region_text(terminal.frames[-1], "docker"))
             initial = terminal.frames[-1]
-            assert "hidden-container" not in region_text(initial, "docker")
+            assert "cpu" in region_text(initial, "docker")
+            assert "other" not in region_text(initial, "docker")
             assert all(not item.stale for item in objects().values())
             assert len(hardware_ports) == 5  # Four static/discovery ports plus the discovered GPU.
             assert all(len(port.calls) >= 2 for port in hardware_ports + docker_ports)

@@ -288,8 +288,8 @@ def test_resize_keeps_half_page_storage_three_rows_and_docker_visible_prefix(the
         paths = [cell for cell in cells_in(frame, "storage") if cell.text in ("/", "/data", "/cache")
                  or cell.text.startswith(("/ ", "/data ", "/cache "))]
         assert [cell.row for cell in paths] == list(range(header_height + 8, header_height + 11))
-        assert [cell.text for cell in cells_in(frame, "docker") if cell.text.startswith("Container-")] == [
-            f"Container-{index}" for index in range(visible)]
+        assert [cell.text for cell in cells_in(frame, "docker") if cell.text in {item.id for item in config.containers}] == [
+            item.id for item in config.containers[:visible]]
         assert area["docker"].row + area["docker"].height == area["service"].row
         assert all(token not in " ".join(cell.text for cell in frame.cells).lower()
                    for token in ("enlarge", "hidden", "more", "overflow", "…", "..."))

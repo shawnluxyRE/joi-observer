@@ -7,6 +7,7 @@ mount_points: ["/", "/data"]  # Only the first three items are monitored; later 
 
 # Add actual Docker names or full IDs; all configured items are monitored.
 # Only first items that fit in the Docker panel are displayed; others stay hidden.
+# id is the display label in the Docker panel; name is the actual lookup target.
 # Compose project/service names are not automatically container names.
 # Replace the example name below with your actual Docker name or full ID.
 # Use containers: [] if you do not want to monitor containers.

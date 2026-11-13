@@ -11,7 +11,7 @@
 
 只在启动时选择并读取用户 YAML，验证字段，返回不可变配置。读取不访问任何监控目标，不创建日志目录、不修改 YAML、不热重载。安装示例是复制材料，绝不能成为缺少用户配置时的运行回退。采集器使用已验证的配置，展示层不读取或解析文件。
 
-`ContainerConfig.id` 是状态身份，`name` 是实际查询目标。解析配置不检查容器存在性，不提供 socket/context 配置；运行期匹配与重建规则见 [Docker 身份契约](docker.md#docker-identity)。
+`ContainerConfig.id` 是状态身份，也是 TUI Docker 区域的显示名称；`name` 是实际查询目标。解析配置不检查容器存在性，不提供 socket/context 配置；运行期匹配与重建规则见 [Docker 身份契约](docker.md#docker-identity)。
 
 ```mermaid
 flowchart LR

@@ -165,8 +165,8 @@ def test_all_docker_sources_keep_sampling_and_logging_while_visibility_changes(t
             return compose_frame(state.snapshot(), config, TerminalSize(120, rows),
                                  HostInfo("offline-host", "Ubuntu"), NOW)
 
-        def names(frame):
-            return [cell.text for cell in frame.cells if cell.text in {item.name for item in containers}]
+        def visible_ids(frame):
+            return [cell.text for cell in frame.cells if cell.text in {item.id for item in containers}]
 
         try:
             await sample(monitor, clock, 0)
@@ -174,7 +174,7 @@ def test_all_docker_sources_keep_sampling_and_logging_while_visibility_changes(t
             assert len(state.snapshot().objects) == 10
             initial = frame_at(50)
             assert not initial.too_small
-            assert names(initial) == [item.name for item in containers[:4]]
+            assert visible_ids(initial) == [item.id for item in containers[:4]]
             assert await log.flush()
             assert (config.logging.directory / "error.log").read_text(encoding="utf-8") == ""
 
@@ -189,9 +189,9 @@ def test_all_docker_sources_keep_sampling_and_logging_while_visibility_changes(t
             assert "STALE" not in text(frame_at(50))
 
             expanded = frame_at(54)
-            assert names(expanded) == [item.name for item in containers[:6]]
+            assert visible_ids(expanded) == [item.id for item in containers[:6]]
             assert "STALE" in text(expanded)
-            assert names(frame_at(48)) == [item.name for item in containers[:3]]
+            assert visible_ids(frame_at(48)) == [item.id for item in containers[:3]]
             assert [source.calls for source in sources] == [2] * 10
             assert len(config.containers) == len(state.snapshot().objects) == 10
         finally:
@@ -241,13 +241,13 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
         terminal, actions = ResizingTerminal(), Actions()
         app = ObserverApp(config, state, terminal, host=HostInfo("offline-host", "Ubuntu"),
                           wall_clock=lambda: NOW + timedelta(seconds=clock[0]), actions=actions)
-        names = [item.name for item in config.containers]
+        container_ids = [item.id for item in config.containers]
 
-        def visible_names(frame):
-            return [cell.text for cell in frame.cells if cell.text in names]
+        def visible_ids(frame):
+            return [cell.text for cell in frame.cells if cell.text in container_ids]
 
-        def status_is(frame, name, value):
-            row = next(cell.row for cell in frame.cells if cell.text == name)
+        def status_is(frame, container_id, value):
+            row = next(cell.row for cell in frame.cells if cell.text == container_id)
             return any(cell.row == row and cell.text == value for cell in frame.cells)
 
         def region_text(frame, name):
@@ -268,7 +268,7 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
             await sample(monitor, clock, clock[0])
             frame = terminal.frames[-1]
             assert not frame.too_small
-            assert visible_names(frame) == names[:visible]
+            assert visible_ids(frame) == container_ids[:visible]
             assert state.snapshot() == before
             assert [source.calls for source in sources] == calls
             assert log_path.read_bytes() == file_before
@@ -280,13 +280,13 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
         running = asyncio.create_task(app.run())
         try:
             await until(lambda: bool(terminal.frames))
-            assert visible_names(terminal.frames[0]) == names[:4]
+            assert visible_ids(terminal.frames[0]) == container_ids[:4]
             assert len(state.snapshot().objects) == 13
             assert tuple(item.key for item in state.snapshot().objects) == tuple(source.spec.key for source in sources)
 
             await sample(monitor, clock, 0)
             assert [source.calls for source in sources] == [1] * 13
-            await until(lambda: status_is(terminal.frames[-1], names[0], "Running"))
+            await until(lambda: status_is(terminal.frames[-1], container_ids[0], "Running"))
             assert await log.flush()
             assert log_path.read_bytes() == b""  # Hidden healthy objects are not failures.
             healthy_snapshot = state.snapshot()
@@ -306,7 +306,7 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
             assert all(not item.stale for item in healthy_snapshot.objects)
 
             expanded = await resize(54, 6)
-            assert status_is(expanded, names[5], "STALE")
+            assert status_is(expanded, container_ids[5], "STALE")
             reduced = await resize(48, 3)
             assert "STALE" not in region_text(reduced, "docker")
             assert len(state.snapshot().objects) == 13
@@ -333,7 +333,7 @@ def test_loaded_configuration_keeps_complete_sources_and_history_across_ui_resiz
             assert all(len(item.history) == 4 for item in state.snapshot().objects)
             assert await log.flush()
             recovered = await resize(54, 6)
-            assert status_is(recovered, names[5], "Restarting")
+            assert status_is(recovered, container_ids[5], "Restarting")
             assert "STALE" not in text(recovered)
             assert len(log_path.read_bytes().splitlines()) == 2  # Recovery/Exited are silent.
 

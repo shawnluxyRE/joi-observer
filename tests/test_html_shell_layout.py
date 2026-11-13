@@ -165,7 +165,7 @@ def test_all_docker_lifecycle_unknown_and_stale_values_end_at_the_same_reserved_
         assert segment(frame, row, right - 15, right - 14) == " "
         grid = pixels(frame.cells)
         assert {grid[row, column][1] for column in range(right - len(expected), right)} == {role}
-        names = [cell for cell in frame.cells if cell.row == row and cell.text == f"Container-{index}"]
+        names = [cell for cell in frame.cells if cell.row == row and cell.text == f"c{index}"]
         assert len(names) == 1 and names[0].column == area.column + 2
         assert names[0].column + width(names[0].text) <= right - 15
     assert not any(cell.role == "amber" for cell in frame.cells)
@@ -173,9 +173,10 @@ def test_all_docker_lifecycle_unknown_and_stale_values_end_at_the_same_reserved_
 
 
 @pytest.mark.parametrize("columns", (120, 121, 160))
-def test_docker_long_unicode_name_keeps_fixed_slot_across_failure_and_recovery(columns):
-    config = AppConfig(mount_points=(), containers=(ContainerConfig("c", "界e\u0301" * 100),))
-    healthy = ObjectSnapshot(ObjectKey("docker", "c"), (Metric("state", "Restarting"),), sampled_at=100)
+def test_docker_long_config_id_keeps_fixed_slot_across_failure_and_recovery(columns):
+    container_id = "docker-" + "x" * 57
+    config = AppConfig(mount_points=(), containers=(ContainerConfig(container_id, "界e\u0301" * 100),))
+    healthy = ObjectSnapshot(ObjectKey("docker", container_id), (Metric("state", "Restarting"),), sampled_at=100)
     frames = [draw(columns=columns, config=config, snapshot=StateSnapshot((item,)))
               for item in (healthy, replace(healthy, stale=True), healthy)]
     assert frames[0] == frames[2]
@@ -186,6 +187,7 @@ def test_docker_long_unicode_name_keeps_fixed_slot_across_failure_and_recovery(c
         assert segment(frame, row, right - len(state), right) == state
         names = [cell for cell in frame.cells if cell.row == row and cell.column == area.column + 2]
         assert len(names) == 1 and names[0].column + width(names[0].text) <= right - 15
+        assert names[0].text == container_id[:area.width - 19]
     assert segment(frames[0], row, area.column + 2, right - 15) == segment(
         frames[1], row, area.column + 2, right - 15)
 
@@ -199,8 +201,9 @@ def test_shell_changes_preserve_docker_capacity_empty_state_and_configuration(he
                                                         for i in range(count)))
     before = deepcopy(config)
     frame = draw(height=height, config=config)
-    names = [cell.text for cell in frame.cells if cell.text.startswith("Container-")]
-    assert names == [f"Container-{index}" for index in range(min(count, capacity))]
+    container_ids = {item.id for item in config.containers}
+    labels = [cell.text for cell in frame.cells if cell.text in container_ids]
+    assert labels == [f"c{index}" for index in range(min(count, capacity))]
     empty = [cell for cell in frame.cells if cell.text == "No containers configured"]
     assert bool(empty) is (count == 0 and capacity > 0)
     assert config == before and frame.minimum_size == TerminalSize(120, 36)
