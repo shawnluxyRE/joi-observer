@@ -141,7 +141,7 @@ def test_real_command_output_is_bounded_and_child_reaped(tmp_path, monkeypatch, 
 @LINUX
 @pytest.mark.parametrize("finish", ["timeout", "cancel", "close"])
 @pytest.mark.parametrize("operation", ["command", "file", "statvfs"])
-def test_slow_real_process_cleanup_is_bounded(tmp_path, monkeypatch, finish, operation):
+def test_slow_real_process_cleanup_is_bounded(tmp_path, monkeypatch, capsys, finish, operation):
     marker = tmp_path / "pid"
     body = f"import os, time\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(30)\n"
     if operation == "command":
@@ -170,6 +170,7 @@ def test_slow_real_process_cleanup_is_bounded(tmp_path, monkeypatch, finish, ope
         await io.close()
 
     asyncio.run(scenario())
+    assert capsys.readouterr() == ("", "")
 
 
 @LINUX

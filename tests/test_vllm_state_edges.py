@@ -155,10 +155,9 @@ def test_state_registration_failure_and_projection_keep_generic_objects_independ
     assert values(expired.objects[1].metrics)["ttft_seconds"] is None
 
 
-def test_large_representable_rate_and_tiny_latency_with_huge_count_are_supported():
+def test_large_representable_rate_with_huge_counter_is_supported():
     assert counter_rate((EngineCounter("a", 0),), (EngineCounter("a", 10**399),),
                         elapsed=1e300) == pytest.approx(1e99)
-    assert weighted_latency((LatencyInterval(0, 1, 1e308, 10**400),), now=1) == pytest.approx(1e-92)
 
 
 @pytest.mark.parametrize("time", [True, -1, math.inf, math.nan, 10**400])
@@ -246,19 +245,6 @@ def test_pooling_state_failure_recovery_preserves_only_verified_latency_and_hist
     assert not healthy.stale and values(healthy.metrics)["rate"] == 3
 
 
-def test_multi_engine_latency_keeps_a_representable_nonzero_mean_after_weighting():
-    # Each total is exactly one binary64 subnormal step. The service has three
-    # observations totalling two steps, so its correctly rounded mean is one
-    # step. Rounding each engine mean first would erase the first engine's sum.
-    tiny = math.ulp(0.0)
-    acc = VllmAccumulator(SPEC)
-    acc.accept(result(engine("a"), engine("b")), sampled_at=0)
-    current = acc.accept(result(engine("a", ttft=L(tiny, 2, 10)),
-                                engine("b", ttft=L(tiny, 1, 10))), sampled_at=2)
-    assert tiny > 0
-    assert values(current)["ttft_seconds"] == tiny
-
-
 def test_tiny_latency_with_huge_count_uses_relative_tolerance_and_stays_nonzero():
     mean = weighted_latency((LatencyInterval(0, 1, 1e308, 10**400),), now=1)
     # The default 1e-12 absolute tolerance would incorrectly accept zero here.
@@ -299,6 +285,7 @@ def _two_engine_latency_accumulator(kind):
 @pytest.mark.parametrize("reverse", [False, True])
 def test_every_latency_group_rounds_once_after_global_weighting(kind, field, metric, reverse):
     tiny = math.ulp(0.0)
+    assert tiny > 0
     acc, samples, submit = _two_engine_latency_accumulator(kind)
     updated = (replace(samples[0], **{field: L(tiny, 2, 10)}),
                replace(samples[1], **{field: L(tiny, 1, 10)}))
@@ -336,3 +323,232 @@ def test_global_latency_retains_nonzero_mean_with_unrepresentable_sum_and_count(
     assert mean > 0
     assert mean == pytest.approx(1e-92, rel=1e-12, abs=0.0)
     assert values(acc.metrics(now=2))[metric] == mean
+
+
+@pytest.mark.parametrize("kind", tuple(ModelType))
+def test_raw_multi_engine_partial_rate_recovery_and_window_roundtrip(tmp_path, kind):
+    import asyncio
+    from joi_observer.collectors.vllm import HttpResponse, VllmCollector
+    from joi_observer.config import AppConfig, LogConfig
+    from joi_observer.error_log import ErrorLog
+    from joi_observer.ipc.protocol import SnapshotEnvelope, build_metadata, decode_envelope, encode_envelope
+    from joi_observer.monitor import Monitor
+    from test_vllm_full_response_integration import MemoryLogIO
+
+    async def scenario():
+        cfg = ModelConfig("raw-multi", kind, "Display alias", "http://offline.invalid:8000",
+                          served_model_name="served")
+        primary = "vllm:generation_tokens" if kind is ModelType.CHAT else "vllm:request_success"
+        latency = ("vllm:time_to_first_token_seconds" if kind is ModelType.CHAT
+                   else "vllm:e2e_request_latency_seconds")
+        primary_metric = "decode_rate" if kind is ModelType.CHAT else "rate"
+        latency_metric = "ttft_seconds" if kind is ModelType.CHAT else "latency_seconds"
+        primary_counts = ((10, 20), (14, 28), (None, 32), (20, 36), (24, 44))
+        prompt_counts = ((100, 200), (104, 212), (106, 216), (108, 220), (110, 224))
+        queue_samples = (((0, 0), (0, 0)), ((2, 1), (6, 3)), ((5, 2), (7, 4)),
+                         ((5, 2), (7, 4)), ((7, 3), (11, 6)))
+        latency_samples = (((0, 0), (0, 0)), ((4, 2), (6, 1)), ((9, 3), (8, 2)),
+                           ((9, 3), (8, 2)), ((10, 4), (16, 3)))
+
+        def raw_metrics(round_index):
+            lines = ["process_start_time_seconds 10"]
+            # The second scrape reverses exposition order without changing
+            # engine identity. Expected values below use per-engine deltas.
+            order = (1, 0) if round_index == 1 else (0, 1)
+            for index in order:
+                labels = f'model_name="served",engine="{("a", "b")[index]}"'
+
+                def emit(name, value, extra=""):
+                    if value is not None:
+                        lines.append(f"{name}{{{labels}{extra}}} {value}")
+
+                emit("vllm:num_requests_running", (7, 11)[index])
+                emit("vllm:num_requests_waiting", (1, 2)[index])
+                counter_labels = '' if kind is ModelType.CHAT else ',finished_reason="stop"'
+                emit(primary + "_total", primary_counts[round_index][index], counter_labels)
+                emit(primary + "_created", 10, counter_labels)
+                if kind is ModelType.CHAT:
+                    emit("vllm:prompt_tokens_total", prompt_counts[round_index][index])
+                    emit("vllm:prompt_tokens_created", 10)
+                    emit("vllm:kv_cache_usage_perc", (0.2, 0.8)[index])
+                else:
+                    emit("vllm:request_success_total", 999999, ',finished_reason="abort"')
+                for base, samples in (("vllm:request_queue_time_seconds", queue_samples),
+                                      (latency, latency_samples)):
+                    seconds, count = samples[round_index][index]
+                    emit(base + "_sum", seconds)
+                    emit(base + "_count", count)
+                    emit(base + "_created", 10)
+            return ("\n".join(lines) + "\n").encode()
+
+        class RawPort:
+            body = b""
+            closed = False
+
+            async def get(self, url, *, timeout, max_bytes):
+                await asyncio.sleep(0)
+                body = (b'{"version":"0.31.0"}' if url.endswith("/version") else
+                        b'{"data":[{"id":"served"}]}' if url.endswith("/v1/models") else self.body)
+                return HttpResponse(200, body)
+
+            async def close(self):
+                self.closed = True
+
+        port = RawPort()
+        collector = VllmCollector(cfg, port)
+        clock = [0.0]
+        state = MonitorState((collector.spec,), clock=lambda: clock[0])
+        log_io = MemoryLogIO()
+        log = ErrorLog(LogConfig(directory=tmp_path / "unused-log-path"), io=log_io)
+        assert log.prepare()
+        monitor = Monitor((collector,), state, log, clock=lambda: clock[0])
+        metadata = build_metadata(AppConfig(mount_points=(), models=(cfg,)),
+                                  hostname="Host", system="Ubuntu 24.04")
+        snapshots = []
+        try:
+            for round_index, at in enumerate((0.0, 2.0, 3.0, 4.0, 6.0)):
+                clock[0] = at
+                port.body = raw_metrics(round_index)
+                for _ in range(100):
+                    await monitor.poll()
+                    if state.snapshot().objects[0].sampled_at == at:
+                        break
+                else:
+                    raise AssertionError("Real raw-source collection did not complete")
+                snapshot = state.snapshot()
+                envelope = SnapshotEnvelope("instance", "config", round_index + 1, at,
+                                            metadata, snapshot)
+                assert decode_envelope(encode_envelope(envelope)) == envelope
+                item = snapshot.objects[0]
+                current = values(item.metrics)
+                assert (current["running"], current["waiting"], current["total"]) == (18, 3, 21)
+                assert current[primary_metric] == (None, 6.0, 6.0, None, 6.0)[round_index]
+                assert current["queue_seconds"] == (None, 2.0, 2.0, 2.0, 2.0)[round_index]
+                expected_latency = (None, 10 / 3, 17 / 5, 17 / 5, 26 / 7)[round_index]
+                assert (current[latency_metric] is None if expected_latency is None
+                        else current[latency_metric] == pytest.approx(expected_latency))
+                assert item.stale is (round_index == 2)
+                assert (item.history[-1].metrics is None) is (round_index == 2)
+                if kind is ModelType.CHAT:
+                    assert current["prefill_rate"] == (None, 8.0, 6.0, 6.0, 3.0)[round_index]
+                    assert current["kv_cache_percent"] == 50.0
+                snapshots.append(snapshot)
+            assert await log.flush()
+            assert len(log_io.lines) == 1
+            revision = snapshots[-1].revision
+            for now, expected in ((60.0, 26 / 7), (60.1, 4.0), (62.0, 4.0),
+                                  (62.1, 4.5), (64.0, 4.5), (64.1, None)):
+                clock[0] = now
+                snapshot = state.snapshot()
+                actual = values(snapshot.objects[0].metrics)[latency_metric]
+                assert actual is None if expected is None else actual == pytest.approx(expected)
+                assert snapshot.revision == revision
+            assert values(snapshots[1].objects[0].metrics)[primary_metric] == 6.0
+        finally:
+            await monitor.stop()
+            await log.close()
+        assert port.closed
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", tuple(ModelType))
+@pytest.mark.parametrize("interval", [1.0, 60.0])
+def test_raw_scientific_counters_survive_monitor_and_wire_at_production_intervals(kind, interval):
+    """Valid raw boundary values must not turn a rate overflow into source failure."""
+    import asyncio
+    from joi_observer.collectors.vllm import HttpResponse, VllmCollector
+    from joi_observer.config import AppConfig
+    from joi_observer.ipc.protocol import SnapshotEnvelope, build_metadata, decode_envelope, encode_envelope
+    from joi_observer.monitor import Monitor
+    from test_state_monitor_edges import Log
+
+    async def scenario():
+        cfg = ModelConfig("numeric-boundary", kind, "Display", "http://offline.invalid:8000",
+                          served_model_name="served")
+        primary = "vllm:generation_tokens" if kind is ModelType.CHAT else "vllm:request_success"
+        primary_metric = "decode_rate" if kind is ModelType.CHAT else "rate"
+        latency = ("vllm:time_to_first_token_seconds" if kind is ModelType.CHAT
+                   else "vllm:e2e_request_latency_seconds")
+        latency_metric = "ttft_seconds" if kind is ModelType.CHAT else "latency_seconds"
+
+        def raw_metrics(round_index):
+            labels = 'model_name="served",engine="0"'
+            lines = ["process_start_time_seconds 10"]
+
+            def emit(name, value, extra=""):
+                lines.append(f"{name}{{{labels}{extra}}} {value}")
+
+            # Each token is short and within the parser's 400-digit integer bound.
+            emit("vllm:num_requests_running", "1e399")
+            emit("vllm:num_requests_waiting", "2e399")
+            reason = '' if kind is ModelType.CHAT else ',finished_reason="stop"'
+            emit(primary + "_total", ("1e399", "2e399", "2e399")[round_index], reason)
+            if kind is ModelType.CHAT:
+                # Adjacent integers above float's exact range provide a finite control.
+                emit("vllm:prompt_tokens_total", 9007199254740992 + round_index)
+                emit("vllm:kv_cache_usage_perc", "0.25")
+            else:
+                emit("vllm:request_success_total", "9e399", ',finished_reason="abort"')
+            for base in ("vllm:request_queue_time_seconds", latency):
+                emit(base + "_sum", (0, 4, 7)[round_index])
+                emit(base + "_count", (0, 2, 3)[round_index])
+            return ("\n".join(lines) + "\n").encode()
+
+        class RawPort:
+            body = b""
+            closed = False
+
+            async def get(self, url, *, timeout, max_bytes):
+                await asyncio.sleep(0)
+                body = (b'{"version":"0.31.0"}' if url.endswith("/version") else
+                        b'{"data":[{"id":"served"}]}' if url.endswith("/v1/models") else self.body)
+                return HttpResponse(200, body)
+
+            async def close(self):
+                self.closed = True
+
+        port = RawPort()
+        collector = VllmCollector(cfg, port)
+        clock = [0.0]
+        state = MonitorState((collector.spec,), clock=lambda: clock[0])
+        log = Log()
+        monitor = Monitor((collector,), state, log, interval=interval, clock=lambda: clock[0])
+        metadata = build_metadata(AppConfig(mount_points=(), models=(cfg,), sample_interval=interval),
+                                  hostname="Host", system="Ubuntu 24.04")
+        snapshots = []
+        try:
+            for round_index in range(3):
+                clock[0] = at = round_index * interval
+                port.body = raw_metrics(round_index)
+                for _ in range(100):
+                    await monitor.poll()
+                    if state.snapshot().objects[0].sampled_at == at:
+                        break
+                else:
+                    raise AssertionError("Raw numeric boundary collection did not complete")
+                snapshot = state.snapshot()
+                envelope = SnapshotEnvelope("numeric-instance", "numeric-config", round_index + 1,
+                                            at, metadata, snapshot)
+                assert decode_envelope(encode_envelope(envelope)) == envelope
+                item = snapshot.objects[0]
+                current = values(item.metrics)
+                assert (current["running"], current["waiting"], current["total"]) == (
+                    10**399, 2 * 10**399, 3 * 10**399)
+                assert current[primary_metric] == (None, None, 0.0)[round_index]
+                assert not item.stale and item.history[-1].metrics is not None
+                expected_latency = (None, 2.0, 3.0 if interval == 60 else 7 / 3)[round_index]
+                for name in ("queue_seconds", latency_metric):
+                    assert (current[name] is None if expected_latency is None else
+                            current[name] == pytest.approx(expected_latency))
+                if kind is ModelType.CHAT:
+                    assert current["prefill_rate"] == (None if round_index == 0 else 1 / interval)
+                    assert current["kv_cache_percent"] == 25.0
+                snapshots.append(snapshot)
+            assert not log.events
+            assert len(snapshots[-1].objects[0].history) == (2 if interval == 60 else 3)
+            assert values(snapshots[0].objects[0].metrics)[primary_metric] is None
+        finally:
+            await monitor.stop()
+        assert port.closed
+
+    asyncio.run(scenario())

@@ -373,10 +373,9 @@ def test_gpu_bad_utilization_is_partial_failure_without_losing_other_fields(bad)
     assert values(result)["temperature_c"] == 61
 
 
-@pytest.mark.parametrize("column,metric,bad", [("power", "power_w", "-0.5"),
-                                                 ("power", "power_w", "nan"),
-                                                 ("temperature", "temperature_c", "-1"),
-                                                 ("temperature", "temperature_c", "inf")])
+@pytest.mark.parametrize("column,metric,bad", [
+    ("power", "power_w", value) for value in ("-0.5", "nan", "1_0", "１", "1e999", "[Driver Error]")
+] + [("temperature", "temperature_c", value) for value in ("-1", "inf")])
 def test_gpu_bad_sensor_field_only_omits_that_field(column, metric, bad):
     io = RawIO(outputs=[CommandOutput(0, gpu_row(**{column: bad}))])
     result = asyncio.run(GpuCollector(UUIDS[0], io).collect())
@@ -519,6 +518,8 @@ def test_successful_gpu_discovery_with_no_devices_is_not_an_error(output):
 
 @pytest.mark.parametrize("output", [CommandOutput(9, "PRIVATE driver unavailable"),
                                       CommandOutput(6, "PRIVATE cannot access requested GPU"),
+                                      CommandOutput(9, "No devices were found\n"),
+                                      CommandOutput(6, "prefix No devices were found\n"),
                                       CommandOutput(1, "", "PRIVATE permission or driver error")])
 def test_discovery_command_failure_is_not_successful_zero_devices(output):
     result = asyncio.run(GpuDiscovery(RawIO(outputs=[output])).discover())
@@ -541,6 +542,7 @@ def test_missing_nvidia_smi_during_card_query_is_unavailable_not_missing_card():
 @pytest.mark.parametrize("raw", [
     f"0, {UUIDS[0]}\n1, {UUIDS[0]}\n", f"0, {UUIDS[0]}\n0, {UUIDS[1]}\n",
     f"-1, {UUIDS[0]}\n", f"0, {UUIDS[0]}, extra\n", "0, \n", "PRIVATE invalid output\n",
+    "0, GPU-prefix\n", f"0, {UUIDS[0]}suffix\n",
 ])
 def test_malformed_discovery_is_atomic_failure_not_partial_device_list(raw):
     result = asyncio.run(GpuDiscovery(RawIO(outputs=[CommandOutput(0, raw)])).discover())

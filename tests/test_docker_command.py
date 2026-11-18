@@ -187,6 +187,71 @@ def test_invalid_timeout_is_rejected_without_spawning(monkeypatch, timeout):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("reject_shield", [False, True], ids=["normal", "owner-wait-allocation"])
+def test_failed_owner_wait_cannot_launch_a_command_after_close(monkeypatch, reject_shield):
+    """The IO owner must be joined even if allocating its shield is refused.
+
+    This replaces only process creation and the failing asyncio allocation.
+    In particular, the delayed command still uses the production scheduler,
+    reader tasks, cancellation, and cleanup implementation.
+    """
+    async def scenario():
+        process = OfflineProcess()
+        calls, spawned = replace_process_creation(monkeypatch, process)
+        command = LocalDockerCommand()
+        original_shield, original_create_task = asyncio.shield, asyncio.create_task
+        refused = []
+        owners = []
+        allocation_error = MemoryError("injected command owner wait allocation")
+
+        def create_task(coroutine, *args, **kwargs):
+            task = original_create_task(coroutine, *args, **kwargs)
+            if getattr(coroutine, "__qualname__", "") == "LocalDockerCommand._execute":
+                owners.append(task)
+            return task
+
+        def shield(awaitable):
+            if reject_shield and not refused and awaitable in owners:
+                refused.append(awaitable)
+                raise allocation_error
+            return original_shield(awaitable)
+
+        monkeypatch.setattr(asyncio, "create_task", create_task)
+        monkeypatch.setattr(asyncio, "shield", shield)
+        try:
+            if reject_shield:
+                with pytest.raises(MemoryError) as caught:
+                    await command.run(ARGV, timeout=10)
+                assert caught.value is allocation_error
+                await command.close()
+                calls_at_close = len(calls)
+                # Give any wrongly detached owner enough turns to reach the
+                # process port. A closed command must not start new work.
+                for _ in range(8):
+                    await asyncio.sleep(0)
+                calls_after_close = len(calls)
+                assert calls_after_close == calls_at_close, "a detached IO owner launched a command after close returned"
+                assert owners and all(task.done() for task in owners)
+            else:
+                running = asyncio.create_task(command.run(ARGV, timeout=10))
+                await wait_for_spawn(spawned, running)
+                process.finish(0)
+                assert await running == CommandOutput(0, b"", b"")
+                await command.close()
+                assert len(calls) == 1 and process.reaped
+                assert owners and all(task.done() for task in owners)
+        finally:
+            # The failing implementation may have detached a live operation.
+            # Keep this regression fully offline and leave no pending work.
+            for task in owners:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*owners, return_exceptions=True)
+            await command.close()
+
+    asyncio.run(scenario())
+
+
 def test_each_stream_accepts_exactly_65536_bytes_and_both_are_drained(monkeypatch):
     async def scenario():
         process = OfflineProcess()

@@ -1,7 +1,9 @@
 # Configuration 模块设计
 
 - 关联需求：dev-0 / REQ-001，AC-105、AC-106、AC-107、AC-109、AC-113；为 REQ-002～REQ-005 提供配置载体，并衔接 AC-207、AC-301、AC-304。
-- 修订：v1.6，2026-11-10，默认配置改为系统共享路径。
+- 关联需求补充：dev-1 / REQ-001，AC-107/113/114。
+- 修订：v2.3，2026-11-16；在图前集中介绍配置载体、错误类型及配置加载参与者。
+- 整体设计：[整体组件与进程边界](architecture.md)。
 - 相关代码：`src/joi_observer/config.py`、`src/joi_observer/examples/config.yaml`。
 - 关联模块：启动与终端、采样调度、采集错误日志。
 
@@ -9,28 +11,94 @@
 
 ## 模块职责与范围
 
-只在启动时选择并读取用户 YAML，验证字段，返回不可变配置。读取不访问任何监控目标，不创建日志目录、不修改 YAML、不热重载。安装示例是复制材料，绝不能成为缺少用户配置时的运行回退。采集器使用已验证的配置，展示层不读取或解析文件。
+只在宿主机采集服务启动时选择并读取用户 YAML，验证字段，返回不可变 AppConfig。读取不访问任何监控目标，不创建日志目录、不修改 YAML、不热重载。运行期间修改或删除文件不影响当前对象与展示元数据；服务重启重新校验并建立新实例，校验失败不得沿用旧实例配置或默认值。安装示例是复制材料，绝不能成为缺少用户配置时的运行回退。TUI/Web 不调用本模块加载监控对象。
+
+dev-1 当前为 R2 设计阶段，现有解析实现复用；服务加载与客户端脱离配置文件的接线由 R4 完成。客户端仅接受连接路径及会话偏好，没有另一套采样参数或名称配置。
 
 `ContainerConfig.id` 是状态身份，也是 TUI Docker 区域的显示名称；`name` 是实际查询目标。解析配置不检查容器存在性，不提供 socket/context 配置；运行期匹配与重建规则见 [Docker 身份契约](docker.md#docker-identity)。
 
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `AppConfig` | 不可变启动配置类，汇总采样参数、监控对象和日志设置，供服务实例一次性使用。 |
+| `ModelConfig` | 单模型配置类，描述稳定身份、展示名称、采集地址、服务身份和 GPU 关联。 |
+| `ContainerConfig` | 单容器配置类，将状态使用的稳定 id 与实际查询目标 name 分开保存。 |
+| `LogConfig` | 日志配置类，保存受控错误日志的目录、单文件大小和备份数量。 |
+| `ConfigError` | 配置异常类，携带安全的文件、字段和可取得的 YAML 行列定位信息。 |
+| `CLI`（service 命令入口） | 时序图中的命令入口角色，选择配置路径、启动 `CollectorService` 并报告安全诊断。 |
+| `Config`（`config` 模块） | 时序图中的配置模块角色，查找文件、校验 YAML 和字段并构造冻结配置。 |
+| `File`（本地配置文件） | 时序图中的文件角色，提供所选路径的 UTF-8 YAML 内容，不参与监控目标探测。 |
+| `CollectorService`（`Service`） | 常驻服务类，在取得实例锁后加载一次配置并拥有该生效配置的运行期。 |
+
+## 简化类图
+
 ```mermaid
-flowchart LR
-    CLI[CLI 参数与运行目录] --> Resolve[resolve_config_path]
-    Resolve --> Load[load_config]
-    YAML[选中的 config.yaml] --> Load
-    Load --> Config[AppConfig 冻结快照]
-    Config --> Runtime[启动与 Monitor]
-    Config --> Log[采集 ERROR 文件日志]
-    Example[包内 examples/config.yaml] -. 用户复制修改 .-> YAML
+classDiagram
+    class AppConfig {
+        +sample_interval: float
+        +collection_timeout: float
+        +models: tuple
+        +containers: tuple
+        +logging: LogConfig
+    }
+    class ModelConfig {
+        +id: str
+        +name: str
+        +served_model_name: str [0..1]
+        +gpu_ids: tuple
+    }
+    class ContainerConfig {
+        +id: str
+        +name: str
+    }
+    class LogConfig {
+        +directory: Path
+        +max_bytes: int
+        +backup_count: int
+    }
+    class ConfigError {
+        +path: Path
+        +field: str
+    }
+    AppConfig --> ModelConfig
+    AppConfig --> ContainerConfig
+    AppConfig --> LogConfig
+```
+
+## 关键交互时序图
+
+```mermaid
+sequenceDiagram
+    participant CLI as service 命令入口
+    participant Config as config 模块
+    participant File as 本地配置文件
+    participant Service as CollectorService
+    CLI->>Config: resolve_config_path(显式路径或默认候选)
+    Config-->>CLI: 唯一选定路径
+    CLI->>Service: run(stop)
+    Note over Service: 取得实例锁后加载一次
+    Service->>Config: load_config(path)
+    Config->>File: 读取 UTF-8 YAML
+    File-->>Config: 文件内容
+    alt YAML 或字段非法
+        Config-->>Service: ConfigError(安全定位信息)
+        Service-->>CLI: 退出 2，不装配采集运行期
+    else 配置有效
+        Config-->>Service: 冻结 AppConfig
+        Note over Service: 配置和展示投影在本实例内不再重载
+    end
 ```
 
 ## 配置选择与失败处理
 
-按 `--config PATH`、当前目录的 `config.yaml`、系统共享的 `/etc/joi-observer/config.yaml` 的顺序选择。显式相对路径以当前目录为基准，`~` 按运行用户展开。原用户配置可通过 `--config ~/.joi-observer/config.yaml` 指定。只选择第一个存在的候选。内容非法、无读取权限或为目录时直接报错，不能改用低优先级文件。显式路径不存在同样报错。
+仅 `joi-observer service` 按 `--config PATH`、当前目录的 `config.yaml`、系统共享的 `/etc/joi-observer/config.yaml` 的顺序选择。显式相对路径以服务启动目录为基准，`~` 按服务运行用户展开。原用户配置可通过 `joi-observer service --config ~/.joi-observer/config.yaml` 指定。systemd 使用显式 `/etc/joi-observer/config.yaml`，避免工作目录影响生产对象。只选择第一个存在的候选；非法内容、无读取权限、目录或显式路径不存在时直接报错，不改用低优先级文件。
 
-未找到默认文件时，报告尝试过的当前目录路径、系统共享路径以及安装包内示例的实际位置。提示发生在进入全屏前，不初始化采集、不记录 ERROR、不自动复制文件。读取成功也不证明 GPU、挂载点、容器或 URL 可用。
+原 `joi-observer --config PATH` 不再启动独立采集；该位置或 `tui` 子命令传 `--config` 时返回参数错误，提示移到 `service`。默认 TUI 即使当前目录有配置也不查找、加载或修改它。参数与退出码见[应用外壳](application-shell.md#命令与启动序列)。
 
-`ConfigError` 统一提供绝对文件路径、字段路径和可取得的 YAML 行列。错误文本为英文，包含定位及修复原因；不直接回显 YAML 源行或敏感值。字段路径使用零起始数组索引，如 `models[1].id`；YAML 行列从 1 开始。日志目录的可写性失败属于启动降级，由日志模块处理，不能作为配置错误阻断 TUI。
+服务未找到默认文件时，报告尝试过的当前目录路径、系统共享路径以及安装包内示例的实际位置。提示写入服务 stderr，不初始化采集、不记录 ERROR、不自动复制文件。读取成功也不证明 GPU、挂载点、容器或 URL 可用。
+
+`ConfigError` 统一提供绝对文件路径、字段路径和可取得的 YAML 行列。错误文本为英文，包含定位及修复原因；不直接回显 YAML 源行或敏感值。字段路径使用零起始数组索引，如 `models[1].id`；YAML 行列从 1 开始。日志目录的可写性失败属于服务启动降级，由日志模块处理，不改写成配置错误或客户端连接错误。
 
 <a id="configuration-fields"></a>
 
@@ -44,12 +112,12 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 
 | 字段 | 默认值 | 有效范围与语义 |
 | --- | --- | --- |
-| `sample_interval` | `1.0` | 有限数字，0.1～60 秒，包含端点；bool 非数字 |
-| `collection_timeout` | `3.0` | 同上；可大于间隔，同一对象由调度器保证不重叠 |
+| `sample_interval` | `1.0` | 有限数字，1～60 秒，包含端点且允许小数；bool 非数字 |
+| `collection_timeout` | `3.0` | 有限数字，0.1～60 秒，包含端点；可大于间隔，同一对象由调度器保证不重叠 |
 | `mount_points` | `["/", "/data"]` | 有序、互异的 POSIX 绝对路径，禁止 `..`、控制字符和首尾空白；按上文前三项规则纳入，`[]` 为关闭挂载项 |
 | `containers` | `[]` | 按上文规则完整保留有序列表，每项必填 `id`、`name` |
 | `models` | `[]` | 有序模型列表；每项必填 `id`、`type`、`name`、`base_url`，可选 `gpu_ids`、`served_model_name` |
-| `logging.directory` | `~/.joi-observer` | 接受运行平台绝对路径或 `~`、`~/...`。`~` 按运行用户展开，因此共享配置采用默认值时，各用户的日志仍分别写入各自的目录。返回 Path，不创建目录，也不展开环境变量或 `~other` |
+| `logging.directory` | `/var/lib/joi-observer` | 自定义目录接受运行平台绝对路径或 `~`、`~/...`。`~` 按采集服务运行用户展开。systemd 为服务准备默认目录；TUI/Web 不创建各自的采集日志。返回 Path，不创建目录，也不展开环境变量或 `~other` |
 | `logging.max_bytes` | `10000000` | 整数且至少 1024 字节；十进制 10 MB 默认阈值，保证可容纳一条有界日志 |
 | `logging.backup_count` | `3` | 正整数，禁止 0，确保轮转始终有界 |
 
@@ -57,13 +125,21 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 
 模型类型固定为 `chat`、`embedding`、`reranker`。`base_url` 只接受 HTTP/HTTPS origin，允许尾部单个 `/` 并在返回值中去掉；禁止用户凭据、查询、片段以及 `/v1`、`/metrics` 等路径。本模块不进行连通性或服务身份验证；vLLM 的端点与响应身份策略见[vLLM设计](vllm.md#3-配置身份与版本)。URL 本身不能可靠识别 LiteLLM，因此部署说明要求用户填直接 vLLM 地址。
 
-`ModelConfig` 支持可选 `served_model_name: str | None = None`。YAML 省略时使用 `name` 作为期望服务身份；显式给出时必须为 1～128 个可打印字符、无首尾空白或控制字符，不接受 null、空串或非字符串，允许 `/` 且不按本地路径解释。该字段不从 Compose、环境变量或 LiteLLM 自动取得。`name` 同时用于左侧模型列表与右侧详情，`id` 用于状态身份；可将展示名配置为 `Flash-Next`、`Embedding`、`Reranker`，由 `served_model_name` 保留真实服务名，不另设左栏别名，也不按模型类型覆盖用户名称。
+`ModelConfig` 支持可选 `served_model_name: str | None = None`。YAML 省略时使用 `name` 作为期望服务身份；显式给出时必须为 1～128 个可打印字符、无首尾空白或控制字符，不接受 null、空串或非字符串，允许 `/` 且不按本地路径解释。该字段不从 Compose、环境变量或 LiteLLM 自动取得。TUI/Web 列表显示 `name`，详情标题显示 `served_model_name`；省略时详情回退为 `name`。`id` 仍用于状态身份，同名不同 id 独立。服务在构造展示元数据时完成回退，不从成功样本反推名称；该变化不影响采集身份校验、配置顺序和 GPU 关联。
 
 `gpu_ids` 缺省为 `[]`，表示映射未知。各项为 1～128 个非空白可打印字符且不重复；解析器保留原字符串，不查询设备，也不因当前设备不存在而拒绝配置。GPU 索引/UUID 的匹配与未知映射处理见[硬件显示与模型关联](hardware.md#硬件显示与模型关联)。
 
 挂载点是否真实挂载不在加载时探测；来源身份、手工构造 `AppConfig` 的防御边界与本地 IO 的 timeout 传递由[硬件设计](hardware.md#本地-io-与接线)定义。CPU/RAM、GPU 发现无需新增配置。
 
 返回值全部为冻结 dataclass 与 tuple。直接构造 dataclass 只是声明数据，并不代表通过校验；生产组合入口应始终使用 `load_config`。
+
+采样下限的调整只适用于生产配置加载，不把 Monitor 的独立调度数学改成只接受一秒以上。离线测试可直接注入短周期或受控时钟验证同一相位、超时和取消规则。R2 已更新公开契约及配置黑盒，现有 `_Validator.timing` 仍是旧实现；R4 须分别校验采样和采集超时，不能将两者一起收紧或把小于一秒的配置静默抬到一秒。
+
+## 向客户端提供的配置投影
+
+服务调用 `ipc.protocol.build_metadata(config, hostname=..., system=...)` 得到 DisplayMetadata：挂载路径与顺序、容器 id、模型 id/type/name/已回退的 served_model_name/gpu_ids/显式端口/有效端口，以及主机展示信息。URL、容器实际查询目标、采样与超时参数、日志配置和原始错误不进入 IPC；精确字段以[协议设计](ipc.md)为准。端口只用于保留 TUI 的既有显示差异，不能据此构造请求地址。
+
+元数据与快照绑定于同一 `instance_id` 和 `config_revision`；同一连接不能更换生效配置。用户修改 YAML 后要重启服务，再重新运行 TUI；新会话收到匹配的新元数据后才绘制。客户端不保留跨实例的旧模型顺序、名称、关联或历史。
 
 ## 示例来源与使用
 
@@ -85,11 +161,21 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 
 `test_config.py` 覆盖挂载点 0～3 项和超量截断、合法 YAML 尾项的应用层忽略、前三项错误不补位，以及容器 0/1/5/6/10 项完整保留、后续项全部参与结构及 ID 检查；保持源文件不变。配置快照只保存前三个挂载点，因此后续采集器不能取得第四项作为失败补位；实际采集范围及 Docker 隐藏项持续更新仍需启动组合根/REQ-002/REQ-003 集成测试验证。
 
+时间边界分别验证 sample_interval 的 1/60 秒、collection_timeout 的 0.1/60 秒；拒绝 0.1、0.5、0.999999 秒采样并保留字段定位和源文件不变断言。1.25 秒采样配 0.1 秒超时仍合法。原有非法类型、非有限值、上界和 YAML 安全矩阵全部保留。
+
 `test_config_boundaries.py` 保留 R5-001 的全部非法标准标量、精确字段/行列、脱敏和完整文档校验场景。原第六容器现在是正常纳入项，仍保留相同输入和断言；另扩展到真正忽略的第四挂载点及其嵌套非法标量，防止先截断 YAML 节点树而绕过历史修复。`_YAML_VALUE_ERRORS` 的异常归一、整文档节点遍历和原有 CLI 安全退出测试不因数量规则变更而削弱。
 
 本模块自动化验证不涵盖真实终端启动、wheel 安装后的资源定位、日志目录权限降级或任何采集行为；由启动/日志契约测试和 R4 的 Ubuntu 离线集成补足。具体运行结果以 REQ-001 的 R2 交接单为准。
 
 ## 修订说明
+
+v2.3，2026-11-16：补充配置类和时序对象的集中介绍，标明命令、模块与文件角色；配置字段和校验契约不变。
+
+2026-11-16：按更新后的 R2 图文规范补充核心类图、关键交互时序和整体设计入口；原有接口行为、数值及测试契约不因图面修订改变。
+
+v2.1 按用户确认将生产 sample_interval 改为 1～60 秒，collection_timeout 保留原范围，补齐分离边界黑盒。业务校验实现由 R4 迁移。
+
+v2.0 将配置读取所有权移到常驻服务，并固定客户端参数兼容、启动重读、元数据投影与名称映射。既有 YAML 字段、校验和配置查找函数不改业务语义。
 
 v1.5 将 REQ-004 模型身份扩展并入字段契约，移除运行期匹配与几何规则的副本，保留配置输入校验与来源边界。
 

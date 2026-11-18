@@ -8,7 +8,7 @@ import re
 import socket
 import subprocess
 
-from joi_observer import cli
+import runtime_harness as cli
 from joi_observer.collectors import docker, hardware
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig
 from joi_observer.tui.layout import TerminalSize
@@ -78,7 +78,7 @@ def hardware_is_visible(frame):
             and has_capacity_numbers(storage, "25", "100", "50", "200", "75", "300"))
 
 
-def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp_path, monkeypatch, capsys):
+def test_production_runtime_collects_local_hardware_and_closes_every_io_on_service_stop(tmp_path, monkeypatch, capsys):
     async def scenario():
         calls = []
         instances = []
@@ -163,6 +163,11 @@ def test_production_runtime_collects_local_hardware_and_closes_every_io_on_q(tmp
                 await asyncio.sleep(0.01)
             terminal.keys.put_nowait("q")
             await asyncio.wait_for(task, timeout=0.25)
+            assert not runtime.sampling.done()
+            assert instances and not any(instance.closed for instance in instances)
+            before = len(calls)
+            await asyncio.sleep(config.sample_interval + 0.05)
+            assert len(calls) > before  # Closing this TUI did not stop collection.
         finally:
             if task is not None and not task.done():
                 terminal.keys.put_nowait("q")
@@ -293,7 +298,7 @@ def test_production_runtime_isolates_hardware_failures_and_recovers_empty_invent
     asyncio.run(scenario())
 
 
-def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_on_q(
+def test_joint_runtime_samples_hardware_and_docker_isolates_failures_and_closes_on_service_stop(
         tmp_path, monkeypatch, capsys):
     """Both real collector chains share one runtime; only raw IO and terminal are replaced."""
     async def scenario():

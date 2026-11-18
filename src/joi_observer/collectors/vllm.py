@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import json
+import inspect
 import math
 import re
 from typing import Protocol
@@ -24,6 +25,7 @@ from joi_observer.data.vllm import (
     VllmCollectionResult, VllmObservation, make_vllm_spec,
 )
 from joi_observer.error_log import ErrorKind, Failure
+from joi_observer._shutdown import await_owner, cancel_once, spawn
 
 
 SUPPORTED_VERSION = "0.31.0"
@@ -67,23 +69,64 @@ async def _cleanup(awaitable: object, timeout: float = 0.2) -> None:
     not interrupt a response after its socket/stream release has already begun.
     The last slice of the budget is reserved for cancelling overdue cleanup.
     """
-    task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    factory = awaitable if callable(awaitable) else None
+    operation = factory() if factory is not None else awaitable
+    try:
+        task = asyncio.ensure_future(operation)
+    except BaseException:
+        if inspect.iscoroutine(operation):
+            operation.close()
+        # Release factories can provide a fresh coroutine after scheduling was
+        # refused. The current cleanup owner retains the stream until it ends.
+        if factory is not None:
+            async with asyncio.timeout_at(deadline):
+                await factory()
+        elif isinstance(operation, asyncio.Future):
+            async with asyncio.timeout_at(deadline):
+                await operation
+        raise
     cancel_at = deadline - min(0.01, timeout / 4)
     cancellation = False
     cleanup_cancelled = False
-    while not task.done():
-        now = loop.time()
-        if now >= deadline:
-            break
-        if now >= cancel_at and not cleanup_cancelled:
-            task.cancel()
-            cleanup_cancelled = True
-        try:
-            await asyncio.wait((task,), timeout=(deadline if cleanup_cancelled else cancel_at) - now)
-        except asyncio.CancelledError:
-            cancellation = True
+    wait_error = None
+    caller = asyncio.current_task()
+    cancel_count = caller.cancelling()
+    try:
+        while not task.done():
+            now = loop.time()
+            if now >= deadline:
+                break
+            if now >= cancel_at and not cleanup_cancelled:
+                cancel_once(task)
+                cleanup_cancelled = True
+            try:
+                await asyncio.wait((task,), timeout=(deadline if cleanup_cancelled else cancel_at) - now)
+            except asyncio.CancelledError:
+                cancellation = True
+    except BaseException as error:
+        wait_error = error
+        # Wait registration can fail after the release Task exists. Continue
+        # owning that exact operation without allocating a replacement Task.
+        while not task.done() and loop.time() < cancel_at:
+            try:
+                async with asyncio.timeout_at(cancel_at):
+                    await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancellation = True
+            except Exception:
+                break
+    finally:
+        if not task.done():
+            cancel_once(task)
+            try:
+                await await_owner(task)
+            except asyncio.CancelledError:
+                if caller.cancelling() > cancel_count:
+                    cancellation = True
+            except Exception:
+                pass
 
     def consume(completed):
         try:
@@ -94,13 +137,16 @@ async def _cleanup(awaitable: object, timeout: float = 0.2) -> None:
     if task.done():
         consume(task)
     else:
-        task.cancel()
+        cancel_once(task)
         task.add_done_callback(consume)
     if cancellation:
         raise asyncio.CancelledError()
+    if wait_error is not None:
+        raise wait_error
 
 
-def _protect_httpx_response_close(response: object) -> None:
+def _protect_httpx_response_close(response: object, *,
+                                  cleanup_deadline: Callable[[], float] | None = None) -> None:
     """Own the *first* HTTPX release, including its automatic EOF close.
 
     HTTPX marks a Response closed before awaiting the underlying stream release.
@@ -114,21 +160,38 @@ def _protect_httpx_response_close(response: object) -> None:
                for cls in type(response).__mro__):
         return
     original_close = response.aclose
+    stream_close = response.stream.aclose
     close_task: asyncio.Task | None = None
     deadline = 0.0
+    release_started = False
+    released = False
 
     async def protected_close() -> None:
-        nonlocal close_task, deadline
+        nonlocal close_task, deadline, release_started, released
+        if released:
+            return
         loop = asyncio.get_running_loop()
         if close_task is None:
-            deadline = loop.time() + 0.2
-            close_task = asyncio.create_task(original_close())
+            if not deadline:
+                deadline = cleanup_deadline() if cleanup_deadline is not None else loop.time() + 0.2
+            # A cancelled direct release can have set Response.is_closed before
+            # the original stream closed. Preserve the raw release for retry.
+            release = stream_close if release_started else original_close
+            release_started = True
+            try:
+                close_task = spawn(release())
+            except BaseException:
+                async with asyncio.timeout_at(deadline):
+                    await release()
+                released = True
+                return
         # All callers share the first release's deadline; a repeated close must
         # neither restart the operation nor grant it another cleanup budget.
         await _cleanup(close_task, max(0.001, deadline - loop.time()))
         if not close_task.done() or close_task.cancelled():
             raise TimeoutError("HTTP response cleanup timed out.")
         close_task.result()
+        released = True
 
     response.aclose = protected_close
 
@@ -223,6 +286,19 @@ class AsyncHttpClient:
         self._active = asyncio.current_task()
         context = None
         entered = False
+        iterator = None
+        failed = False
+        release_deadline = None
+
+        def cleanup_end():
+            nonlocal release_deadline
+            if release_deadline is None:
+                release_deadline = asyncio.get_running_loop().time() + 0.2
+            return release_deadline
+
+        def cleanup_remaining():
+            return max(0.001, cleanup_end() - asyncio.get_running_loop().time())
+
         try:
             async with asyncio.timeout(timeout):
                 if self._client is None:
@@ -237,9 +313,10 @@ class AsyncHttpClient:
                 context = self._client.stream("GET", url, timeout=timeout)
                 response = await context.__aenter__()
                 entered = True
-                _protect_httpx_response_close(response)
+                _protect_httpx_response_close(response, cleanup_deadline=cleanup_end)
                 body = bytearray()
-                async for chunk in response.aiter_bytes(chunk_size=MAX_HTTP_CHUNK_BYTES):
+                iterator = response.aiter_bytes(chunk_size=MAX_HTTP_CHUNK_BYTES)
+                async for chunk in iterator:
                     if not isinstance(chunk, bytes):
                         raise OSError("Invalid HTTP byte stream.")
                     if len(body) + len(chunk) > max_bytes:
@@ -247,12 +324,16 @@ class AsyncHttpClient:
                     body.extend(chunk)
                 return HttpResponse(response.status_code, bytes(body))
         except TimeoutError:
+            failed = True
             raise TimeoutError("HTTP request timed out.") from None
         except OSError:
+            failed = True
             raise OSError("HTTP transport unavailable.") from None
         except HttpBodyTooLargeError:
+            failed = True
             raise
         except Exception as error:
+            failed = True
             # Injected clients remain independent of the optional HTTPX import.
             # Inspecting the exception hierarchy also handles real HTTPX clients
             # supplied through the factory without importing their module here.
@@ -270,10 +351,30 @@ class AsyncHttpClient:
                    for cls in hierarchy):
                 raise OSError("HTTP transport unavailable.") from None
             raise
+        except BaseException:
+            failed = True
+            raise
         finally:
             try:
                 if entered:
-                    await _cleanup(context.__aexit__(None, None, None))
+                    try:
+                        close_iterator = getattr(iterator, "aclose", None)
+                        if close_iterator is not None:
+                            try:
+                                await _cleanup(close_iterator, cleanup_remaining())
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                if not failed:
+                                    raise
+                    finally:
+                        try:
+                            await _cleanup(lambda: context.__aexit__(None, None, None), cleanup_remaining())
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            if not failed:
+                                raise
             finally:
                 self._active = None
 
@@ -292,7 +393,7 @@ class AsyncHttpClient:
             except (asyncio.CancelledError, Exception):
                 pass
         if self._client is not None:
-            await _cleanup(self._client.aclose(), max(0.001, deadline - asyncio.get_running_loop().time()))
+            await _cleanup(self._client.aclose, max(0.001, deadline - asyncio.get_running_loop().time()))
 
 
 class _InvalidResponse(ValueError):
@@ -733,7 +834,7 @@ class VllmCollector:
                 await asyncio.wait_for(asyncio.shield(active), timeout=0.21)
             except (asyncio.CancelledError, Exception):
                 pass
-        await _cleanup(self.http.close(), max(0.001, deadline - asyncio.get_running_loop().time()))
+        await _cleanup(self.http.close, max(0.001, deadline - asyncio.get_running_loop().time()))
 
 
 def build_vllm_collectors(
@@ -748,6 +849,6 @@ def build_vllm_collectors(
     使用config.collection_timeout，不更改配置、创建日志或执行采集。
     工厂与每个端口的构造均不执行网络 IO。
     """
-    factory = http_factory or AsyncHttpClient
+    factory = http_factory if http_factory is not None else AsyncHttpClient
     return tuple(VllmCollector(model, factory(), timeout=config.collection_timeout)
                  for model in config.models)

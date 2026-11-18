@@ -1,7 +1,8 @@
 """Production hardware pipeline through a real local Unix PTY.
 
 Only the NVIDIA executable is a controlled local fixture. CPU, RAM, mount IO,
-worker creation, cancellation, reaping, CLI, Monitor and ncurses all run normally.
+worker creation, cancellation, reaping, CollectorRuntime, Monitor and ncurses run
+normally. The migration harness owns explicit service stop separately from q.
 The observation wrappers call the real compose/render/spawn operations unchanged.
 """
 
@@ -54,7 +55,9 @@ def render_observation(terminal, frame, frame_size, renderer):
 CHILD = RENDER_OBSERVER + r'''
 import asyncio, ctypes, curses, json, os, socket, sys
 from pathlib import Path
-from joi_observer.cli import main
+from joi_observer.cli import CommandDependencies, main
+from joi_observer.config import load_config
+from runtime_harness import ApplicationRuntime
 from joi_observer.tui import app as app_module
 from joi_observer.tui.app import CursesTerminal
 
@@ -142,7 +145,20 @@ socket.socket.connect = forbidden
 socket.create_connection = forbidden
 curses.init_color = forbidden_palette_write
 try:
-    result = main(['--config', str(config)])
+    runtime = ApplicationRuntime(load_config(config))
+    assert runtime.prepare_log()
+    class ClientFixture:
+        async def run(self):
+            await runtime.run()
+            # Leaving this view does not stop its independently owned sampler.
+            assert runtime.sampling is not None and not runtime.sampling.done()
+        async def close(self):
+            # This test explicitly stops its service after checking q isolation.
+            await runtime.close()
+    dependencies = CommandDependencies(config.parent, config.parent, True, True,
+        os.environ['TERM'], sys.stdout, sys.stderr,
+        lambda endpoint: ClientFixture(), lambda path, endpoint: forbidden())
+    result = main([], dependencies=dependencies)
 finally:
     report.write_text(json.dumps({'frames': frames, 'connections': connections,
         'children': [{'pid': p.pid, 'returncode': p.returncode, 'argv': argv} for p, argv in processes]}))
@@ -284,7 +300,7 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
     command = tmp_path / "nvidia-smi"
     command.write_text(f"#!{sys.executable}\n" + NVIDIA)
     command.chmod(0o700)
-    config.write_text("sample_interval: 0.1\ncollection_timeout: 30\nmount_points: ['/']\n"
+    config.write_text("sample_interval: 1\ncollection_timeout: 30\nmount_points: ['/']\n"
                       f"logging: {{directory: '{tmp_path / 'logs'}'}}\n")
     master, slave = pty.openpty()
 
@@ -296,7 +312,8 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
     env = dict(os.environ, TERM="xterm", LANG="C.UTF-8",
                PATH=str(tmp_path) + os.pathsep + os.environ.get("PATH", ""),
                JOI_PTY_MODE=mode, JOI_PTY_SLOW_MARKER=str(slow_marker))
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = os.pathsep.join((str(Path(__file__).resolve().parent),
+                                        str(Path(__file__).resolve().parents[1] / "src")))
     child = subprocess.Popen([sys.executable, "-c", CHILD, str(config), str(progress), str(report)],
                              stdin=slave, stdout=slave, stderr=slave, env=env, cwd=tmp_path)
     output = bytearray()
@@ -439,7 +456,8 @@ def test_production_hardware_pty_draw_resize_exit_and_reap(tmp_path, scenario, m
             directory.mkdir(parents=True, exist_ok=True)
             result.update(scenario=scenario, exit_code=child.returncode, exit_seconds=elapsed,
                           termios_restored=True, screen_restored=True, cursor_restored=True,
-                          all_local_children_reaped=True, input_mode=mode, source="real local PTY and production runtime")
+                          all_local_children_reaped=True, input_mode=mode,
+                          source="real local PTY, CollectorRuntime and explicit-stop test harness")
             (directory / f"r4-hardware-pty-{scenario}.json").write_text(json.dumps(result, indent=2) + "\n")
             (directory / f"r4-hardware-pty-{scenario}.ansi").write_bytes(output)
     finally:

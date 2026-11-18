@@ -1,6 +1,7 @@
 """仅会话内的模型与主题选择；不持有采集器、快照或状态写入接口。"""
 
 from joi_observer.config import ModelConfig
+from joi_observer.ipc.protocol import ModelDisplay
 from joi_observer.tui.layout import ViewSelection
 
 
@@ -18,7 +19,7 @@ class SessionViewActions:
     通过私有配置序号移动选择，每次变更生成新的不可变选择值。
     """
 
-    def __init__(self, models: tuple[ModelConfig, ...]) -> None:
+    def __init__(self, models: tuple[ModelConfig, ...] | tuple[ModelDisplay, ...]) -> None:
         self._models = models
         self._index = 0
         self._view = ViewSelection(models[0].id if models else None)

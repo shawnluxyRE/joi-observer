@@ -196,13 +196,14 @@ def test_wall_clock_change_does_not_change_monotonic_throttle(tmp_path):
     asyncio.run(scenario())
 
 
-def test_prepare_failure_is_silent_and_later_samples_retry_without_backfill(tmp_path, capsys):
+@pytest.mark.parametrize("prepare_failure", [True, False], ids=["prepare-failed", "prepare-succeeded"])
+def test_failed_write_is_silent_and_next_sample_retries_without_backfill(tmp_path, capsys, prepare_failure):
     async def scenario():
         io = MemoryIO()
-        io.prepare_failure = True
+        io.prepare_failure = prepare_failure
         io.append_failure = True
         log = ErrorLog(LogConfig(directory=tmp_path), io=io)
-        assert not log.prepare()
+        assert log.prepare() is (not prepare_failure)
         assert record(log, 0)
         assert await log.flush()
         assert io.lines == []
@@ -212,23 +213,6 @@ def test_prepare_failure_is_silent_and_later_samples_retry_without_backfill(tmp_
         assert await log.flush()
         assert len(io.lines) == 1
         assert records(io)[0]["time"] == "2026-10-28 18:00:01"
-        assert await log.close()
-    asyncio.run(scenario())
-    assert capsys.readouterr() == ("", "")
-
-
-def test_runtime_write_failure_does_not_reserve_full_60_seconds(tmp_path, capsys):
-    async def scenario():
-        io = MemoryIO()
-        log = ErrorLog(LogConfig(directory=tmp_path), io=io)
-        assert log.prepare()
-        io.append_failure = True
-        assert record(log, 0)
-        assert await log.flush()
-        io.append_failure = False
-        assert record(log, 1)
-        assert await log.flush()
-        assert len(io.lines) == 1
         assert await log.close()
     asyncio.run(scenario())
     assert capsys.readouterr() == ("", "")
@@ -323,25 +307,6 @@ def test_invalid_event_clock_is_a_programmer_error(tmp_path, seconds):
         with pytest.raises(ValueError):
             log.record("vllm", "chat", TIMEOUT, monotonic_time=seconds, occurred_at=NOW)
         assert await log.close()
-    asyncio.run(scenario())
-
-
-def test_close_deadline_does_not_wait_forever_for_slow_disk(tmp_path):
-    async def scenario():
-        io = GatedIO()
-        log = ErrorLog(LogConfig(directory=tmp_path), io=io)
-        try:
-            assert log.prepare()
-            assert record(log, 0)
-            for _ in range(100):
-                if io.started.is_set():
-                    break
-                await asyncio.sleep(0.001)
-            assert io.started.is_set()
-            assert not await asyncio.wait_for(log.close(timeout=0.01), timeout=0.5)
-            assert not record(log, 61)
-        finally:
-            io.release.set()
     asyncio.run(scenario())
 
 

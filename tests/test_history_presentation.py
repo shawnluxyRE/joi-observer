@@ -251,21 +251,12 @@ def test_first_valid_history_uses_smallest_covering_decimal_tier(value, upper):
     assert one_scale(tracker, snapshot((point(100, value),)), 100).upper == upper
 
 
-def test_scale_for_huge_finite_float_is_integer_finite_and_covers_exact_input():
+@pytest.mark.parametrize("value,expected", [(1e300, 2 * 10**300), (sys.float_info.max, 2 * 10**308)])
+def test_scale_for_huge_finite_float_is_integer_finite_and_covers_exact_input(value, expected):
     tracker = HistoryScaleTracker((model(),))
-    value = 1e300
-    upper = one_scale(tracker, snapshot((point(100, value),)), 100).upper
-    assert type(upper) is int and upper >= value
-    # The binary float is slightly larger than the exact decimal 10**300.
-    assert upper == 2 * 10**300
-
-
-def test_largest_finite_float_uses_arbitrary_precision_covering_scale():
-    tracker = HistoryScaleTracker((model(),))
-    value = sys.float_info.max
     upper = one_scale(tracker, snapshot((point(100, value),)), 100).upper
     assert type(upper) is int
-    assert upper == 2 * 10**308 and upper >= value
+    assert upper == expected and upper >= value
 
 
 def test_smallest_positive_float_remains_nonzero_and_uses_unit_scale():

@@ -9,14 +9,15 @@ from datetime import datetime
 from decimal import Decimal
 import math
 import time
-import unicodedata
 
 from joi_observer.config import AppConfig
 from joi_observer.data.models import Metric, StateSnapshot
+from joi_observer.ipc.protocol import DisplayMetadata
 from joi_observer.tui import services
 from joi_observer.tui.brand import WORDMARK_ROWS, wordmark_runs
 from joi_observer.tui.history import HistoryScale
 from joi_observer.tui.theme import DEFAULT_THEME
+from joi_observer.tui.text import clip_text, display_text, display_width
 
 
 @dataclass(frozen=True)
@@ -178,7 +179,7 @@ def required_size(*, gpu_count: int, mount_count: int, container_count: int,
 
 def compose_frame(
     snapshot: StateSnapshot,
-    config: AppConfig,
+    config: AppConfig | DisplayMetadata,
     size: TerminalSize,
     host: HostInfo,
     now: datetime,
@@ -347,18 +348,16 @@ def compose_frame(
         region_put(header, 0, 5, "Observer", "primary")
     theme = "Hologram" if view.theme == "hologram" else "Moonlight"
     theme_text = f"Theme: {theme} [t]"
-    region_put(header, 0, size.columns - len(theme_text), theme_text, "primary")
+    region_put(header, 0, size.columns - display_width(theme_text), theme_text, "primary")
     clock_text = now.strftime("%Y-%m-%d %H:%M:%S")
     info_row = header_rows - 2
-    host_width = size.columns - len(clock_text) - 2
+    host_width = size.columns - display_width(clock_text) - 2
     hostname = _clip(host.hostname, host_width)
     region_put(header, info_row, 0, hostname, "text", host_width)
-    hostname_width = sum(0 if unicodedata.combining(char) else
-                         2 if unicodedata.east_asian_width(char) in "WF" else 1
-                         for char in hostname)
+    hostname_width = display_width(hostname)
     region_put(header, info_row, hostname_width, f" / {host.system}", "muted",
                max(0, host_width - hostname_width))
-    region_put(header, info_row, size.columns - len(clock_text), clock_text, "muted")
+    region_put(header, info_row, size.columns - display_width(clock_text), clock_text, "muted")
     region_put(header, info_row + 1, 0, "─" * header.width, "muted")
     objects = {(obj.key.collector, obj.key.object_id): obj for obj in snapshot.objects}
 
@@ -379,7 +378,7 @@ def compose_frame(
         state = _clip(state, 14)
         state_role = ("primary" if state == "Running" and obj is not None
                       and not obj.stale and obj.sampled_at is not None else "text")
-        region_put(docker, row, docker.column + docker.width - 2 - len(state), state, state_role, 14)
+        region_put(docker, row, docker.column + docker.width - 2 - display_width(state), state, state_role, 14)
 
     service = by_region["service"]
     from joi_observer.tui.vllm import vllm_cells
@@ -390,7 +389,7 @@ def compose_frame(
                             history_scales=history_scales))
     switch = by_region["service_switch"]
     region_put(switch, switch.row, 2, current_service.title, "primary")
-    region_put(switch, switch.row, 2 + len(current_service.title),
+    region_put(switch, switch.row, 2 + display_width(current_service.title),
                "  /  WebUI (disabled)", "muted")
     footer = by_region["footer"]
     region_put(footer, footer.row, 0, services.footer_text(current_service), "primary")
@@ -398,20 +397,10 @@ def compose_frame(
 
 
 def _single_line(value: str) -> str:
-    """Strip terminal controls, including bidi controls, before any display operation."""
-    return "".join(" " if unicodedata.category(char).startswith("C") or char in "\u2028\u2029" else char
-                   for char in value)
+    """Sanitize text with the same locale-aware rules as clipping/rendering."""
+    return display_text(value)
 
 
 def _clip(value: str, width: int) -> str:
-    """Truncate by terminal cells, keeping combining marks with their base character."""
-    result: list[str] = []
-    used = 0
-    for char in _single_line(value):
-        char_width = 0 if unicodedata.combining(char) else (2 if unicodedata.east_asian_width(char) in "WF" else 1)
-        if used + char_width > width:
-            break
-        if used or char_width:
-            result.append(char)
-        used += char_width
-    return "".join(result)
+    """Truncate by target terminal columns, preserving attached zero-width marks."""
+    return clip_text(value, width)

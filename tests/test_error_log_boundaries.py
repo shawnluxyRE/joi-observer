@@ -119,8 +119,9 @@ def test_close_timeout_discards_unstarted_records_and_stays_closed(tmp_path):
             assert emit(log, 0, "in-progress")
             await wait_started(io.started[0])
             assert emit(log, 1, "queued")
-            assert not await log.close(timeout=0.01)
+            assert not await asyncio.wait_for(log.close(timeout=0.01), timeout=0.5)
             assert not emit(log, 2, "new")
+            assert not emit(log, 61, "in-progress")
             io.unblock()
             assert await log.close()
             assert [json.loads(line)["object_id"] for line in io.lines] == ["in-progress"]

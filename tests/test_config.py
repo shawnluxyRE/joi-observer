@@ -22,16 +22,14 @@ def write_config(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def test_empty_mapping_uses_defaults_without_monitor_targets(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+def test_empty_mapping_uses_defaults_without_monitor_targets(tmp_path):
     config = load_config(write_config(tmp_path, "{}\n"))
     assert config.sample_interval == 1.0
     assert config.collection_timeout == 3.0
     assert config.mount_points == ("/", "/data")
     assert config.containers == ()
     assert config.models == ()
-    assert config.logging.directory == home / ".joi-observer"
+    assert config.logging.directory == AppConfig().logging.directory == Path("/var/lib/joi-observer")
     assert config.logging.max_bytes == 10_000_000
     assert config.logging.backup_count == 3
 
@@ -218,10 +216,31 @@ def test_bad_timing_value_is_localizable_config_error(tmp_path, field, value):
     assert field in str(caught.value)
 
 
-@pytest.mark.parametrize("value", [0.1, 60.0])
-def test_timing_endpoints_are_valid(tmp_path, value):
-    config = load_config(write_config(tmp_path, f"sample_interval: {value}\ncollection_timeout: {value}\n"))
-    assert config.sample_interval == config.collection_timeout == value
+@pytest.mark.parametrize("field,value", [
+    ("sample_interval", 1.0), ("sample_interval", 60.0),
+    ("collection_timeout", 0.1), ("collection_timeout", 60.0),
+])
+def test_timing_endpoints_are_valid(tmp_path, field, value):
+    config = load_config(write_config(tmp_path, f"{field}: {value}\n"))
+    assert getattr(config, field) == value
+
+
+@pytest.mark.parametrize("value", ["0.1", "0.5", "0.999999"])
+def test_sampling_below_one_second_is_rejected_without_changing_file(tmp_path, value):
+    path = write_config(tmp_path, f"sample_interval: {value}\n")
+    before = path.read_bytes()
+    with pytest.raises(ConfigError) as caught:
+        load_config(path)
+    assert caught.value.path == path
+    assert caught.value.field == "sample_interval"
+    assert caught.value.line == 1 and caught.value.column is not None
+    assert path.read_bytes() == before
+
+
+def test_fractional_sampling_and_short_timeout_remain_independent(tmp_path):
+    config = load_config(write_config(tmp_path, "sample_interval: 1.25\ncollection_timeout: 0.1\n"))
+    assert config.sample_interval == 1.25
+    assert config.collection_timeout == 0.1
 
 
 @pytest.mark.parametrize("text", ["", "null\n", "[]\n", "42\n", "!!python/object:unknown {}\n"])
@@ -271,6 +290,7 @@ def test_yaml_syntax_error_has_line_and_column(tmp_path):
     "ftp://localhost:8000", "http://localhost:8000/v1", "http://localhost:8000/metrics",
     "http://localhost:8000?token=DO_NOT_ECHO", "http://user:DO_NOT_ECHO@localhost:8000",
     "http://localhost:8000#fragment", "http://localhost:99999", "localhost:8000",
+    "http://example.com\\path", "http://host%2fpath", "http://-host", "http://host..name",
 ])
 def test_service_url_is_direct_origin_without_credentials(tmp_path, url):
     text = f"models: [{{id: a, type: chat, name: one, base_url: '{url}'}}]\n"
@@ -293,6 +313,13 @@ def test_invalid_log_settings_are_config_errors(tmp_path, text, field):
     with pytest.raises(ConfigError) as caught:
         load_config(write_config(tmp_path, f"logging:\n  {text}\n"))
     assert caught.value.field == field
+
+
+def test_explicit_home_relative_log_directory_still_uses_service_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    config = load_config(write_config(tmp_path, "logging: {directory: '~/custom-logs'}\n"))
+    assert config.logging.directory == home / "custom-logs"
 
 
 def test_custom_log_directory_and_rotation_do_not_create_or_modify_files(tmp_path):
@@ -319,6 +346,7 @@ def test_packaged_example_covers_three_types_and_loads_after_copy(tmp_path):
     copied = tmp_path / "config.yaml"
     copied.write_bytes(example.read_bytes())
     config = load_config(copied)
+    assert config.logging.directory == Path("/var/lib/joi-observer")
     assert [(container.id, container.name) for container in config.containers] == [
         ("chat-container", "flash-next-vllm"),
     ]

@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from runtime_harness import ApplicationRuntime, RuntimeComponents
 from joi_observer.collectors import hardware
 from joi_observer.collectors.docker import CommandOutput, DockerCollector
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig
@@ -403,7 +403,7 @@ def test_production_runtime_connects_every_configured_docker_collector(tmp_path,
             commands.append(command)
             return command
 
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=command_factory)
         assert commands == []
         assert runtime.prepare_log()
@@ -466,7 +466,7 @@ def test_prepare_without_run_owns_and_closes_all_commands_without_sampling(tmp_p
             commands.append(command)
             return command
 
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=command_factory)
         assert commands == []
         assert not config.logging.directory.exists()
@@ -494,7 +494,7 @@ def test_empty_production_configuration_never_creates_docker_port(tmp_path, monk
         def forbidden_factory():
             pytest.fail("Empty Docker configuration must not construct a command port.")
 
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=forbidden_factory)
         assert runtime.prepare_log()
         try:
@@ -553,9 +553,9 @@ def test_injected_components_keep_sole_sampling_and_cleanup_ownership(tmp_path):
     asyncio.run(scenario())
 
 
-def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample(
+def test_production_timeout_recovers_and_service_stop_cancels_next_pending_docker_sample(
         tmp_path, monkeypatch, capsys):
-    """真实定时超时、恢复和 q 退出贯穿生产组装，不以预设 TimeoutError 代替。"""
+    """真实超时/恢复、客户端 q 与显式服务停止，不以预设 TimeoutError 代替。"""
     async def scenario():
         config = replace(configuration(tmp_path, count=2),
                          sample_interval=0.1, collection_timeout=0.1)
@@ -573,7 +573,7 @@ def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample
         slow = ObservedCommand(blocked=True)
         fast = ObservedCommand(status="exited")
         commands = iter((slow, fast))
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=lambda: next(commands))
         assert runtime.prepare_log()
         task = asyncio.create_task(runtime.run())
@@ -623,6 +623,11 @@ def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample
             last_sample = docker_objects()[0].sampled_at
             terminal.keys.put_nowait("q")
             await asyncio.wait_for(task, 1.1)
+            assert not runtime.sampling.done()
+            assert not any(command.closed for command in (slow, fast))
+            # q only closes this UI. Explicit service stop still owns the
+            # original cancellation, close-order and unchanged-state checks.
+            await runtime.close()
             assert slow.cancelled and not slow.gate.is_set()
             assert terminal.restored
             assert all(command.closed and command.closed_after_restore for command in (slow, fast))

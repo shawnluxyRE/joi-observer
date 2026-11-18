@@ -1,16 +1,14 @@
 # joi-observer
 
-一个面向 Ubuntu Server 的终端监控工具，通过 TUI 实时展示服务器硬件状态与LLM服务负载。
+面向 Ubuntu Server 24.04 amd64 的宿主机监控工具。常驻服务统一采集 GPU、CPU、内存、磁盘、Docker 和 vLLM；每个 TUI 只读取同一服务的快照。无人查看时采集继续，退出 TUI 不停止服务。正常指标与约 60 秒历史仅保存在内存，受控采集错误日志单独轮转。
 
-- **硬件监控**：GPU 利用率、显存、温度与功耗，以及 CPU、内存、磁盘。
-- **vLLM 监控**：Chat、Embedding、Reranker 的运行与排队序列数，以及分类型吞吐、延迟和 Chat KV Cache 使用率。
-- **服务扩展**：后续可接入 Open WebUI 等其它服务。
+本轮交付宿主服务和 TUI；Web 页面及容器属于后续 REQ-002。
 
 ## 安装与启动
 
-首次在被监控的 **Ubuntu Server 24.04 amd64** 服务器上安装时，按第 1 到 4 节操作。以 root 身份执行安装和配置，所有本机用户均可使用已安装的命令。
+以下为目标 Ubuntu 主机的部署说明，由管理员执行。
 
-GPU 监控需要可用的 NVIDIA 驱动和 `nvidia-smi`。Docker 监控需要 Docker CLI，vLLM 监控需要已部署的服务。
+需要 Python 3.12+；GPU 监控需要 NVIDIA 驱动及 `nvidia-smi`，Docker 监控需要 Docker CLI，模型配置填写直接 vLLM 地址。
 
 ### 1. 安装系统依赖和 uv
 
@@ -23,64 +21,84 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv --version
 ```
 
-### 2. 为所有用户安装 Joi::Observer
+### 2. 安装应用与账户
 
 将项目克隆到所选位置，进入仓库根目录后执行下列命令。
 
 ```bash
-umask 022
-install -d -m 0755 /opt/joi-observer-tool
-UV_TOOL_DIR=/opt/joi-observer-tool \
-UV_TOOL_BIN_DIR=/usr/local/bin \
-uv tool install --python /usr/bin/python3 --link-mode copy .
+groupadd --system joi-observer-readers
+useradd --system --gid joi-observer-readers --create-home \
+  --home-dir /var/lib/joi-observer --shell /usr/sbin/nologin joi-observer
+install -d -m 0755 /opt/joi-observer
+uv venv --python /usr/bin/python3 /opt/joi-observer/.venv
+uv pip install --python /opt/joi-observer/.venv/bin/python .
+ln -s /opt/joi-observer/.venv/bin/joi-observer /usr/local/bin/joi-observer
 joi-observer --version
 ```
 
-### 3. 创建共享配置
+服务账户所需 Docker/设备权限依部署环境设置；不要给 `joi-observer-readers` 组 Docker socket、GPU、监控配置或宿主根目录权限。
 
-复制随包示例，让所有本机用户都能读取配置。
+### 3. 创建服务配置
 
 ```bash
 install -d -m 0755 /etc/joi-observer
-install -m 0644 "$(/usr/local/bin/joi-observer --example-config)" /etc/joi-observer/config.yaml
+install -o joi-observer -g joi-observer-readers -m 0600 \
+  "$(joi-observer --example-config)" /etc/joi-observer/config.yaml
 ```
 
-编辑 `/etc/joi-observer/config.yaml`，按服务器实际部署填写以下项目。
+编辑配置，仅保留实际要监控的对象。
 
-| 配置项 | 如何填写 |
+| 配置项 | 规则 |
 | --- | --- |
-| `mount_points` | 填实际存在的挂载点，例如 `["/"]`。最多监控配置的前三项。 |
-| `containers` | `id` 用作 TUI 显示名称，`name` 填真实容器名称或完整 ID；不监控容器时设为 `[]`。 |
-| `models` | 只保留需要监控的模型，填写对应类型、展示名、真实服务名及直接 vLLM 地址；地址不带 `/v1` 或 `/metrics`，不填网关地址。 |
-| `gpu_ids` | 为模型填写已确认的 GPU 索引字符串或完整 UUID，用于关联高亮。 |
-| `logging.directory` | 填当前用户可写的目录，默认 `~/.joi-observer`。 |
+| `sample_interval` | 默认 1 秒，允许有限数字 1～60 秒及范围内小数。 |
+| `collection_timeout` | 默认 3 秒，允许 0.1～60 秒，独立于采样间隔。 |
+| `mount_points` | 按顺序仅监控前三项，例如 `["/"]`；空列表关闭挂载项。 |
+| `containers` | `id` 是展示名称，`name` 是实际容器名称或完整 ID；空列表表示不监控容器。 |
+| `models` | `id` 标识对象，列表显示 `name`，详情显示 `served_model_name`。地址填写直接 vLLM origin，不带 `/v1`、`/metrics` 或网关路径。 |
+| `gpu_ids` | 已确认的 GPU 索引字符串或完整 UUID，用于关联高亮。 |
+| `logging.directory` | 默认 `/var/lib/joi-observer`，错误日志为该目录下的 `error.log`。 |
 
-### 4. 启动和日常使用
+`joi-observer service` 查找配置：`--config PATH`、当前目录 `config.yaml`、`/etc/joi-observer/config.yaml`，按此顺序选择。配置仅在服务启动时加载，修改后必须重启。
 
-在服务器的交互式终端中启动
+### 4. 启用常驻服务
 
 ```bash
+install -m 0644 deploy/systemd/joi-observer.service /etc/systemd/system/joi-observer.service
+systemctl daemon-reload
+systemctl enable --now joi-observer
+systemctl status joi-observer
+```
+
+手动运行采用前台方式，由外部管理进程负责常驻；先停止 systemd 服务，使用相同服务账户和已准备的专有运行目录执行：
+
+```bash
+joi-observer service --config /etc/joi-observer/config.yaml
+```
+
+### 5. 打开 TUI
+
+将查看用户加入读者组，重新登录使组成员资格生效，然后在交互终端运行：
+
+```bash
+usermod -aG joi-observer-readers username
 joi-observer
 ```
 
-配置按 `--config` 指定的文件、当前目录的 `config.yaml`、系统默认的 `/etc/joi-observer/config.yaml` 的顺序查找。
+TUI 运行期间，发往终端标准错误的客户端诊断不会写入全屏画面，也不进入采集服务的 `error.log`。
+需要排查时可运行 `joi-observer tui 2>tui-stderr.log`；这会保存实际发出的诊断和退出提示，不会自动启用调试日志。
 
-### 5. 更新已安装版本
-
-退出正在运行的 Joi::Observer。以 root 身份进入此前克隆的仓库根目录，拉取更新并重新安装。
+### 6. 日常管理与升级
 
 ```bash
-. "$HOME/.local/bin/env"
-umask 022
-git pull --ff-only &&
-  UV_TOOL_DIR=/opt/joi-observer-tool \
-  UV_TOOL_BIN_DIR=/usr/local/bin \
-  uv tool install --force --refresh-package joi-observer \
-    --python /usr/bin/python3 --link-mode copy . &&
-  joi-observer --version
+systemctl stop joi-observer
+systemctl start joi-observer
+systemctl restart joi-observer
+journalctl -u joi-observer
 ```
 
-更新完成后，各用户重新运行 `joi-observer` 即可。
+更改配置后执行 `restart`；升级前先 `stop`，在更新后的源码目录执行 `uv pip install --python /opt/joi-observer/.venv/bin/python .`，再启动服务。终端用户重新运行 TUI。
+
+退出码：正常退出 0，内部错误 1，参数/配置错误 2，非交互终端 3，客户端连接错误 4，服务启动/锁/监听错误 5，SIGINT 130，SIGTERM 143。
 
 ## 模型导航与键位
 

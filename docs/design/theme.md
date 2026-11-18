@@ -1,10 +1,12 @@
 # Neon Grid 主题与终端配色设计
 
 - 关联需求：dev-0 / REQ-006，需求说明 v1.24，AC-601～616；复用 REQ-001～005。
-- 修订 v1.17，2026-11-09。页眉像素品牌采用无阴影字形。
+- 关联需求补充：dev-1 / REQ-001，AC-105/106/111，保留客户端主题与终端行为。
+- 修订：v1.19，2026-11-16；在图前集中说明主题类、值对象及外部终端库角色。
+- 整体设计：[组件边界与依赖](architecture.md)。
 - 代码：`src/joi_observer/tui/theme.py`、`layout.py`、`navigation.py`、`app.py`；沿用 `widgets.py`、`vllm.py`、`services.py`。
 - 关联模块：[应用外壳](application-shell.md)、[模型导航](navigation.md)、[硬件](hardware.md)、[vLLM](vllm.md)。
-- 当前阶段：REQ-006既有配色、Frame传递和终端接线已实现；本次固定色方案取代先前可改色终端的私有RGB色槽方案。原[R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)、[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)与[R2交接](../dev-workflow/dev-0/REQ-006/handoff-r2.md)保留其对应版本事实，不能代替本次验证。
+- 当前阶段：REQ-006 既有配色、Frame 传递和终端接线为保留基线；固定色方案已取代先前的私有 RGB 色槽方案。历史交接路径为 `docs/dev-workflow/dev-0/REQ-006/handoff-r4.md`、`handoff-r5.md`、`handoff-r2.md`，当前工作区未包含，不作为本轮验证证据；本轮只更新共享设计表达。
 
 ## 职责与边界
 
@@ -14,78 +16,66 @@
 
 主题由导航会话持有，生命周期见[模型导航](navigation.md)。本模块只消费主题标识，每次终端 enter 都重新取得自己的配色资源，不访问采集或状态写入接口。
 
-## 核心接口与协作
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `CursesTerminal`（对象别名 `Terminal`） | curses 终端实现，负责将整帧绘到真实终端并恢复原终端状态。 |
+| `CursesTheme`（对象别名 `Theme`） | 终端配色会话类，负责把主题颜色角色映射为当前终端能力支持的样式。 |
+| `Palette` | 冻结主题配色值对象，保存背景、文本及强调角色的目标 RGB 值。 |
+| `Frame` | 不可变整帧值对象，携带统一的主题标识、文字单元和字体强调信息。 |
+| `curses`（角色别名 `Backend`） | Python 外部终端库角色，为配色会话提供能力查询、色对设置和屏幕绘制操作。 |
+
+## 简化类图
 
 ```mermaid
 classDiagram
-    class ViewSelection {
-        +model_id str_or_None
-        +theme str
-    }
-    class SessionViewActions {
-        +selection() ViewSelection
-        +on_key(key) None
-    }
-    class Frame {
-        +cells tuple
-        +regions tuple
-        +too_small bool
-        +theme str
-    }
-    class Layout["tui.layout"] {
-        <<module>>
-        +compose_frame(snapshot, config, size, host, now) Frame
-    }
-    class ObserverApp {
-        +run() None
-    }
-    class TerminalPort {
-        <<interface>>
-        +enter() None
-        +render(frame) None
-        +restore() None
-    }
     class CursesTerminal {
-        +enter() None
-        +render(frame) None
-        +restore() None
+        +render(frame)
+        +restore()
+    }
+    class CursesTheme {
+        +activate(name)
+        +style(role) int
+        +restore()
     }
     class Palette {
         +name str
         +background RGB
-        +text RGB
-        +muted RGB
         +primary RGB
         +secondary RGB
-        +amber RGB
-        +track RGB
-        +brand_shadow RGB
     }
-    class Theme["tui.theme"] {
-        <<module>>
-        +DEFAULT_THEME str
-        +palette_for(name) Palette
+    class Frame {
+        +theme str
+        +cells tuple
     }
-    class CursesTheme {
-        +__init__(curses_api)
-        +activate(name) None
-        +style(role) int
-        +restore() None
-    }
-    ObserverApp o-- SessionViewActions
-    ObserverApp --> TerminalPort
-    ObserverApp ..> Layout
-    SessionViewActions --> ViewSelection
-    Layout ..> ViewSelection
-    Layout ..> Frame
-    CursesTerminal ..|> TerminalPort
     CursesTerminal *-- CursesTheme
     CursesTerminal ..> Frame
-    CursesTheme ..> Theme
-    Theme ..> Palette
+    CursesTheme --> Palette
 ```
 
-图中 module 表示真实 Python 模块，不是额外运行期类；图示协作已在当前实现接线。`ObserverApp` 的显式 `ViewActions` 注入能力保留，图中只展开默认控制器。
+## 关键交互时序图
+
+```mermaid
+sequenceDiagram
+    participant Terminal as CursesTerminal
+    participant Theme as CursesTheme
+    participant Backend as curses
+    Terminal->>Theme: activate(frame.theme)
+    alt 首次激活或主题改变
+        Theme->>Backend: 探测能力并设置本会话色对
+        Backend-->>Theme: 固定色、基础色或单色能力
+    end
+    Terminal->>Theme: style(role)
+    Theme-->>Terminal: 语义角色属性
+    Terminal->>Backend: 绘制同主题背景、文字与字体属性
+    Terminal->>Backend: refresh()
+    Note over Terminal,Backend: 颜色初始化失败则本会话降级单色，不中断输入
+    Terminal->>Theme: restore()
+    Terminal->>Backend: 恢复外层终端状态
+```
+
+主题协作已在当前实现接线；`ObserverApp` 的显式 `ViewActions` 注入能力保留，控制器交互见导航模块。
 
 `theme.DEFAULT_THEME = "hologram"` 是单一默认元数据，`ViewSelection.theme` 使用此常量。切换顺序和会话边界见[模型导航](navigation.md)，呈现时机见[应用外壳](application-shell.md)。
 
@@ -240,3 +230,9 @@ Python的`setupterm`会缓存首次成功结果，后续同进程调用不能视
 测试断言期待正确行为，不 xfail、不以 NotImplementedError 为成功。外部终端/时钟/只读输入可替换，监控或主题业务结果不可模拟；所有自动化在本地 WSL Ubuntu-24.04 离线执行，pytest 和 PTY 子进程保留网络禁用。新业务未实现、接口导入错误、环境故障、原有缺陷分开记录。
 
 既有全量、安装包、PTY及GUI记录只证明各自版本，旧私有RGB写色/恢复测试不作为本次固定色方案的通过证据。本次必须核对真实固定SGR输出、未发送OSC 4、TERM初始化范围与异常恢复，并保留既有字形、粗体、布局和键位回归。单元与PTY验证不替代MobaXterm实际观感确认，也不授权服务器联调；本轮不生成安装包或更新GUI回放。帧调度和尺度的所有权仍见应用外壳设计。
+
+## 修订说明
+
+v1.19：2026-11-16，按更新后的 R2 模板集中介绍图中的类、值对象和外部库角色，合并对象别名，不改变配色或终端契约。
+
+v1.18：2026-11-16，按更新后的 R2 模板补充整体设计引用、核心类图和关键交互时序，保留业务与测试契约。

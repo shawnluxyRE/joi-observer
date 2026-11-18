@@ -16,12 +16,14 @@ from pathlib import Path
 import ipaddress
 import math
 import re
+import stat
 from urllib.parse import urlsplit
 
 import yaml
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/joi-observer/config.yaml")
+DEFAULT_LOG_DIRECTORY = "/var/lib/joi-observer"
 
 # SafeLoader's standard scalar constructors use native exceptions for malformed
 # input: empty/sign-only numbers can raise IndexError, and an unmatched timestamp
@@ -116,17 +118,16 @@ class ModelConfig:
 class LogConfig:
     """采集 ERROR 文件设置；载体本身不执行 I/O 或校验。
 
-    directory 的 YAML 值只能是运行平台绝对路径或 ~ / ~/... 形式，
+    自定义 directory 接受运行平台绝对路径或 ~ / ~/... 形式，
     load_config 按运行用户 Path.home() 展开；不展开 $ENV、%ENV% 或 ~other。
-    默认目录 ~/.joi-observer，与 XDG 配置无关。返回的有效配置中它是绝对
-    Path；不存在/不可写由日志初始化处理，不在此创建或检查。
+    默认目录 /var/lib/joi-observer。不在此创建目录或检查写权限。
 
     max_bytes 为整数且 >=1024，默认 10,000,000 字节（十进制 10 MB），
     backup_count 为整数且 >=1，默认 3；bool 不视为整数。文件名固定
     error.log，不允许配置文件名。最小阈值用于容纳单条有界诊断记录。
     """
 
-    directory: Path = Path("~/.joi-observer")
+    directory: Path = Path(DEFAULT_LOG_DIRECTORY)
     max_bytes: int = 10_000_000
     backup_count: int = 3
 
@@ -135,9 +136,10 @@ class LogConfig:
 class AppConfig:
     """启动后不可变的配置快照；不支持热重载。
 
-    sample_interval、collection_timeout 单位均为秒，是有限实数且位于
-    [0.1, 60.0]，不接受 bool、字符串、NaN/Infinity。timeout 可超过
-    interval；调度器负责同对象不重叠和跳过错过的周期，不积压请求。
+    sample_interval 单位为秒，有限实数且位于 [1.0, 60.0]；
+    collection_timeout 为 [0.1, 60.0]。均不接受 bool、字符串、NaN/Infinity。
+    两个时间字段独立校验；timeout 可超过 interval。调度器负责同对象
+    不重叠和跳过错过的周期，不积压请求。
 
     mount_points 是有序、无重复的 POSIX 绝对挂载点，禁止 ..、控制字符、
     首尾空白；保持原字符串，不静默改变路径。缺省为 / 和 /data，显式
@@ -150,7 +152,7 @@ class AppConfig:
     纳入对象均采集；仅展示层按可用行数隐藏后续容器，不改变此快照。
 
     dataclass 仅声明载体；生产代码须使用 load_config 返回的有效配置。
-    直接构造实例不会自动验证任何字段，也不会展开 LogConfig 默认路径。
+    直接构造实例不会自动验证任何字段，也不会展开自定义路径中的 ~。
     """
 
     sample_interval: float = 1.0
@@ -203,14 +205,26 @@ def resolve_config_path(
         candidate = candidate.absolute()
         try:
             # stat detects inaccessible paths; they must not trigger fallback.
-            candidate.stat()
+            info = candidate.stat()
         except FileNotFoundError:
-            if explicit is not None or candidate.is_symlink():
+            if explicit is not None:
                 raise ConfigError(candidate, "<file>", "Configuration file does not exist.") from None
-            continue
+            try:
+                # A dangling higher-priority symlink is a selected, invalid
+                # candidate. Do not silently fall through to another config;
+                # permission errors in this separate missing-path check must
+                # receive the same safe diagnostic as the original stat.
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                raise ConfigError(candidate, "<file>", "Cannot access configuration file.") from None
+            raise ConfigError(candidate, "<file>", "Configuration file does not exist.") from None
         except (OSError, ValueError):
             raise ConfigError(candidate, "<file>", "Cannot access configuration file.") from None
-        if not candidate.is_file():
+        # Reuse the verified metadata instead of doing an unguarded second
+        # stat through Path.is_file(). load_config still handles later races.
+        if not stat.S_ISREG(info.st_mode):
             raise ConfigError(candidate, "<file>", "Configuration path must be a regular file.")
         return candidate
     raise ConfigError(expected, "<file>",
@@ -273,9 +287,14 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError(path, "<file>", "Invalid YAML syntax, key, or tag.",
                           line=mark.line + 1 if mark else None,
                           column=mark.column + 1 if mark else None) from None
+    except RecursionError:
+        # PyYAML's parser/constructor and our graph inspection can exhaust the
+        # interpreter stack on deeply nested input. This remains a local input
+        # diagnostic, without exposing parser internals or the source text.
+        raise ConfigError(path, "<file>", "YAML nesting exceeds the parser's supported depth.") from None
     except _YAML_VALUE_ERRORS:
         raise ConfigError(path, "<file>", "Invalid YAML value for its declared type.") from None
-    validator = _Validator(path, marks)
+    validator = _Validator(path, marks, root)
     data = validator.mapping(data, "", {"sample_interval", "collection_timeout", "mount_points", "containers", "models", "logging"})
     interval = validator.timing(data.get("sample_interval", 1.0), "sample_interval")
     timeout = validator.timing(data.get("collection_timeout", 3.0), "collection_timeout")
@@ -317,14 +336,14 @@ def load_config(path: Path) -> AppConfig:
                                   validator.name(item["served_model_name"], key + ".served_model_name")
                                   if "served_model_name" in item else None))
     log = validator.mapping(data.get("logging", {}), "logging", {"directory", "max_bytes", "backup_count"})
-    directory = log.get("directory", "~/.joi-observer")
+    directory = log.get("directory", DEFAULT_LOG_DIRECTORY)
     if not isinstance(directory, str) or not directory or not directory.isprintable() or directory != directory.strip():
         validator.fail("logging.directory", "Use an absolute path or ~/path.")
     if directory == "~" or directory.startswith("~/"):
         directory_path = Path.home() / directory[2:] if len(directory) > 1 else Path.home()
     else:
         directory_path = Path(directory)
-        if not directory_path.is_absolute():
+        if directory != DEFAULT_LOG_DIRECTORY and not directory_path.is_absolute():
             validator.fail("logging.directory", "Use an absolute path or ~/path.")
     max_bytes = validator.integer(log.get("max_bytes", 10_000_000), "logging.max_bytes", 1024)
     backup_count = validator.integer(log.get("backup_count", 3), "logging.backup_count", 1)
@@ -345,7 +364,8 @@ class _ConfigLoader(yaml.SafeLoader):
     """SafeLoader with validation performed on its complete composed node tree."""
 
 
-def _inspect_yaml(node, field, marks, active, path, loader, *, ignored_mount_tail=False):
+def _inspect_yaml(node, field, marks, active, path, loader, *, ignored_mount_tail=False,
+                  checked=None):
     if node is None:
         return
     mark = node.start_mark
@@ -353,6 +373,14 @@ def _inspect_yaml(node, field, marks, active, path, loader, *, ignored_mount_tai
     if id(node) in active:
         raise ConfigError(path, field or "<file>", "Recursive YAML aliases are not supported.",
                           line=mark.line + 1, column=mark.column + 1)
+    if checked is None:
+        checked = set()
+    # Mapping-key rules differ in ignored tails, and only the actual root
+    # mount_points sequence grants that exemption to its fourth/later items.
+    # The same aliased sequence used elsewhere must not inherit that role.
+    context = (id(node), ignored_mount_tail, field == "mount_points")
+    if context in checked:
+        return
     if node.tag not in yaml.SafeLoader.yaml_constructors:
         raise ConfigError(path, field or "<file>", "Unsupported YAML tag.",
                           line=mark.line + 1, column=mark.column + 1)
@@ -373,7 +401,8 @@ def _inspect_yaml(node, field, marks, active, path, loader, *, ignored_mount_tai
                     # Ignored YAML mappings may use any SafeLoader-compatible
                     # key. Still validate keys as data, including tags, aliases
                     # and native scalar-construction failures before hashing.
-                    _inspect_yaml(key, child, marks, active, path, loader, ignored_mount_tail=True)
+                    _inspect_yaml(key, child, marks, active, path, loader,
+                                  ignored_mount_tail=True, checked=checked)
                     try:
                         identity = loader.construct_object(key, deep=True)
                         hash(identity)
@@ -386,11 +415,12 @@ def _inspect_yaml(node, field, marks, active, path, loader, *, ignored_mount_tai
                                       line=key.start_mark.line + 1, column=key.start_mark.column + 1)
                 seen.add(identity)
                 _inspect_yaml(value, child, marks, active, path, loader,
-                              ignored_mount_tail=ignored_mount_tail)
+                              ignored_mount_tail=ignored_mount_tail, checked=checked)
         elif isinstance(node, yaml.SequenceNode):
             for i, value in enumerate(node.value):
                 _inspect_yaml(value, f"{field}[{i}]", marks, active, path, loader,
-                              ignored_mount_tail=ignored_mount_tail or field == "mount_points" and i >= 3)
+                              ignored_mount_tail=ignored_mount_tail or field == "mount_points" and i >= 3,
+                              checked=checked)
         else:
             # Normalize at the scalar's own mark, including ignored mount
             # tails, without exposing the constructor's exception or source text.
@@ -401,13 +431,52 @@ def _inspect_yaml(node, field, marks, active, path, loader, *, ignored_mount_tai
                                   line=mark.line + 1, column=mark.column + 1) from None
     finally:
         active.remove(id(node))
+    # Only completed checks can be reused. Test the active recursion stack
+    # first on every entry, so memoization never permits a cyclic alias.
+    checked.add(context)
+
+
+def _field_mark(root, field):
+    """Locate an actual validation path without expanding every alias path.
+
+    Shared YAML nodes keep their original source marks. Follow only the field
+    that failed, stopping at its nearest existing parent for missing fields.
+    Whole-document errors are still reported directly by _inspect_yaml.
+    """
+    node = root
+    if node is None:
+        return None
+    for match in re.finditer(r"(?:^|\.)([^.\[]+)|\[([0-9]+)\]", field):
+        label, index = match.groups()
+        if index is not None:
+            if not isinstance(node, yaml.SequenceNode) or int(index) >= len(node.value):
+                break
+            node = node.value[int(index)]
+        else:
+            if not isinstance(node, yaml.MappingNode):
+                break
+            for key, value in node.value:
+                if (isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:str"
+                        and (key.value if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key.value)
+                             else "<key>") == label):
+                    node = value
+                    break
+            else:
+                break
+    mark = node.start_mark
+    return mark.line + 1, mark.column + 1
 
 
 class _Validator:
-    def __init__(self, path, marks):
+    def __init__(self, path, marks, root):
         self.path, self.marks = path, marks
+        self.root = root
 
     def fail(self, field, reason):
+        location_mark = _field_mark(self.root, field)
+        if location_mark is not None:
+            line, column = location_mark
+            raise ConfigError(self.path, field or "<file>", reason, line=line, column=column)
         location = field or "<file>"
         while location not in self.marks and location != "<file>":
             parent = re.sub(r"(?:\.[^.\[]+|\[\d+\])$", "", location)
@@ -432,8 +501,9 @@ class _Validator:
         return value
 
     def timing(self, value, field):
-        if type(value) not in (int, float) or not 0.1 <= value <= 60 or not math.isfinite(value):
-            self.fail(field, "Use a finite number from 0.1 through 60 seconds.")
+        minimum = 1 if field == "sample_interval" else 0.1
+        if type(value) not in (int, float) or not minimum <= value <= 60 or not math.isfinite(value):
+            self.fail(field, f"Use a finite number from {minimum} through 60 seconds.")
         return float(value)
 
     def integer(self, value, field, minimum):

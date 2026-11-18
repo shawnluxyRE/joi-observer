@@ -11,14 +11,16 @@ from decimal import Decimal
 from urllib.parse import urlsplit
 
 from joi_observer.config import AppConfig, ModelType
+from joi_observer.ipc.protocol import DisplayMetadata, ModelDisplay
 from joi_observer.data.models import Metric, ObjectSnapshot, StateSnapshot
 from joi_observer.tui.history import HistoryScale, _scale_upper, scan_history
 from joi_observer.tui.layout import Region, TextCell, ViewSelection, _clip, format_metric
+from joi_observer.tui.text import display_width
 
 
 def vllm_cells(
     snapshot: StateSnapshot,
-    config: AppConfig,
+    config: AppConfig | DisplayMetadata,
     region: Region,
     view: ViewSelection,
     *,
@@ -26,6 +28,11 @@ def vllm_cells(
     history_scales: tuple[HistoryScale, ...] | None = None,
 ) -> tuple[TextCell, ...]:
     """绘制选中模型和全部可见模型条目；返回不可变文字单元，无 I/O。
+
+    生产 config 为 DisplayMetadata，列表取 name/explicit_port，
+    详情取 served_model_name/effective_port，不拼回采集 URL。AppConfig 输入
+    保留给既有纯视图回归，详情同样采用 served_model_name or name。
+    两种输入沿用相同的布局、数值和状态槽规则。
 
     region 是包含外边框的 service 区，width>=120、height>=16；row/column
     为非负整数。只绘制其内部，不覆盖边框或外层 service_switch/footer。
@@ -137,7 +144,8 @@ def vllm_cells(
 
     def status_at(offset: int, stop: int, obj: ObjectSnapshot | None) -> None:
         status, role = _status(obj)
-        put(offset, stop - len(status), status, len(status), role)
+        status_width = display_width(status)
+        put(offset, stop - status_width, status, status_width, role)
 
     def count_role(name: str, obj: ObjectSnapshot | None) -> str:
         return "amber" if name == "waiting" and _status(obj)[0] == "QUEUED" else "text"
@@ -146,13 +154,14 @@ def vllm_cells(
                    obj: ObjectSnapshot | None, *, align_right: bool) -> None:
         label = name
         metric = _metric(obj, name, "seq")
-        value = _bounded_number(metric, stop - start - len(label) - 1)
+        value = _bounded_number(metric, stop - start - display_width(label) - 1)
         if value == "…":
             label = "run" if name == "running" else "wait"
-            value = _bounded_number(metric, stop - start - len(label) - 1)
-        column = stop - len(value) - len(label) - 1 if align_right else start
-        put(offset, column, value, len(value), count_role(name, obj))
-        put(offset, column + len(value) + 1, label, len(label), "muted")
+            value = _bounded_number(metric, stop - start - display_width(label) - 1)
+        value_width, label_width = display_width(value), display_width(label)
+        column = stop - value_width - label_width - 1 if align_right else start
+        put(offset, column, value, value_width, count_role(name, obj))
+        put(offset, column + value_width + 1, label, label_width, "muted")
 
     put(1, region.column + 2, f"MODELS / {len(config.models)}", 24, "muted")
     for index in range(first, min(first + capacity, len(config.models))):
@@ -164,7 +173,7 @@ def vllm_cells(
         put(offset, region.column + 4, model.name, 15,
             "primary" if index == selected else "text")
         status_at(offset, region.column + 26, obj)
-        port = urlsplit(model.base_url).port
+        port = model.explicit_port if isinstance(model, ModelDisplay) else urlsplit(model.base_url).port
         type_text = model.type.value.upper() + (f" / :{port}" if port is not None else "")
         put(offset + 1, region.column + 2, type_text, 24, "muted")
         rail_count(offset + 2, region.column + 2, region.column + 14,
@@ -174,10 +183,13 @@ def vllm_cells(
 
     model = config.models[selected]
     obj = objects.get(model.id)
-    put(2, right, model.name, end - right - 7, "primary")
+    put(2, right, model.served_model_name or model.name, end - right - 7, "primary")
     status_at(2, end, obj)
-    origin = urlsplit(model.base_url)
-    port = origin.port if origin.port is not None else (443 if origin.scheme == "https" else 80)
+    if isinstance(model, ModelDisplay):
+        port = model.effective_port
+    else:
+        origin = urlsplit(model.base_url)
+        port = origin.port if origin.port is not None else (443 if origin.scheme == "https" else 80)
     put(3, right, f":{port}", end - right, "secondary")
     for offset in (4, 8):
         put(offset, right, "─" * (end - right), end - right, "muted")
@@ -187,10 +199,11 @@ def vllm_cells(
         put(offset, middle, "│", 1, "muted")
     for start, stop, name in ((right, left_end, "running"), (right_start, end, "waiting")):
         label = name.upper()
-        put(6, start, label, len(label))
+        put(6, start, label, display_width(label))
         metric = _metric(obj, name, "seq")
-        value = _bounded_number(metric, stop - start - len(label) - 1)
-        put(6, stop - len(value), value, len(value), count_role(name, obj),
+        value = _bounded_number(metric, stop - start - display_width(label) - 1)
+        value_width = display_width(value)
+        put(6, stop - value_width, value, value_width, count_role(name, obj),
             bold=_visible_number(metric, value))
     total = _bounded_number(_metric(obj, "total", "seq"), left_end - right - len("Total  seq"))
     put(7, right, f"Total {total} seq", left_end - right, "muted")
@@ -248,7 +261,7 @@ def _status(obj: ObjectSnapshot | None) -> tuple[str, str]:
 def _bounded_number(metric: Metric, width: int) -> str:
     """Keep regular precision; compress the whole number before any clipping."""
     plain = format_metric(Metric(metric.name, metric.value, "", metric.applicable))
-    if len(plain) <= width:
+    if display_width(plain) <= width:
         return plain
     if metric.applicable and type(metric.value) in (int, float):
         number = Decimal(metric.value) if type(metric.value) is int else Decimal(str(metric.value))
@@ -257,7 +270,7 @@ def _bounded_number(metric: Metric, width: int) -> str:
             if "." in mantissa:
                 mantissa = mantissa.rstrip("0").rstrip(".")
             compact = f"{mantissa}e{int(exponent)}"
-            if len(compact) <= width:
+            if display_width(compact) <= width:
                 return compact
     return "…"
 
@@ -292,11 +305,11 @@ def _history_cells(obj: ObjectSnapshot | None, model_id: str, field: str, unit: 
     elif upper < maximum:
         raise ValueError("History scale cannot clip the visible peak")
     title = "DECODE HISTORY | tok/s" if field == "decode_rate" else "RATE HISTORY | seq/s"
-    label_width = end - start - len(title) - 1
-    number = _bounded_number(Metric("scale", upper), label_width - len("Scale ≤ ") - len(unit) - 1)
+    label_width = end - start - display_width(title) - 1
+    number = _bounded_number(Metric("scale", upper), label_width - display_width("Scale ≤ ") - display_width(unit) - 1)
     label = f"Scale ≤ {number} {unit}"
     cells = [TextCell(region.row + 12, start, title, "secondary"),
-             TextCell(region.row + 12, end - len(label), label, "muted")]
+             TextCell(region.row + 12, end - display_width(label), label, "muted")]
     cursor_row, bottom = region.row + 13, region.row + region.height - 3
     top = min(cursor_row + 1, bottom)
     graph_start = start + 6
@@ -319,14 +332,15 @@ def _history_cells(obj: ObjectSnapshot | None, model_id: str, field: str, unit: 
             ticks.insert(1, (top + rows // 2, half))
         for row, value in ticks:
             tick = _bounded_number(Metric("scale", value), 5)
-            cells.append(TextCell(row, graph_start - 1 - len(tick), tick, "muted"))
+            cells.append(TextCell(row, graph_start - 1 - display_width(tick), tick, "muted"))
 
     cells.append(TextCell(cursor_row, cursor_column, "▼", "text", bold=True))
     axis_row = region.row + region.height - 2
     for second in (0, 15, 30, 45, 59):
         tick = f"{second}s"
         center = graph_start + ((second * (columns * 2 - 1) + 29) // 59) // 2
-        column = max(graph_start, min(end - len(tick), center - len(tick) // 2))
+        tick_width = display_width(tick)
+        column = max(graph_start, min(end - tick_width, center - tick_width // 2))
         cells.append(TextCell(axis_row, column, tick, "muted"))
     return tuple(cells)
 

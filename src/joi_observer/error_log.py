@@ -146,6 +146,13 @@ class _LogEvent:
     line: bytes
 
 
+@dataclass(slots=True)
+class _WriterTicket:
+    """One candidate's entry permission, guarded by its log's condition."""
+
+    admitted: bool = False
+
+
 class ErrorLog:
     """独立、非阻塞、ERROR-only 采集诊断出口。
 
@@ -225,7 +232,9 @@ class ErrorLog:
         reason 中动态文本不参与指纹；A→B→A 仍保留 A 的限频状态。
         新对象或新代码不受其他指纹限制。recovered 清除此对象所有指纹。
 
-        队满/已关闭返回 False，不等待、不抛 IO 错误、不增加日志或提示。
+        队满/已关闭/写线程资源暂不可用返回 False，不等待文件 IO、不增加提示。
+        线程创建或启动失败时不接纳该事件，也不留下限频预占或待处理记录；
+        后续真实采样可重新创建写线程，不重放失败事件。
         队满不占用限频时间；入队成功先预占，写失败撤销该次预占，后续
         新采样可立即重试，旧记录不重放。异步完成须携带故障轮次及事件序号，
         不得用旧写入失败撤销恢复后新故障的预占。每条 JSONL 只含 time、level
@@ -272,17 +281,34 @@ class ErrorLog:
                 return False
             if len(self._queue) >= self.queue_capacity:
                 return False
+            ticket = None
+            worker = None
+            if self._worker is None:
+                # The new writer must acquire this same condition before it
+                # can inspect its ticket or the queue. Thread.start can fail
+                # after creating an OS thread but before its startup handshake
+                # returns; such a candidate must never become a second writer.
+                try:
+                    ticket = _WriterTicket()
+                    worker = threading.Thread(
+                        target=self._enter_writer, args=(ticket,),
+                        name="joi-observer-error-log", daemon=True,
+                    )
+                    worker.start()
+                except (RuntimeError, OSError, MemoryError):
+                    return False
             self._sequence += 1
             sequence = self._sequence
             episode = self._episodes.get(identity, 0)
             self._reservations[fingerprint] = (monotonic_time, episode, sequence)
             self._queue.append(_LogEvent(sequence, episode, fingerprint, line))
             self._pending.add(sequence)
-            if self._worker is None:
-                self._worker = threading.Thread(
-                    target=self._write_loop, name="joi-observer-error-log", daemon=True,
-                )
-                self._worker.start()
+            if ticket is not None:
+                # Start completed and the event is fully committed. A rejected
+                # candidate retains its own false ticket even after a retry or
+                # close, so a delayed bootstrap exits without touching queues.
+                ticket.admitted = True
+                self._worker = worker
             self._condition.notify()
         return True
 
@@ -324,14 +350,20 @@ class ErrorLog:
             self._closed = True
             through_sequence = self._sequence
             self._condition.notify()
-        drained = await self._wait_processed(through_sequence, timeout)
-        if not drained:
-            with self._condition:
-                while self._queue:
-                    event = self._queue.popleft()
-                    self._finish(event, failed=True)
-                self._condition.notify()
-        return drained
+        drained = False
+        try:
+            drained = await self._wait_processed(through_sequence, timeout)
+            return drained
+        finally:
+            # Cancellation is also a shutdown: do not leave queued writes for
+            # the old service after its lifetime has ended. An already active
+            # filesystem call retains the documented daemon-thread boundary.
+            if not drained:
+                with self._condition:
+                    while self._queue:
+                        event = self._queue.popleft()
+                        self._finish(event, failed=True)
+                    self._condition.notify()
 
     @staticmethod
     def _validate_identity(collector: str, object_id: str) -> None:
@@ -371,6 +403,14 @@ class ErrorLog:
             if reservation is not None and reservation[1:] == (event.episode, event.sequence):
                 del self._reservations[event.fingerprint]
         self._pending.discard(event.sequence)
+
+    def _enter_writer(self, ticket: _WriterTicket) -> None:
+        with self._condition:
+            if not ticket.admitted:
+                return
+        # An admitted writer must still drain accepted work when close raced
+        # its entry. _write_loop owns the existing closed-and-queue semantics.
+        self._write_loop()
 
     def _write_loop(self) -> None:
         while True:

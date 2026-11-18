@@ -10,12 +10,14 @@ from typing import Protocol
 
 from joi_observer.config import AppConfig
 from joi_observer.data.models import StateSnapshot
+from joi_observer.ipc.protocol import DisplayMetadata
 from joi_observer.tui.history import HistoryScaleTracker
 from joi_observer.tui.layout import Frame, HostInfo, TerminalSize, ViewSelection, compose_frame, required_size
 from joi_observer.tui.navigation import SessionViewActions
 from joi_observer.tui.theme import CursesTheme
 from joi_observer.tui.timing import FrameSchedule
 from joi_observer.tui.widgets import resolve_gpu_groups
+from joi_observer.tui.text import display_text, display_width
 
 
 def _create_screen(curses_api, fd: int):
@@ -252,17 +254,18 @@ class CursesTerminal:
         self._screen.bkgd(" ", self._theme.style("text"))
         self._screen.erase()
         for cell in frame.cells:
+            text = display_text(cell.text)
             try:
                 attribute = self._theme.style(cell.role)
                 if cell.bold:
                     attribute |= self._curses.A_BOLD
-                self._screen.addstr(cell.row, cell.column, cell.text, attribute)
+                self._screen.addstr(cell.row, cell.column, text, attribute)
             except self._curses.error:
                 # ncurses also reports ERR after successfully painting the
                 # lower-right cell; that cell is outside our regular content.
                 if self.size() != before:
                     return
-                if cell.row == before.rows - 1 and cell.column + len(cell.text) >= before.columns:
+                if cell.row == before.rows - 1 and cell.column + display_width(text) >= before.columns:
                     continue
                 raise
         self._screen.refresh()
@@ -359,7 +362,7 @@ class ObserverApp:
 
     def __init__(
         self,
-        config: AppConfig,
+        config: AppConfig | DisplayMetadata,
         reader: SnapshotReader,
         terminal: TerminalPort,
         *,
@@ -401,7 +404,8 @@ class ObserverApp:
 
         将enter也置于try/finally保护内；q、KeyboardInterrupt、协程取消及
         render/read错误均调用restore。原异常在恢复后传播给组合根，不打印
-        或记录；恢复错误不掩盖原错误。调用者负责停止并发Monitor及日志worker。
+        或记录；恢复错误不掩盖原错误。客户端接线由 TuiClientSession 管理连接；
+        它不停止服务的 Monitor 或日志。
         本方法不可重复并发运行；重复并发调用应抛RuntimeError。
         """
         if self._running:

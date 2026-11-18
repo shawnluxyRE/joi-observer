@@ -69,6 +69,10 @@
 
 | 文档 | 维护内容 |
 | --- | --- |
+| [整体设计](docs/design/architecture.md) | 组件边界、进程依赖、生命周期所有权及共享模块索引 |
+| [常驻采集服务](docs/design/collector-service.md) | 服务与运行期所有权、实例锁、发布隔离及 systemd 部署契约 |
+| [本机快照协议](docs/design/ipc.md) | 白名单元数据、完整帧、实例身份、时间域及只读传输 |
+| [TUI 客户端](docs/design/tui-client.md) | 单次连接与缓存、失败退出、客户端接线及视图接口迁移 |
 | [应用外壳](docs/design/application-shell.md) | 启动与退出、整页布局和最低尺寸、页眉、UI 帧调度 |
 | [主题](docs/design/theme.md) | 颜色角色、硬件条字形与轨道、终端配色降级及恢复 |
 | [硬件](docs/design/hardware.md) | 硬件采集、数值口径与精度、面板内部布局、GPU 关联 |
@@ -78,6 +82,7 @@
 | [配置](docs/design/configuration.md) | 配置查找、字段校验、默认值与示例 |
 | [状态](docs/design/monitor-state.md) | 调度、公共结果类型、只读快照与状态更新 |
 | [错误日志](docs/design/error-logging.md) | 采集错误分类、限频、文件格式与轮转 |
+| [Web 边界](docs/design/web.md) | REQ-001 共享数据契约；REQ-002 页面与容器设计待开展 |
 
 [Neon Grid HTML](docs/design/joi-observer.html) 是视觉参考；dev-1 的正式行为和验收以[需求说明](docs/dev-workflow/dev-1/requirements.md)为准，包括 Web 仅展示最近 60 秒、无历史回看，以及 TUI/Web 的模型名称映射。正式 TUI 的布局与主题适配见[主题设计](docs/design/theme.md#原稿与正式终端的逐项对应)。
 

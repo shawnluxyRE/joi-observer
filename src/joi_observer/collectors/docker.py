@@ -13,9 +13,11 @@ import math
 import os
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
+from joi_observer._shutdown import run_cleanup, spawn
 from joi_observer.config import ContainerConfig
 from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSpec
 from joi_observer.error_log import ErrorKind, Failure
@@ -110,9 +112,11 @@ class LocalDockerCommand:
     def __init__(self) -> None:
         self._closed = False
         self._process: asyncio.subprocess.Process | None = None
-        self._read_tasks: set[asyncio.Task] = set()
+        # Allocate ownership slots before any command can acquire resources.
+        # Each successful Task creation is registered before creating the next.
+        self._read_tasks: list[asyncio.Task | None] = [None, None, None]
         self._operation: asyncio.Task[CommandOutput] | None = None
-        self._cleanup_retry: asyncio.Task[None] | None = None
+        self._cleanup_retry: asyncio.Future | None = None
         self._spawn: asyncio.Task[asyncio.subprocess.Process] | None = None
         self._finishing = False
         self._cancel_requested = False
@@ -134,13 +138,17 @@ class LocalDockerCommand:
         if self._has_resources():
             raise RuntimeError("Docker command cleanup is incomplete; close is required.")
         self._finishing = self._cancel_requested = False
-        operation = self._operation = asyncio.create_task(self._execute(argv, timeout))
+        operation = self._operation = spawn(self._execute(argv, timeout))
         try:
             try:
                 output = await asyncio.shield(operation)
-            except asyncio.CancelledError:
+            except BaseException:
+                # A failed shield allocation does not stop its already created
+                # owner. Keep ownership until it can no longer launch work,
+                # preserving the original failure over any cleanup wait fault.
                 self._cancel_operation()
-                await self._settle(operation)
+                with suppress(BaseException):
+                    await self._settle(operation)
                 raise
             # close can arrive while normal completion is already reaping the
             # child. That completed output must not become a shutdown sample.
@@ -165,7 +173,9 @@ class LocalDockerCommand:
             # share one retry; callers cannot cancel the cleanup out from under
             # one another, and an unsuccessful retry remains observable.
             if self._cleanup_retry is None or self._cleanup_retry.done():
-                self._cleanup_retry = asyncio.create_task(self._cleanup())
+                await run_cleanup(self._cleanup, publish=lambda owner: setattr(
+                    self, "_cleanup_retry", owner))
+                return
             retry = self._cleanup_retry
             cancelled = await self._settle(retry)
             if cancelled:
@@ -173,7 +183,8 @@ class LocalDockerCommand:
             retry.result()
 
     def _has_resources(self) -> bool:
-        return self._process is not None or self._spawn is not None or bool(self._read_tasks)
+        return (self._process is not None or self._spawn is not None
+                or any(task is not None for task in self._read_tasks))
 
     def _cancel_operation(self) -> None:
         # Monitor.stop cancels collect and closes its port concurrently. Only
@@ -184,19 +195,26 @@ class LocalDockerCommand:
             self._operation.cancel()
 
     @staticmethod
-    async def _settle(operation: asyncio.Task) -> bool:
+    async def _settle(operation: asyncio.Future) -> bool:
         """Wait through repeated caller cancellation, consuming child failures.
 
         Return whether this waiting caller was cancelled (as distinct from the
         operation itself), so close preserves its own cancellation semantics.
         """
         cancelled = False
+        allocation_error: BaseException | None = None
+        # run_cleanup can publish a plain completion when Future allocation is
+        # refused. It needs no shield, and concurrent close still joins it.
+        polling = not isinstance(operation, asyncio.Future)
         caller = asyncio.current_task()
         assert caller is not None
         cancellation_count = caller.cancelling()
         while not operation.done():
             try:
-                await asyncio.shield(operation)
+                if polling:
+                    await asyncio.sleep(0)
+                else:
+                    await asyncio.shield(operation)
             except asyncio.CancelledError:
                 # The operation may finish in the same event-loop turn as an
                 # external cancel. Its done() state cannot identify which task
@@ -204,10 +222,17 @@ class LocalDockerCommand:
                 if caller.cancelling() > cancellation_count:
                     cancelled = True
                     cancellation_count = caller.cancelling()
-            except Exception:
-                break
+            except BaseException as error:
+                if operation.done():
+                    break
+                # Shield creates bookkeeping Futures. If allocation fails,
+                # join the existing owner without allocating replacement work.
+                allocation_error = error
+                polling = True
         if not operation.cancelled():
             operation.exception()
+        if allocation_error is not None:
+            raise allocation_error
         return cancelled
 
     @staticmethod
@@ -229,7 +254,7 @@ class LocalDockerCommand:
         environment.update(LC_ALL="C", LANG="C")
         try:
             async with asyncio.timeout(timeout):
-                self._spawn = asyncio.create_task(asyncio.create_subprocess_exec(
+                self._spawn = spawn(asyncio.create_subprocess_exec(
                     *argv, stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                     env=environment,
@@ -237,10 +262,9 @@ class LocalDockerCommand:
                 # Retain ownership even if cancellation races with creation.
                 self._process = await asyncio.shield(self._spawn)
                 assert self._process.stdout is not None and self._process.stderr is not None
-                stdout = asyncio.create_task(self._read_bounded(self._process.stdout))
-                stderr = asyncio.create_task(self._read_bounded(self._process.stderr))
-                wait = asyncio.create_task(self._process.wait())
-                self._read_tasks = {stdout, stderr, wait}
+                stdout = self._read_tasks[0] = spawn(self._read_bounded(self._process.stdout))
+                stderr = self._read_tasks[1] = spawn(self._read_bounded(self._process.stderr))
+                wait = self._read_tasks[2] = spawn(self._process.wait())
                 out, err, returncode = await asyncio.gather(stdout, stderr, wait)
                 output = CommandOutput(returncode, out, err)
         except BaseException:
@@ -274,17 +298,41 @@ class LocalDockerCommand:
 
     async def _cleanup(self) -> None:
         """Release pipes and reap within 250ms; retain ownership on failure."""
-        async with asyncio.timeout(0.25):
+        interrupted = False
+        async with asyncio.timeout(0.25) as deadline:
+            async def finish_wait(factory):
+                # Cleanup can run inline when allocating its owner is refused.
+                # Caller cancellation must not publish that inline completion
+                # before resources settle, while the original deadline still
+                # bounds each retry of the interrupted wait.
+                nonlocal interrupted
+                while True:
+                    try:
+                        return await factory()
+                    except asyncio.CancelledError:
+                        if deadline.expired():
+                            raise
+                        interrupted = True
+
+            async def join(task):
+                # These Tasks already have owners. Polling avoids mandatory
+                # shield/gather allocations and cannot propagate a cancelled
+                # cleanup caller into a Task's own cancellation handler.
+                while not task.done():
+                    await finish_wait(lambda: asyncio.sleep(0))
+                if not task.cancelled():
+                    task.exception()
+
             if self._spawn is not None:
-                if not self._spawn.done():
+                if not self._spawn.done() and not self._spawn.cancelling():
                     self._spawn.cancel()
                 # asyncio's subprocess creation cleans its transport when
                 # cancelled. If it completed in the meantime, reap here.
-                created, = await asyncio.gather(self._spawn, return_exceptions=True)
-                if not isinstance(created, BaseException):
-                    self._process = created
+                await join(self._spawn)
+                if not self._spawn.cancelled() and self._spawn.exception() is None:
+                    self._process = self._spawn.result()
             for task in self._read_tasks:
-                if not task.done():
+                if task is not None and not task.done() and not task.cancelling():
                     task.cancel()
             if self._process is not None:
                 if self._process.returncode is None:
@@ -293,14 +341,18 @@ class LocalDockerCommand:
                     except ProcessLookupError:
                         pass
                 self._close_read_pipes(self._process)
-                await self._process.wait()
+                await finish_wait(self._process.wait)
                 transport = getattr(self._process, "_transport", None)
                 if transport is not None:
                     transport.close()
-            if self._read_tasks:
-                await asyncio.gather(*self._read_tasks, return_exceptions=True)
+            for task in self._read_tasks:
+                if task is not None:
+                    await join(task)
         self._process = self._spawn = None
-        self._read_tasks.clear()
+        for index in range(len(self._read_tasks)):
+            self._read_tasks[index] = None
+        if interrupted:
+            raise asyncio.CancelledError
 
 
 def _failure_result(config: ContainerConfig, kind: ErrorKind) -> MetricCollectionResult:

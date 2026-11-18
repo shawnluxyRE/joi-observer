@@ -8,7 +8,7 @@ import unicodedata
 import pytest
 
 from joi_observer.config import AppConfig, ContainerConfig, ModelConfig, ModelType
-from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from runtime_harness import ApplicationRuntime, RuntimeComponents
 from joi_observer.data.models import Metric, ObjectKey, ObjectSnapshot, ObjectSpec, StateSnapshot
 from joi_observer.data.state import MonitorState
 from joi_observer.monitor import Monitor
@@ -377,26 +377,16 @@ class MemoryTerminal:
         return key
 
 
-class MemoryActions:
-    def __init__(self):
-        self.keys = []
-
-    def selection(self):
-        return ViewSelection()
-
-    def on_key(self, key):
-        self.keys.append(key)
+def app_for(terminal):
+    return ObserverApp(AppConfig(), MemoryReader(), terminal, host=HOST, wall_clock=lambda: NOW)
 
 
-def app_for(terminal, *, actions=None):
-    return ObserverApp(AppConfig(), MemoryReader(), terminal, host=HOST, wall_clock=lambda: NOW, actions=actions)
-
-
-def test_q_exits_and_restores_after_initial_draw():
-    terminal = MemoryTerminal()
+@pytest.mark.parametrize("size,too_small", [(TerminalSize(120, 40), False), (TerminalSize(80, 24), True)])
+def test_q_exits_and_restores_after_initial_draw(size, too_small):
+    terminal = MemoryTerminal(sizes=(size,))
     asyncio.run(app_for(terminal).run())
     assert terminal.calls[0] == "enter"
-    assert terminal.frames
+    assert terminal.frames[0].too_small is too_small
     assert terminal.calls[-1] == "restore"
 
 
@@ -415,27 +405,12 @@ def test_terminal_restored_on_interrupt():
     assert terminal.calls[-1] == "restore"
 
 
-def test_small_window_can_still_quit():
-    terminal = MemoryTerminal(sizes=(TerminalSize(80, 24),))
-    asyncio.run(app_for(terminal).run())
-    assert terminal.frames[0].too_small
-    assert terminal.calls[-1] == "restore"
-
-
 def test_resize_returns_to_full_view_without_restarting():
     terminal = MemoryTerminal(keys=(None, "q"), sizes=(TerminalSize(80, 24), TerminalSize(120, 40)))
     asyncio.run(app_for(terminal).run())
     assert terminal.frames[0].too_small
     assert not terminal.frames[-1].too_small
     assert terminal.calls.count("enter") == 1
-
-
-def test_navigation_is_dispatched_without_collector_dependency():
-    terminal = MemoryTerminal(keys=("t", "down", "up", "left", "right", "p", "enter", "q"))
-    actions = MemoryActions()
-    asyncio.run(app_for(terminal, actions=actions).run())
-    assert actions.keys == ["t", "down", "up", "left", "right"]
-    assert terminal.calls[-1] == "restore"
 
 
 class WaitingCollector:
@@ -516,7 +491,8 @@ def test_real_runtime_ui_quits_while_real_monitor_source_is_waiting():
         monitor = Monitor((collector,), state, log, timeout=30)
         runtime = ApplicationRuntime(AppConfig(), components=RuntimeComponents(monitor, app, log))
         await asyncio.wait_for(runtime.run(), 1.5)
-        await runtime.close()
+        assert not runtime.sampling.done() and not collector.cancelled
+        await runtime.close()  # explicit service stop after the client left
         assert collector.started.is_set()
         assert collector.cancelled and collector.closed
         assert terminal.frames
@@ -538,7 +514,8 @@ def test_real_runtime_stops_source_and_restores_after_ui_exception():
         runtime = ApplicationRuntime(AppConfig(), components=RuntimeComponents(monitor, app, log))
         with pytest.raises(RuntimeError, match="input failed"):
             await asyncio.wait_for(runtime.run(), 1.5)
-        await runtime.close()
+        assert not runtime.sampling.done() and not collector.cancelled
+        await runtime.close()  # explicit service stop after the client left
         assert collector.cancelled and collector.closed
         assert events.index("restore") < events.index("log.close")
         assert log.records == []
