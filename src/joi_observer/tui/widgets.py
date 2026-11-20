@@ -9,11 +9,12 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from itertools import pairwise
 import re
-import unicodedata
 
 from joi_observer.config import AppConfig
+from joi_observer.ipc.protocol import DisplayMetadata
 from joi_observer.data.models import Metric, ObjectSnapshot, StateSnapshot
 from joi_observer.tui.layout import GpuGroups, Region, TextCell, ViewSelection, _clip, format_metric, grouped_gpu_rows
+from joi_observer.tui.text import display_width
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def capacity_text(used: int | None, total: int | None) -> tuple[str, str]:
     return text(used), text(total)
 
 
-def _configured_gpus(snapshot: StateSnapshot, config: AppConfig) -> dict[str, set[str | None]]:
+def _configured_gpus(snapshot: StateSnapshot, config: AppConfig | DisplayMetadata) -> dict[str, set[str | None]]:
     """Keep an unresolved alias as None so a partial match cannot claim a TP size."""
     aliases: dict[str, str | None] = {}
     for obj in snapshot.objects:
@@ -157,14 +158,14 @@ def _gpu_group_headers(gpu_slots: tuple[str, ...], by_model: dict[str, set[str |
     return headers
 
 
-def resolve_gpu_groups(snapshot: StateSnapshot, config: AppConfig, gpu_slots: tuple[str, ...],
+def resolve_gpu_groups(snapshot: StateSnapshot, config: AppConfig | DisplayMetadata, gpu_slots: tuple[str, ...],
                        view: ViewSelection) -> GpuGroups:
     by_model = _configured_gpus(snapshot, config)
     return GpuGroups(_gpu_group_headers(gpu_slots, by_model, snapshot), _selected_gpus(by_model, view))
 
 
 def linked_gpu_ids(
-    snapshot: StateSnapshot, config: AppConfig, view: ViewSelection,
+    snapshot: StateSnapshot, config: AppConfig | DisplayMetadata, view: ViewSelection,
 ) -> tuple[str, ...]:
     """按快照GPU顺序返回显式映射命中的UUID；不采集、不排序、不持久化选择。
 
@@ -181,7 +182,7 @@ def linked_gpu_ids(
 
 def hardware_cells(
     snapshot: StateSnapshot,
-    config: AppConfig,
+    config: AppConfig | DisplayMetadata,
     regions: tuple[Region, ...],
     *,
     gpu_slots: tuple[str, ...],
@@ -320,11 +321,11 @@ def hardware_cells(
                 if divider:
                     put(gpu, header_row - 1, left, "─" * (right - left), "muted")
                 title, badge = headers[index]
-                badge_start = right - len(badge)
+                badge_start = right - _width(badge)
                 title_end = badge_start - 1 if badge else right
                 width = title_end - left
-                if len(title) > width:
-                    title = title[:max(0, width - 1)] + "…"
+                if _width(title) > width:
+                    title = _clip(title, max(0, width - _width("…"))) + "…"
                 put(gpu, header_row, left, title, "text")
                 put(gpu, header_row, badge_start, badge, "secondary")
             obj = objects.get(("gpu", object_id))
@@ -425,8 +426,7 @@ def _generic_metrics(obj: ObjectSnapshot | None) -> str:
 
 
 def _width(value: str) -> int:
-    return sum(0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
-               for char in value)
+    return display_width(value)
 
 
 def _scientific(number: str) -> str:

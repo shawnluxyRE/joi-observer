@@ -12,7 +12,7 @@ from joi_observer.data.state import MonitorState
 from joi_observer.error_log import ErrorKind, ErrorLog
 from joi_observer.monitor import Monitor
 from test_vllm_collector import (
-    FIXTURES, NAMES, OfflineClient, OfflineHttp, StreamResponse, client_factory, inputs, model, value_changed,
+    FIXTURES, NAMES, OfflineHttp, inputs, model, value_changed,
 )
 from test_vllm_integration import RawHttp, configs, settle
 
@@ -85,39 +85,6 @@ def test_bad_engine_cannot_escape_state_validation_or_stop_other_models(tmp_path
     asyncio.run(case())
 
 
-@pytest.mark.parametrize("extra", [
-    b'unknown{detail="bad\\q"} 1\n',
-    b'unknown{detail="unclosed} 1\n',
-    b'unknown 1 2 3\n',
-    b'unknown PRIVATE\n',
-])
-def test_illegal_exposition_is_not_ignored_as_an_unknown_family(extra):
-    data = inputs()
-    data["metrics"] += extra
-    result = parse_scrape(model(), **data)
-    assert result.observation is None
-    assert result.failure.kind is ErrorKind.PARSE
-    assert "PRIVATE" not in repr(result)
-
-
-def test_http_port_rejects_overlapping_get_without_starting_second_request():
-    async def case():
-        stream = StreamResponse(gate=asyncio.Event())
-        client = OfflineClient(stream)
-        port = AsyncHttpClient(client_factory(client, []))
-        first = asyncio.create_task(port.get("http://model.invalid/metrics", timeout=1, max_bytes=10))
-        await asyncio.wait_for(stream.started.wait(), 0.3)
-        with pytest.raises(RuntimeError):
-            await port.get("http://model.invalid/version", timeout=1, max_bytes=10)
-        assert len(client.calls) == 1
-        await port.close()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        assert stream.closed and client.close_calls == 1
-
-    asyncio.run(case())
-
-
 def test_closing_unused_port_does_not_construct_a_client():
     async def case():
         created = []
@@ -149,18 +116,11 @@ def test_collector_close_cancels_pending_read_and_forbids_future_collections():
     asyncio.run(case())
 
 
-def test_transport_os_error_does_not_expose_arbitrary_exception_text():
-    async def case():
-        port = AsyncHttpClient(client_factory(OfflineClient(OSError("PRIVATE")), []))
-        with pytest.raises(OSError) as error:
-            await port.get("http://model.invalid/metrics", timeout=1, max_bytes=10)
-        assert "PRIVATE" not in str(error.value)
-        await port.close()
-
-    asyncio.run(case())
-
-
 @pytest.mark.parametrize("profile,extra", [
+    ("chat", b'unknown{detail="bad\\q"} 1\n'),
+    ("chat", b'unknown{detail="unclosed} 1\n'),
+    ("chat", b'unknown 1 2 3\n'),
+    ("chat", b'unknown PRIVATE\n'),
     ("chat", b'vllm:num_requests_running{engine="0",model_name="unrelated"} PRIVATE\n'),
     ("chat", b'vllm:request_queue_time_seconds_bucket{engine="0",'
              b'model_name="qwen3.8-flash-next",le="0.123456"} PRIVATE\n'),
@@ -229,3 +189,40 @@ def test_complete_recorded_response_accepts_real_profile_metadata(profile):
     result = parse_scrape(model(profile), **{**data, "metrics": full})
     assert result.failure is None
     assert result.observation == excerpt.observation
+
+
+@pytest.mark.parametrize("truthy", [True, False], ids=["truthy", "falsey"])
+def test_explicit_vllm_builder_factory_is_used_regardless_of_its_truth_value(monkeypatch, truthy):
+    """The public builder must honor every explicitly supplied IO Callable."""
+    from joi_observer.config import AppConfig
+    from joi_observer.collectors.vllm import build_vllm_collectors
+
+    async def scenario():
+        cfg = model()
+        provided, defaults = [], []
+
+        def make_port(target):
+            port = RawHttp(cfg)
+            target.append(port)
+            return port
+
+        class ProvidedFactory:
+            def __bool__(self):
+                return truthy
+
+            def __call__(self):
+                return make_port(provided)
+
+        monkeypatch.setattr("joi_observer.collectors.vllm.AsyncHttpClient", lambda: make_port(defaults))
+        collectors = build_vllm_collectors(AppConfig(mount_points=(), models=(cfg,)),
+                                           http_factory=ProvidedFactory())
+        try:
+            result = await collectors[0].collect()
+            assert result.failure is None and result.observation.engines[0].running == 0
+            assert len(provided) == 1 and defaults == [], "the supplied falsey factory must not create a default HTTP client"
+            assert provided[0].calls == [cfg.base_url + path for path in ("/version", "/v1/models", "/metrics")]
+        finally:
+            await asyncio.gather(*(collector.close() for collector in collectors))
+        assert all(port.closed for port in provided + defaults)
+
+    asyncio.run(scenario())

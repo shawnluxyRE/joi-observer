@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import math
 
 from joi_observer.config import ModelConfig, ModelType
+from joi_observer.ipc.protocol import ModelDisplay
 from joi_observer.data.models import HistoryPoint, StateSnapshot
 
 
@@ -138,7 +139,7 @@ class HistoryScaleTracker:
     依赖和空会话，不访问终端、采集器、时钟、文件或外部服务。
     """
 
-    def __init__(self, models: tuple[ModelConfig, ...]) -> None:
+    def __init__(self, models: tuple[ModelConfig, ...] | tuple[ModelDisplay, ...]) -> None:
         self._models = models
         self._scales: dict[tuple[str, str], HistoryScale] = {}
         self._lower_since: dict[tuple[str, str], float] = {}

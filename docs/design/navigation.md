@@ -1,14 +1,18 @@
 # 模型导航与服务入口设计
 
 - 关联需求：dev-0 / REQ-005、REQ-006，`requirements.md` v1.20，AC-501～504；依赖 REQ-001、REQ-002、REQ-004。
-- 修订：v1.10，2026-11-05；保留选择、按键及服务页脚契约，呈现坐标、GPU匹配、配色与帧调度改为引用各自模块，行为和接口不变。
+- 关联需求补充：dev-1 / REQ-001，AC-105/106/107/108/114。
+- 修订：v2.2，2026-11-16；在图前集中说明导航类、对象别名及纯函数角色。
+- 整体设计：[组件边界与依赖](architecture.md)。
 - 代码：`src/joi_observer/tui/navigation.py`、`tui/services.py`；复用 `tui/app.py`、`tui/layout.py`、`tui/vllm.py`、`tui/widgets.py`。
 - 关联模块：[应用外壳](application-shell.md)、[硬件](hardware.md)、[vLLM](vllm.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)。
-- 当前阶段：REQ-005已实现并合并，REQ-006默认主题、HTML布局和会话接线已实现；当前60FPS修订的执行与验证见REQ-006 R4交接。REQ-006 R2的30FPS基线及REQ-005的[R2交接](../dev-workflow/dev-0/REQ-005/handoff-r2.md)保留原设计时点，不替代当前验证。
+- 当前阶段：REQ-005 已实现并合并，REQ-006 默认主题、HTML 布局和会话接线是既有基线。REQ-005 R2 交接历史路径为 `docs/dev-workflow/dev-0/REQ-005/handoff-r2.md`，REQ-006 阶段交接同属 dev-0；当前工作区未包含这些历史文件，不作为本轮验证证据。
 
 ## 职责与已有基础
 
-导航只维护当前应用实例的模型选择和主题标识，不参与采集、历史计算、健康判断或 GPU 发现。数据流继续为 `Collector → Monitor → MonitorState → TUI`；所有模型无论是否可见或选中均由同一个 Monitor 持续采集。控制器不接收 Monitor、State、SnapshotReader、终端或 HTTP 端口。
+导航只维护当前 TUI 应用实例的模型选择和主题标识，不参与采集、历史计算、健康判断或 GPU 发现。数据流为 `Collector → Monitor → MonitorState → 本机只读 IPC → TUI 缓存 → 视图`；所有模型无论是否可见或选中均由常驻服务内同一个 Monitor 持续采集。控制器不接收 Monitor、State、SnapshotReader、终端或传输端口。
+
+dev-1 的元数据输入迁移为 R2 目标，现有会话控制逻辑保留供 R4 复用；以下 dev-0 已实现说明及历史验收不代表 IPC 已接通。
 
 当前基线是已合并 REQ-005 的 `0a42646`。以下能力已经存在，REQ-006 复用其公开行为：
 
@@ -22,76 +26,79 @@
 
 当前 `ObserverApp` 已在未注入 actions 时创建 SessionViewActions；方向键、默认接线、服务样式和页脚均已完成。REQ-006 同步默认主题、整帧配色、稳定历史和HTML对应的窄模型栏/双统计/四指标布局；这些显示变化不修改 MonitorState。
 
-## 核心接口与协作
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `ViewActions` | 会话操作协议，为应用提供当前选择的只读查询和已归一化按键处理入口。 |
+| `SessionViewActions`（对象别名 `Actions`） | 本地导航控制器类，仅维护当前会话的模型选择和主题标识。 |
+| `ModelDisplay` | 模型展示元数据值对象，提供稳定 id、显示名称及 GPU 关联字段。 |
+| `ViewSelection` | 不可变选择值对象，将同一次读取的模型 id 与主题一起传给各视图。 |
+| `ObserverApp`（对象别名 `App`） | TUI 应用类，负责分派按键并在同一帧中传递一致的选择值。 |
+| `TerminalPort`（对象别名 `Terminal`） | 终端操作协议，为应用提供异步读键和整帧绘制边界。 |
+| `compose_frame`（函数角色别名 `Layout`） | 现有布局纯函数，使用快照、展示元数据及选择值生成完整 Frame。 |
+
+## 简化类图
 
 ```mermaid
 classDiagram
-    class ModelConfig {
-        +id str
-        +gpu_ids tuple
-    }
-    class ViewSelection {
-        +model_id str_or_None
-        +theme str
-    }
     class ViewActions {
         <<interface>>
         +selection() ViewSelection
-        +on_key(key) None
+        +on_key(key)
     }
     class SessionViewActions {
-        +__init__(models)
         +selection() ViewSelection
-        +on_key(key) None
+        +on_key(key)
     }
-    class SnapshotReader {
-        <<interface>>
-        +snapshot() StateSnapshot
+    class ModelDisplay {
+        +id str
+        +name str
+        +gpu_ids tuple
     }
-    class TerminalPort {
-        <<interface>>
-        +size() TerminalSize
-        +read_key(timeout) str_or_None
-        +render(frame) None
+    class ViewSelection {
+        +model_id str
+        +theme str
     }
     class ObserverApp {
-        +run() None
-    }
-    class ServicePresentation {
-        +service_id str
-        +title str
-        +navigation_label str
-    }
-    class Layout["tui.layout"] {
-        <<module>>
-        +compose_frame(snapshot, config, size, host, now) Frame
-    }
-    class Services["tui.services"] {
-        <<module>>
-        +VLLM_SERVICE ServicePresentation
-        +footer_text(service) str
+        +run()
     }
     SessionViewActions ..|> ViewActions
-    SessionViewActions ..> ModelConfig
+    SessionViewActions --> ModelDisplay
     SessionViewActions --> ViewSelection
-    ObserverApp o-- ViewActions
-    ObserverApp --> SnapshotReader
-    ObserverApp --> TerminalPort
-    ObserverApp ..> ViewSelection
-    ObserverApp ..> Layout
-    Layout ..> ViewSelection
-    Layout ..> ServicePresentation
-    Layout ..> Services
-    Services --> ServicePresentation
+    ObserverApp --> ViewActions
 ```
 
-图中 `module` 框表示实际 Python 模块，不代表新增类。服务描述及页脚组合规则见[服务入口与键位呈现](#服务入口与键位呈现)；主题状态由 `ViewSelection.theme` 承载，配色定义见[主题设计](theme.md)。
+## 关键交互时序图
 
-`SessionViewActions(models: tuple[ModelConfig, ...])` 结构化满足既有协议，不继承应用类。输入是配置解析后顺序固定、id 唯一的模型元组；复用配置校验，不在此层重新校验 URL、探测端点或增加新的配置字段。同名、同类型、同地址但 id 不同的项仍可分别选择。
+```mermaid
+sequenceDiagram
+    participant Terminal as TerminalPort
+    participant App as ObserverApp
+    participant Actions as SessionViewActions
+    participant Layout as compose_frame
+    App->>Terminal: read_key(timeout)
+    Terminal-->>App: down 或 t
+    App->>Actions: on_key(key)
+    Actions->>Actions: 按配置 id 更新本会话不可变选择
+    Note over App,Actions: q 与 interrupt 由 App 处理，不进入导航逻辑
+    App->>Actions: selection()
+    Actions-->>App: 同一 ViewSelection
+    App->>Layout: compose_frame(snapshot, metadata, view)
+    Note over Layout: 模型详情与 GPU 关联消费同一 view
+    Layout-->>App: Frame
+    App->>Terminal: render(frame)
+```
+
+服务描述及页脚组合规则见[服务入口与键位呈现](#服务入口与键位呈现)；主题状态由 `ViewSelection.theme` 承载，配色定义见[主题设计](theme.md)。
+
+`SessionViewActions` 接受顺序固定、id 唯一的展示模型元组，生产输入为 `DisplayMetadata.models: tuple[ModelDisplay, ...]`；已有 ModelConfig 测试值可经明确的接口迁移继续复用。控制器只依赖 id、type、name、gpu_ids 等展示字段，不接收 URL 或采集配置。同名、同类型但 id 不同的项仍可分别选择；协议负责接收边界校验，导航不探测端点。
 
 `selection() -> ViewSelection` 只读，`on_key(key: str) -> None` 仅更新会话。实现持有私有配置序号、模型序列和冻结选择值，不公开游标、滚动偏移或可变容器。没有修改配置集合、选择服务、持久化偏好和按健康自动选项的接口。
 
 ## 选择与键盘契约
+
+本节的键位与选择范围适用于 TUI。浏览器以每个文档为会话边界，鼠标或键盘只选择当前可见前缀内的模型，缩放后的选择与焦点规则见 [Neon Grid 页面](web-dashboard.md)。
 
 非空配置初始选择第一项，空配置返回 `model_id=None`；新实例的主题取[主题模块的单一默认元数据](theme.md)。非空配置的控制器始终输出合法 id，不向视图输出未知 id。连续读取的值相等，后续操作不能改变已返回的冻结值；不同控制器实例互不影响。
 
@@ -101,22 +108,22 @@ classDiagram
 | `t` | 在[主题模块](theme.md)定义的两个主题之间切换，保留模型 | 全局有效，空列表、小窗口、失败时也可操作 |
 | `left` / `right` | 无动作 | 不离开 vLLM，不改变模型或硬件，不发起新来源 |
 | `enter` / `p` / `tab` / 其他键 | 无动作 | 不开详情、不暂停、不转移面板焦点 |
-| `q` | 控制器直接收到时无动作 | 应用全局正常退出，沿用运行期清理 |
+| `q` | 控制器直接收到时无动作 | 退出本 TUI 会话并关闭连接，不停止常驻采集 |
 | `interrupt` | 控制器直接收到时无动作 | 应用沿用中断和终端恢复路径 |
 
 控制器只识别表中的小写规范键名，不自行解码原始转义序列，也不将 `T`、`Down` 等作为别名。终端已有 CSI、SS3 和 terminfo 方向键支持；残缺输入的有界处理与取消预算不变。
 
-零模型时所有方向键安全、主题可切换；单模型时上下始终停留。选中项首次未采集、STALE、恢复或暂时不在快照中时保持 id；这些状态只影响已有视图的指标和状态槽。模型列表来自配置，不从成功采样对象反推列表。不热加载配置，不增加运行时删除模型的迁移规则。
+零模型时所有方向键安全、主题可切换；单模型时上下始终停留。选中项首次未采集、STALE、恢复或暂时不在快照中时保持 id；这些状态只影响已有视图的指标和状态槽。模型列表来自当前连接的完整展示元数据，不从成功采样对象反推。不热加载配置，不增加运行时删除模型的迁移规则；服务重启使旧会话退出，用户新建会话后按新元数据重新初始化。
 
 控制器只管理主题标识；终端配色、能力降级和颜色验收归[主题模块](theme.md)，不能仅由标识切换推定终端外观已验证。
 
 ## 默认接线与刷新
 
-当前 `ObserverApp.__init__` 中以 `actions is None` 判断默认路径，创建一个 `SessionViewActions(config.models)`；显式注入的 actions 原样保留，包括真假值为 false 的对象。控制器在构造时只做内存初始化，不读快照、不进入终端。选择放在应用内，是为了让正式 CLI 和直接实例化应用获得相同默认行为，避免仅在某个入口接线。
+`ObserverApp.__init__` 继续以 `actions is None` 判断默认路径，从同一连接已确认的 `metadata.models` 创建一个 SessionViewActions；显式注入的 actions 原样保留，包括真假值为 false 的对象。控制器在构造时只做内存初始化，不读快照、不进入终端。选择放在应用内，正式 CLI 和直接实例化应用遵循相同默认行为。
 
 运行期读取选择和分派按键同样不能通过 `if actions` 跳过 falsey 实例；构造完成后默认或注入的控制器均应正常参与。对应 truthy/falsey 两种注入均有黑盒断言。
 
-`ApplicationRuntime` 继续原样创建 ObserverApp，自动使用其默认控制器；不再额外创建第二份选择状态。注入完整 RuntimeComponents 时仍不创建额外来源或替换已注入的应用。单个应用实例重复顺序运行保留该实例选择；只有新建实例才重置，重复并发运行仍按既有契约拒绝。
+TUI 运行期收到第一帧后创建 ObserverApp，使用其默认控制器，不在 IPC 客户端或服务端创建第二份选择状态。多个 TUI 会话各有独立控制器；某个会话的主题、选择、尺寸不发送到服务端。单个应用实例重复顺序运行保留其选择；只有新建实例才重置，重复并发运行仍按既有契约拒绝。传输已失败的会话不能靠再次 run 恢复，必须重新执行用户命令建立新客户端。
 
 每次绘制读取一次 `selection()`，将同一值传给整帧的模型详情和 GPU 高亮。按键本身不增加采样或额外普通帧；首次绘制、帧截止点、输入公平性及resize重绘时机统一见[应用外壳](application-shell.md#帧截止点与终端写入)。
 
@@ -127,6 +134,8 @@ classDiagram
 控制器仅提供当前模型id，纯视图负责按选择计算可见窗口，控制器不保存第二份滚动状态。模型行位、容量公式、状态槽和可见窗口边界统一见[vLLM固定槽位](vllm.md#vllm-layout)。
 
 右侧详情、单位、历史取 `ObjectKey("vllm", model.id)`。Chat 的 DECODE/PREFILL、TTFT、KV Cache 和 pooling 的 RATE/Avg latency 继续使用 [vLLM 契约](vllm.md)，不复制计算逻辑。切走再切回不清空历史，不把旧样本当新样本，不替换选中故障模型。
+
+列表显示元数据的 `name`，详情标题显示已在服务端完成缺省回退的 `served_model_name`。名称差异或重复不改变选择键；长名称继续按各自槽宽裁切。详情不能用最近成功样本的 model_name 覆盖元数据名称。
 
 GPU关联读取同一选择对应的 `gpu_ids`；UUID/index匹配、过期和未知映射、服务失败下的关联语义统一见[硬件模型关联](hardware.md#硬件显示与模型关联)。导航不复制映射算法。
 
@@ -162,9 +171,11 @@ REQ-005 已完成元数据、footer_text 及 compose_frame 接线。测试可替
 
 导航贯穿视图的测试以[vLLM呈现契约](vllm.md#vllm-view)为准，排除外边框后分别核对标签、数值及位置，不在导航文档维护第二套格式期待。
 
+dev-1 新增 `tests/test_client_session.py` 验证两个客户端独立主题及关闭，`tests/test_display_metadata_view.py` 验证元数据中的同名不同 id、列表/详情名称和真实 Frame。已有 AppConfig 输入用例继续保留兼容；纯导航模型字段迁移不能删掉顺序、身份或隐藏项覆盖。
+
 在本地 Ubuntu/WSL 运行 `python -m pytest -q tests/test_navigation.py tests/test_navigation_app.py tests/test_navigation_pty.py tests/test_service_footer.py --tb=short`，并在实现后运行既有全量回归。断言期待真实业务行为，不以 skip/xfail 隐藏业务未实现，也不把 NotImplementedError 当通过；PTY 仅沿用非 POSIX 环境保护，本地 Ubuntu 必须实际执行。REQ-005 的骨架和 falsey 注入问题已解决；REQ-006 默认主题及终端接线尚未完成的失败独立记录，导入错误、环境问题或其他业务回归不得归为预期业务失败。
 
-R4 完成实现后应重跑全部用例，并从实际离线安装包验证 CLI 的箭头导航、正常/过小/恢复尺寸、q 和终端恢复。R2 的内存帧与本地 PTY 不能替代已安装包或完整双主题视觉验收；这些边界不要求服务器联调。
+R4 完成迁移后应在本地 Ubuntu/WSL 重跑全部适用用例，验证真实 CLI 的箭头导航、正常/过小/恢复尺寸、q 和终端恢复，并补充多客户端选择隔离及只关闭本会话的断言。使用当前源码及离线外部端口；不生成或重建离线安装包，不使用旧 GUI/回放作为本轮证据，不连接服务器。纯帧测试不能替代真实终端与双主题视觉验证。
 
 ## 设计决定
 
@@ -176,3 +187,9 @@ R4 完成实现后应重跑全部用例，并从实际离线安装包验证 CLI 
 - 默认主题的测试期待跟随[主题模块](theme.md)的单一默认元数据，显式注入主题不变。历史阶段结果保留原时点事实。
 
 `test_navigation_app.py`的突发输入按[应用外壳帧调度](application-shell.md#帧截止点与终端写入)校验，历史呈现沿用[vLLM历史契约](vllm.md#vllm-history)；应用尺度生命周期由`test_history_app.py`覆盖。输入、采样隔离与显式ViewActions注入继续保留，历史执行记录不改写为当前验证结果。
+
+## 修订说明
+
+v2.2：2026-11-16，按更新后的 R2 模板集中介绍两图中的类与对象，并明确终端协议和布局函数角色，保留导航行为与测试契约。
+
+v2.1：2026-11-16，按更新后的 R2 模板补充整体设计引用、核心类图和关键交互时序，保留业务与测试契约。

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from joi_observer.cli import ApplicationRuntime
+from joi_observer.runtime import CollectorRuntime
 from joi_observer.collectors.vllm import HttpResponse, VllmCollector
 from joi_observer.config import AppConfig, LogConfig, ModelConfig, ModelType
 from joi_observer.data.models import Metric, ObjectKey, ObjectSpec
@@ -161,7 +161,7 @@ def test_runtime_assembles_all_model_ports_without_network_during_prepare(tmp_pa
         async def close(self):
             pass
 
-    monkeypatch.setattr("joi_observer.cli.build_hardware_sources",
+    monkeypatch.setattr("joi_observer.runtime.build_hardware_sources",
                         lambda cfg: SimpleNamespace(collectors=(), discovery=IdleDiscovery()))
     cfgs = configs()
     created = []
@@ -172,7 +172,7 @@ def test_runtime_assembles_all_model_ports_without_network_during_prepare(tmp_pa
         return port
 
     async def scenario():
-        runtime = ApplicationRuntime(AppConfig(models=cfgs, mount_points=(),
+        runtime = CollectorRuntime(AppConfig(models=cfgs, mount_points=(),
                                       logging=LogConfig(directory=tmp_path / "logs")),
                                       vllm_http_factory=factory)
         try:

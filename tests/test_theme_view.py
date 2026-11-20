@@ -15,7 +15,6 @@ import pytest
 from joi_observer.config import AppConfig, ContainerConfig, ModelConfig, ModelType
 from joi_observer.data.models import HistoryPoint, Metric, ObjectKey, ObjectSnapshot, StateSnapshot
 from joi_observer.tui.layout import HostInfo, TerminalSize, ViewSelection, compose_frame
-from joi_observer.tui.navigation import SessionViewActions
 
 
 NOW = datetime(2026, 11, 4, 11, 0, tzinfo=timezone.utc)
@@ -123,19 +122,6 @@ def row_text(cells, row):
             pixels[column] = char
             column += width(char)
     return "".join(pixels.get(column, " ") for column in range(max(pixels, default=-1) + 1))
-
-
-@pytest.mark.parametrize("count", (0, 3))
-def test_new_session_starts_hologram_and_two_toggles_restore_it(count):
-    config = configured()
-    actions = SessionViewActions(config.models[:count])
-    expected_id = config.models[0].id if count else None
-    assert actions.selection() == ViewSelection(expected_id, "hologram")
-    actions.on_key("t")
-    assert actions.selection() == ViewSelection(expected_id, "moonlight")
-    actions.on_key("t")
-    assert actions.selection() == ViewSelection(expected_id, "hologram")
-    assert SessionViewActions(config.models[:count]).selection() == ViewSelection(expected_id, "hologram")
 
 
 def test_default_view_and_implicit_first_frame_use_hologram():
@@ -288,8 +274,8 @@ def test_resize_keeps_half_page_storage_three_rows_and_docker_visible_prefix(the
         paths = [cell for cell in cells_in(frame, "storage") if cell.text in ("/", "/data", "/cache")
                  or cell.text.startswith(("/ ", "/data ", "/cache "))]
         assert [cell.row for cell in paths] == list(range(header_height + 8, header_height + 11))
-        assert [cell.text for cell in cells_in(frame, "docker") if cell.text.startswith("Container-")] == [
-            f"Container-{index}" for index in range(visible)]
+        assert [cell.text for cell in cells_in(frame, "docker") if cell.text in {item.id for item in config.containers}] == [
+            item.id for item in config.containers[:visible]]
         assert area["docker"].row + area["docker"].height == area["service"].row
         assert all(token not in " ".join(cell.text for cell in frame.cells).lower()
                    for token in ("enlarge", "hidden", "more", "overflow", "…", "..."))

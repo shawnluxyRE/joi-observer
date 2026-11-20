@@ -7,7 +7,7 @@ import unicodedata
 
 import pytest
 
-from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from runtime_harness import ApplicationRuntime, RuntimeComponents
 from joi_observer.config import AppConfig, ContainerConfig, load_config
 from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSnapshot, ObjectSpec, StateSnapshot
 from joi_observer.data.state import MonitorState
@@ -134,14 +134,16 @@ class Log:
         pass
 
     async def close(self, *, timeout=1.0):
-        assert self.terminal.restored
+        # The host service owns logs and can stop before its client observes
+        # failure. Terminal restoration precedes client diagnostics, rather
+        # than imposing cross-process ordering on service log cleanup.
         self.timeout = timeout
         await asyncio.sleep(self.close_delay)
         self.closed = True
         return True
 
 
-def test_monitor_internal_error_restores_ui_then_closes_log():
+def test_service_internal_error_closes_owned_resources_and_client_restores():
     class InvalidSource:
         spec = ObjectSpec(ObjectKey("host", "local"), (Metric("CPU", None),))
 
@@ -227,7 +229,7 @@ def test_production_unknown_slots_accept_long_mount_and_display_names(
         f"logging: {{directory: '{tmp_path.as_posix()}'}}\n", encoding="utf-8")
     config = load_config(path)
     terminal = QuittingTerminal()
-    monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+    monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
     runtime = ApplicationRuntime(config, docker_command_factory=pending_docker_command_factory,
                                  vllm_http_factory=pending_vllm_http_factory)
     assert runtime.prepare_log()

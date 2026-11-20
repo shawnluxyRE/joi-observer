@@ -1,88 +1,101 @@
 # 本机硬件模块设计
 
 - 关联需求：dev-0 / REQ-002、REQ-006，AC-201～AC-207；共享 AC-101～AC-103、AC-108、AC-110、AC-112、AC-606～AC-608及HTML布局修订。
-- 修订：v1.11，2026-11-05；本页集中维护采集口径、面板内部坐标、数字精度与GPU匹配；分段条字形及终端配色统一引用[主题设计](theme.md#hardware-bars)，不改变行为。
-- 当前阶段：硬件采集与公共结果类型已实现并合并；REQ-006的行列、紧凑容量、右对齐和用户精度修订已由R4实现。2026-11-04按R5建议同步阶段措辞，不改变接口或显示契约；当前验证见[REQ-006 R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)与[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)，旧布局测试结果仍仅作为历史证据。
-- 代码：`collectors/hardware.py`、`collectors/base.py`、`monitor.py`、`tui/widgets.py`；组合接线在 `cli.py`、`tui/layout.py`。
+- 关联需求补充：dev-1 / REQ-001，AC-101～106/111，复用硬件采集与呈现规则。
+- 修订：v2.1，2026-11-16；在图前集中说明硬件类、对象职责与时序别名。
+- 当前阶段：硬件采集、公共结果、行列、紧凑容量、右对齐和精度均为既有基线；dev-1 的服务/客户端接线仍待 R4。旧交接路径为 `docs/dev-workflow/dev-0/REQ-006/handoff-r4.md`、`handoff-r5.md`，当前工作区未包含，不作为本轮验证证据。
+- 整体设计：[组件边界与依赖](architecture.md)。
+- 代码：`collectors/hardware.py`、`collectors/base.py`、`monitor.py`、`tui/widgets.py`；生产采集装配迁入 `runtime.py`，客户端呈现继续使用 `tui/layout.py`。
 - 关联设计：[Monitor/State](monitor-state.md)、[配置](configuration.md)、[应用外壳](application-shell.md)、[错误日志](error-logging.md)。
 
 ## 职责和范围
 
-运行在被监控 Ubuntu 主机上，只读采集 NVIDIA GPU、整机 CPU/RAM 和配置前三个挂载点。采用已有 `Collector → Monitor → MonitorState → TUI`；不增加数据库、采样日志、网络流量、磁盘 IO、逐进程指标或服务控制。
+仅由 Ubuntu 宿主机采集服务使用，只读采集 NVIDIA GPU、整机 CPU/RAM 和配置前三个挂载点。采集结果由 Monitor 提交权威状态，再经只读 IPC 传给 TUI/Web；不增加数据库、采样日志、网络流量指标、磁盘 IO 指标、逐进程指标或服务控制。
 
 REQ-002 负责硬件数据与按当前 `ViewSelection` 计算的 GPU 关联高亮。方向键修改选择由 [REQ-005 导航控制器](navigation.md) 完成，完整主题颜色映射由 REQ-006 完成；本模块提供对应语义颜色角色。Docker 与 vLLM 采集已分别随 REQ-003/004 合并。
 
 保留已合并的配置、状态、调度、日志和半页布局。当前公共 CollectionResult 仅含 key/failure，硬件各 collect 返回携带 metrics 的 MetricCollectionResult；导航不改变结果类型或原业务算法。
 
-## 核心结构
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `HardwareIO` / `IO` | `IO` 是 `HardwareIO` 协议端口的对象别名，负责有界读取本机文件、挂载统计和硬件命令结果。 |
+| `LocalHardwareIO` | `LocalHardwareIO` 是硬件读端口的本机实现，负责隔离和回收文件、挂载统计及命令操作使用的外部资源。 |
+| `Collector` | `Collector` 是单对象采集协议，约定采集结果与资源关闭接口。 |
+| `CpuCollector` | `CpuCollector` 读取整机 CPU 计数并输出采样间隔内的利用率指标。 |
+| `MemoryCollector` | `MemoryCollector` 读取整机内存信息并输出 RAM 容量与使用率指标。 |
+| `StorageCollector` | `StorageCollector` 按配置挂载点身份输出容量、使用率或采集失败结果。 |
+| `GpuCollector` / `GPU` | `GPU` 是 `GpuCollector` 的对象别名，负责按完整 UUID 采集并核对单张 GPU 的指标。 |
+| `GpuDiscovery` / `Discovery` | `Discovery` 是 `GpuDiscovery` 的对象别名，负责发现本机 GPU 身份并为 Monitor 声明设备及构造相应采集器。 |
+| `Monitor` | `Monitor` 独立调度发现和采集任务，将结果统一提交状态并管理来源资源的关闭。 |
+| `MonitorState` / `State` | `State` 是 `MonitorState` 的对象别名，负责保存权威最新指标、采集状态和有界历史并提供不可变快照。 |
+
+## 简化类图
 
 ```mermaid
 classDiagram
-    direction TB
     class HardwareIO {
         <<interface>>
         +read_text(path) str
         +statvfs(path) FileSystemStat
         +run(argv) CommandOutput
-        +close() None
+        +close()
     }
+    class LocalHardwareIO
     class Collector {
         <<interface>>
-        +spec ObjectSpec
         +collect() CollectionResult
-        +close() None
+        +close()
     }
-    class Discovery {
-        <<interface>>
-        +spec ObjectSpec
+    class CpuCollector
+    class MemoryCollector
+    class StorageCollector
+    class GpuCollector
+    class GpuDiscovery {
         +discover() DiscoveryResult
         +create_collector(spec) Collector
     }
-    class GpuDiscovery
-    class GpuCollector {
-        +collect() MetricCollectionResult
-    }
-    class CpuCollector {
-        +collect() MetricCollectionResult
-    }
-    class MemoryCollector {
-        +collect() MetricCollectionResult
-    }
-    class StorageCollector {
-        +collect() MetricCollectionResult
-    }
-    class CollectionResult {
-        +key ObjectKey
-        +failure Failure[0..1]
-    }
-    class MetricCollectionResult {
-        +metrics tuple
-    }
-    class Monitor {
-        +register_discovery(discovery) None
-        +poll() None
-        +stop() None
-    }
-    class MonitorState {
-        +register(spec) None
-        +accept(result, sampled_at) None
-        +snapshot() StateSnapshot
-    }
-    GpuDiscovery ..|> Discovery
-    GpuCollector ..|> Collector
+    LocalHardwareIO ..|> HardwareIO
     CpuCollector ..|> Collector
     MemoryCollector ..|> Collector
     StorageCollector ..|> Collector
-    CollectionResult <|-- MetricCollectionResult
-    Collector ..> CollectionResult
-    GpuDiscovery --> HardwareIO
-    GpuCollector --> HardwareIO
+    GpuCollector ..|> Collector
     CpuCollector --> HardwareIO
     MemoryCollector --> HardwareIO
     StorageCollector --> HardwareIO
-    Monitor --> Discovery
-    Monitor --> Collector
-    Monitor --> MonitorState
+    GpuCollector --> HardwareIO
+    GpuDiscovery --> HardwareIO
+    GpuDiscovery ..> GpuCollector
+```
+
+## 关键交互时序图
+
+```mermaid
+sequenceDiagram
+    participant Monitor
+    participant Discovery as GpuDiscovery
+    participant IO as HardwareIO
+    participant State as MonitorState
+    participant GPU as GpuCollector
+    Monitor->>Discovery: discover()
+    Discovery->>IO: run(index, uuid 查询)
+    IO-->>Discovery: 原始枚举结果
+    Discovery-->>Monitor: inventory 与有序 specs
+    opt 完整声明校验通过且存在新 UUID
+        Monitor->>Discovery: create_collector(spec)
+        Discovery-->>Monitor: 无 I/O 构造的子采集器
+        Monitor->>State: register(spec)
+    end
+    Monitor->>State: accept(inventory, sampled_at)
+    opt 本轮创建了新 GPU
+        Monitor->>GPU: collect()
+        GPU->>IO: run(按 UUID 查询)
+        IO-->>GPU: 原始指标
+        GPU-->>Monitor: MetricCollectionResult
+        Monitor->>State: accept(result, sampled_at)
+    end
+    Note over Monitor,State: 发现失败只更新 inventory；已知 GPU 不删除，仍按各自周期独立采集
 ```
 
 发现器报告不可变声明，只有 Monitor 注册对象、创建新来源并提交状态。发现器和每个来源独占一个 IO 端口；关闭一张卡不会关闭其他卡。TUI 只有不可变快照，不持有上述接口。
@@ -148,7 +161,7 @@ nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,
 
 只为新UUID调用一次同步、无IO的 `create_collector`。新卡注册后立即发起首采，之后保留自己的周期原点；重复发现不重置历史、状态、采样相位或重新构造来源。已知卡不在最新清单中也不删除，独立UUID查询会标记故障并允许自动恢复。inventory失败只显示面板状态，不批量覆盖每张卡的结果。
 
-stop须取消发现任务及所有静态/动态来源，关闭每个已创建资源；迟到发现不得创建来源、注册或提交。Monitor现有关闭逻辑只枚举初始来源，R4必须改为覆盖动态来源，整体退出预算仍为1秒，不串行叠加每个对象的预算。
+服务 stop 须沿用既有 Monitor 的动态资源登记与清理，取消发现任务及所有静态/动态来源，关闭每个已创建资源；迟到发现不得创建来源、注册或提交。整体退出预算仍为 1 秒，不串行叠加每个对象的预算。TUI 退出只关闭本客户端，不调用这条采集清理路径。
 
 ## 失败与日志
 
@@ -167,9 +180,9 @@ stop须取消发现任务及所有静态/动态来源，关闭每个已创建资
 
 `HardwareIO` 只返回原始文本、statvfs计数、命令输出；测试替换此边界，不替换被测数值计算。`LocalHardwareIO` 将潜在阻塞的文件/statvfs调用放入可终止本地worker，nvidia-smi使用异步子进程。输出每路≤1 MiB，固定操作白名单、无shell，timeout取配置；取消和close须250ms内终止/回收自己创建的子进程。不能以无限阻塞线程宣称满足取消，也不执行任何网络请求。
 
-不新增运行依赖或更改uv锁文件；R4若发现本地worker成本不适合0.1秒最小采样，可在维持隔离/取消契约的前提下使用有界常驻worker，仍不能让慢挂载阻塞其他来源。上述IO与资源回收要求属于已合并REQ-002契约；本轮REQ-006复用采集实现，只修订呈现目标。其原设计/验收证据见REQ-002交接。
+不新增运行依赖或更改uv锁文件；生产采样下限现为 1 秒。R4 若发现本地 worker 成本较高，可在维持隔离/取消契约的前提下使用有界常驻 worker，仍不能让慢挂载阻塞其他来源。上述 IO 与资源回收要求沿用原契约，离线短周期测试继续保留。
 
-`build_hardware_sources(config)` 无IO地组装CPU、RAM、前三挂载及发现器。`ApplicationRuntime._components` 已移除host/local占位、把静态spec加入同一State，交静态来源给Monitor后注册发现器。导入、`--help`、缺配置、构造阶段不能执行硬件查询。vLLM模型来源已随REQ-004接入同一State/Monitor，RuntimeComponents注入通道保留。
+`build_hardware_sources(config)` 无 I/O 地组装 CPU、RAM、前三挂载及发现器。R4 将旧 `ApplicationRuntime._components` 的采集装配迁入 `CollectorRuntime`，把静态 spec 加入同一 State、静态来源交给 Monitor 后注册发现器；复用动态资源登记与清理。导入、`--help`、缺配置、构造阶段不能执行硬件查询。硬件、Docker 和 vLLM 共用服务内唯一 State/Monitor；旧 RuntimeComponents 测试迁移到新运行期时保留业务断言。
 
 ## 硬件显示与模型关联
 
@@ -223,11 +236,11 @@ Storage采用序号key。缺少序号对象时兼容读取旧路径key，序号�
 | Monitor.register_discovery/poll/stop | `tests/test_hardware_monitor.py` | 动态来源、发现原子性、独立周期/故障、真实State及ErrorLog、关闭 |
 | percentage_bar/capacity_text/linked_gpu_ids/hardware_cells/compose_frame | `tests/test_hardware_view.py` | AC-201～207；值与颜色、固定布局、无映射清空、长路径、只读展示 |
 | 新行列与右对齐 | `tests/test_html_hardware_layout.py`、`tests/test_hardware_view_edges.py` | 3:2区域、GPU三行分组、Host四内容行、共享容量、右边缘/状态槽/Unicode无覆盖；只读快照与纯控件真实运行 |
-| ApplicationRuntime.prepare_log/run/close | `tests/test_hardware_runtime.py` | 生产组合根到Frame，原始IO/终端替身，五卡最小尺寸、前三挂载、q退出与资源回收 |
+| 旧 ApplicationRuntime.prepare_log/run/close 的迁移覆盖 | `tests/test_hardware_runtime.py`、`tests/test_snapshot_pipeline.py` | 保留原始 IO 到 Frame、五卡最小尺寸和前三挂载断言；客户端 q 后采集继续，显式服务 stop 后回收采集资源 |
 | 实际curses字符位置 | `tests/test_hardware_pty.py` | 本地PTY真实屏幕的区域与显存/温度/功率列；先完成退出和资源回收，再报告新布局断言差异 |
 | 既有Monitor/State/日志/CLI/配置/终端 | 原有全部tests | REQ-001回归、超时/键位响应、错误限频、Storage3行与半页布局 |
 
-测试断言正确业务行为，不以NotImplementedError为成功、不使用xfail掩盖未实现。REQ-002当时结果见[历史R2交接](../dev-workflow/dev-0/REQ-002/handoff-r2.md)；REQ-006的[R2交接](../dev-workflow/dev-0/REQ-006/handoff-r2.md)保留HTML呈现未实现时的基线，当前实现、用户精度修订和验证结果见其R4/R5交接。布局断言失败仍按业务问题处理；导入/环境错误独立报告，不包装为采集或启动超时。
+测试断言正确业务行为，不以 NotImplementedError 为成功、不使用 xfail 掩盖未实现。历史 R2 路径为 `docs/dev-workflow/dev-0/REQ-002/handoff-r2.md`、`docs/dev-workflow/dev-0/REQ-006/handoff-r2.md`；当前工作区未包含，不作为本轮验证证据。布局断言失败仍按业务问题处理；导入/环境错误独立报告，不包装为采集或启动超时。
 
 以下两段保留REQ-002原设计时点的离线材料与当时待验事项，不表示本轮重新执行硬件命令或需要重写已合并采集器。
 
@@ -236,6 +249,10 @@ REQ-002当时使用本机 `nvidia-smi --help` / `--help-query-gpu`（v596.47）�
 REQ-002原阶段列有本地Linux适配/worker超时取消/无输出泄漏、Frame呈现和运行期接线验证，后续阶段结果以该需求R4/R5交接为准；最终目标GPU驱动输出、无卡返回码、权限、挂载状态没有现场验证。所有自动化保持离线，禁止连接服务器；未来部署验收须由用户安排。此限制不阻止本设计交接R3。
 
 ## 修订说明
+
+v2.1 在图前合并介绍类图和时序图元素，补全对象别名对应关系；原图、接口与业务契约保持不变。
+
+v2.0 按更新后的 R2 模板统一整体设计引用、简化类图和关键交互时序；原业务与测试契约继续保留。
 
 v1.11将v1.9/v1.10的硬件条呈现修订归拢至[主题设计](theme.md#hardware-bars)，本页保留采集、数字和面板内部几何契约；删除重复说明，不改变实现。
 

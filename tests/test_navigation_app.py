@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from joi_observer.cli import ApplicationRuntime
+from runtime_harness import ApplicationRuntime
 from joi_observer.collectors.vllm import VllmCollector
 from joi_observer.config import AppConfig, LogConfig, ModelConfig, ModelType
 from joi_observer.data.models import Metric, ObjectKey, ObjectSpec, StateSnapshot
@@ -304,9 +304,9 @@ def test_injected_actions_are_preserved_and_only_supported_keys_are_dispatched(f
             self.received.append(key)
 
     actions = InjectedActions()
-    frames = run_app(configuration(), ("down", "t", "left", "right", "enter", "p", "tab", "q"),
+    frames = run_app(configuration(), ("down", "up", "t", "left", "right", "enter", "p", "tab", "q"),
                      actions=actions)
-    assert actions.received == ["down", "t", "left", "right"]
+    assert actions.received == ["down", "up", "t", "left", "right"]
     assert actions.selection_reads == len(frames)
     assert all(selected_name(frame) == "reranker" for frame in frames)
     assert all(any(cell.text == "Theme: Hologram [t]" for cell in frame.cells) for frame in frames)
@@ -366,10 +366,10 @@ def test_production_composition_navigates_without_starting_or_rebuilding_sources
         async def close(self):
             pass
 
-    monkeypatch.setattr("joi_observer.cli.build_hardware_sources",
+    monkeypatch.setattr("joi_observer.runtime.build_hardware_sources",
                         lambda cfg: SimpleNamespace(collectors=(), discovery=IdleDiscovery()))
     terminal = ScriptedTerminal(("down", "t", "left", "right", "enter", "p", "q"))
-    monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+    monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
     config = replace(configuration(), logging=LogConfig(directory=tmp_path / "logs"))
     ports = []
 

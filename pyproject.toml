@@ -5,13 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "joi-observer"
 version = "0.1.0.dev0"
-description = "Read-only local hardware and vLLM terminal observer"
+description = "Read-only hardware and vLLM monitoring with terminal and Web dashboards"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = ["PyYAML>=6.0,<7", "httpx>=0.28.1,<0.29"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
+web = ["uvicorn>=0.51,<0.52"]
 
 [project.scripts]
 joi-observer = "joi_observer.cli:main"
@@ -21,6 +22,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 joi_observer = ["examples/*.yaml"]
+"joi_observer.web" = ["static/index.html", "static/dashboard.css", "static/dashboard.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

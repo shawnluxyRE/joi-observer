@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from joi_observer.runtime import CollectorRuntime, CollectorComponents
 from joi_observer.config import AppConfig, LogConfig, ModelType
 from joi_observer.data.models import Metric, ObjectKey, ObjectSpec
 from joi_observer.data.state import MonitorState
@@ -29,14 +29,14 @@ class PendingDiscovery:
 
 
 def test_empty_models_do_not_construct_http_ports(tmp_path, monkeypatch):
-    monkeypatch.setattr("joi_observer.cli.build_hardware_sources",
+    monkeypatch.setattr("joi_observer.runtime.build_hardware_sources",
                         lambda cfg: SimpleNamespace(collectors=(), discovery=PendingDiscovery()))
 
     def forbidden():
         pytest.fail("Empty models must not construct an HTTP port")
 
     async def scenario():
-        runtime = ApplicationRuntime(AppConfig(mount_points=(),
+        runtime = CollectorRuntime(AppConfig(mount_points=(),
                                      logging=LogConfig(directory=tmp_path / "logs")),
                                      vllm_http_factory=forbidden)
         try:
@@ -110,15 +110,16 @@ def test_injected_components_bypass_all_source_factories(tmp_path, monkeypatch):
         pytest.fail("Complete components must not rebuild sources")
 
     for name in ("build_hardware_sources", "build_docker_collectors", "build_vllm_collectors"):
-        monkeypatch.setattr("joi_observer.cli." + name, forbidden)
+        monkeypatch.setattr("joi_observer.runtime." + name, forbidden)
 
     async def scenario():
         config = AppConfig(models=configs(), logging=LogConfig(directory=tmp_path / "logs"))
         state = MonitorState()
         log = ErrorLog(config.logging)
-        monitor = Monitor((), state, log)
-        components = RuntimeComponents(monitor, SimpleNamespace(), log)
-        runtime = ApplicationRuntime(config, components=components,
+        updates = asyncio.Event()
+        monitor = Monitor((), state, log, on_update=updates.set)
+        components = CollectorComponents(state, monitor, log, updates)
+        runtime = CollectorRuntime(config, components=components,
                                      docker_command_factory=forbidden, vllm_http_factory=forbidden)
         assert runtime.prepare_log()
         assert runtime.components is components

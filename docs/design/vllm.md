@@ -1,15 +1,17 @@
 # vLLM 多类型模型负载与历史设计
 
 - 关联需求：dev-0 / REQ-004、REQ-006，`requirements.md` v1.24，AC-401～412、AC-609～616；依赖 REQ-001，复用 REQ-002、REQ-003 运行基础。
-- 修订：v1.14，2026-11-09。正式 TUI 使用固定位置扫描折线，统一历史标题的单位分隔符。历史阶段结果见 [`handoff-r5.md`](../dev-workflow/dev-0/REQ-004/handoff-r5.md)。
-- 范围：冻结模块职责、数据和接口契约，提供可加载的接口骨架及离线黑盒测试。业务入口留待 R4 实现，不能把导入成功或预期的 `NotImplementedError` 解释为功能已完成。
-- 关联文档：[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)、[配置](configuration.md)、[Monitor / State](monitor-state.md)、[应用外壳](application-shell.md)、[主题](theme.md)、[错误日志](error-logging.md)。原[视图契约路径](../dev-workflow/dev-0/REQ-004/view-contract.md)保留为第10节的兼容入口。
+- 关联需求补充：dev-1 / REQ-001，AC-104/105/107/108/114。
+- 修订：v2.2，2026-11-16；在图前集中说明模型采集、观测和窗口状态中的类与对象。
+- 范围：保留 dev-0 已有采集解析、窗口计算及 TUI 呈现实现；本轮 dev-1 为 R2 目标契约与黑盒测试，不提前实现服务接线和名称调整。历史设计记录中的“未实现”只代表当时阶段。
+- 整体设计：[组件边界与依赖](architecture.md)。
+- 关联文档：[配置](configuration.md)、[Monitor / State](monitor-state.md)、[应用外壳](application-shell.md)、[主题](theme.md)、[错误日志](error-logging.md)。历史指标证据路径为 `docs/dev-workflow/dev-0/REQ-004/metric-evidence.md`，历史视图契约路径为同目录的 `view-contract.md`；当前工作区均未包含，不作为本轮验证证据。正式视图契约维护于本文第 10 节。
 
 ## 1. 证据、兼容性与范围
 
 用户提供的三个端点分别报告 `qwen3.8-flash-next`、`qwen3-embedding-4b`、`qwen3-reranker-0.6b`，服务与安装包版本均为 `0.31.0`。两类 pooling 均提供内部运行/等待数量、正常完成计数、排队和完成延迟。采证只做 GET 与只读源码导出；本轮设计在本地读取资料，没有连接服务器或执行包内源码。
 
-精确指标名、标签、行号、源码哈希及证据边界集中维护在[指标证据](../dev-workflow/dev-0/REQ-004/metric-evidence.md)。本设计只支持已核对的 `0.31.0` profile，不承诺其他版本自动兼容。实采为单 engine 空闲窗口；多 engine、故障、重启和负载增量的确定性规则由源码及离线构造验证支持，不宣称完成这些场景的实机演练。
+精确指标名、标签、行号、源码哈希及证据边界曾集中维护于历史路径 `docs/dev-workflow/dev-0/REQ-004/metric-evidence.md`；当前工作区未包含，不作为本轮验证证据。本设计沿用既有 `0.31.0` profile，不承诺其他版本自动兼容。历史实采为单 engine 空闲窗口；多 engine、故障、重启和负载增量使用离线构造验证，不宣称完成这些场景的实机演练。本轮可用样本与来源说明位于 `tests/fixtures/vllm/0.31.0/`。
 
 展示三个模型并持续采集未选中项；直接读取配置的 vLLM origin，不访问 LiteLLM、WebUI、推理接口或其他地址。REQ-004 接收现有模型选择输入；方向键导航和服务入口由 REQ-005 完成，完整视觉主题由 REQ-006 完成。
 
@@ -17,111 +19,97 @@ REQ-005 使用 [SessionViewActions](navigation.md) 维护合法配置 id，并�
 
 ## 2. 职责与协作
 
-沿用 `Collector → Monitor → MonitorState → TUI`。每个模型配置对应独立 `ObjectKey("vllm", model.id)`、采集器、HTTP 端口及 State 内 accumulator。配置顺序决定展示顺序，同名模型和相同 origin 的不同 id 不自动合并。
+沿用 `Collector → Monitor → MonitorState`，再经本机只读 IPC 将冻结快照和配套元数据送至 TUI/Web。每个模型配置对应常驻服务内独立的 `ObjectKey("vllm", model.id)`、采集器、HTTP 端口及 State 内 accumulator。配置顺序决定展示顺序，同名模型和相同 origin 的不同 id 不自动合并。客户端数量、隐藏对象和选择均不改变采样。
 
 采集器执行本轮只读请求、版本/身份核对和字节解析，只返回当前不可变观测。Monitor 独立调度并统一提交、记录错误；MonitorState 独占差分基线、延迟窗口和历史。TUI 只读冻结快照，不持有原始响应、累积计数、HTTP client 或状态写接口。
 
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `VllmCollector` / `Collector` | `Collector` 是 `VllmCollector` 的对象别名，负责按顺序读取版本、模型身份和指标响应并生成结构化采集结果。 |
+| `HttpPort` / `HTTP` | `HTTP` 是 `HttpPort` 协议端口的对象别名，负责带超时及响应大小限制的只读 HTTP 请求和连接资源关闭。 |
+| `VllmSpec` | `VllmSpec` 是单模型的不可变状态声明，定义配置身份、模型类型和首帧指标模板。 |
+| `VllmCollectionResult` | `VllmCollectionResult` 承载单次采集的配置身份、结构化观测和可选受控失败信息。 |
+| `VllmObservation` | `VllmObservation` 按模型类型组织不可变的引擎语义观测，隔离原始 HTTP 字节与业务状态。 |
+| `VllmAccumulator` / `Accumulator` | `Accumulator` 是 `VllmAccumulator` 的对象别名，负责维护单模型的独立采样基线和统计窗口并投影派生指标。 |
+| `MonitorState` / `State` | `State` 是 `MonitorState` 的对象别名，负责拥有各模型 accumulator 并原子维护最新指标、采集状态和历史。 |
+| `Monitor` | `Monitor` 独立调度模型采集，把完成结果和采样时刻统一提交状态并处理来源失败。 |
+
+## 简化类图
+
 ```mermaid
 classDiagram
-    class ApplicationRuntime
-    class ModelConfig
-    class Collector {
-        <<interface>>
-        +spec ObjectSpec
-        +collect() CollectionResult
-        +close() None
-    }
     class VllmCollector {
         +spec VllmSpec
         +collect() VllmCollectionResult
-        +close() None
+        +close()
     }
     class HttpPort {
         <<interface>>
         +get(url, timeout, max_bytes) HttpResponse
-        +close() None
+        +close()
     }
-    class AsyncHttpClient
-    class CollectionResult
-    class VllmCollectionResult {
-        +observation VllmObservation[0..1]
-    }
-    class VllmObservation {
-        +model_type ModelType
-        +model_name str
-        +engines tuple
-        +process_started_at float
-    }
-    class EngineSample {
-        +engine_id str
-        +running int[0..1]
-        +waiting int[0..1]
-        +queue LatencySample[0..1]
-    }
-    class ChatEngineSample {
-        +kv_cache_fraction float[0..1]
-        +prompt_tokens CounterSample[0..1]
-        +generation_tokens CounterSample[0..1]
-        +ttft LatencySample[0..1]
-    }
-    class PoolingEngineSample {
-        +completed_sequences CounterSample[0..1]
-        +latency LatencySample[0..1]
-    }
-    class ObjectSpec
     class VllmSpec {
         +model_type ModelType
         +served_model_name str
     }
-    class Monitor
-    class MonitorState
+    class VllmCollectionResult {
+        +observation VllmObservation
+        +failure Failure
+    }
+    class VllmObservation {
+        +model_type ModelType
+        +engines tuple
+    }
     class VllmAccumulator {
         +accept(result, sampled_at) tuple
         +metrics(now) tuple
     }
-    class VllmWindow {
-        <<module>>
-        +counter_rate(previous, current, elapsed, continuous)
-        +weighted_latency(intervals, now, window_seconds)
-    }
-    class StateSnapshot
-    class VllmView {
-        <<module>>
-        +vllm_cells(snapshot, config, region, view, now)
-    }
-    Collector <|.. VllmCollector
-    HttpPort <|.. AsyncHttpClient
-    ObjectSpec <|-- VllmSpec
-    CollectionResult <|-- VllmCollectionResult
-    EngineSample <|-- ChatEngineSample
-    EngineSample <|-- PoolingEngineSample
-    ApplicationRuntime ..> ModelConfig
-    ApplicationRuntime ..> VllmCollector
+    class MonitorState
     VllmCollector *-- HttpPort
     VllmCollector --> VllmSpec
-    Collector ..> CollectionResult
     VllmCollector ..> VllmCollectionResult
-    VllmCollectionResult --> "0..1" VllmObservation
-    VllmObservation --> "1..*" EngineSample
-    Monitor --> "0..*" Collector
-    Monitor --> "1" MonitorState
-    MonitorState *-- "0..*" VllmAccumulator
+    VllmCollectionResult --> VllmObservation
+    MonitorState *-- VllmAccumulator
     VllmAccumulator --> VllmSpec
     VllmAccumulator ..> VllmObservation
-    VllmAccumulator ..> VllmWindow
-    MonitorState ..> StateSnapshot
-    VllmView ..> StateSnapshot
 ```
 
-类图使用 UML 实现、继承、关联、组合和依赖关系，箭头不表示运行时数据流。按已确认的图面偏好，不画 Monitor/MonitorState 到 CollectionResult 的依赖线，也不在连线上加说明文字。公共结果体系见[Monitor / State](monitor-state.md#collection-results)。VllmCollectionResult 与观测使用普通关联：观测是可共享不可变值，不要求与单个结果独占生命周期。
+## 关键交互时序图
 
-EngineSample 只提供三种模型共有的身份、运行/等待数量和排队延迟。VllmObservation 到 EngineSample 的关联表示使用该继承体系，实际 engines 必须全是与 model_type 匹配的同一种具体子类；裸基类、混合子类及错类型在消费边界拒绝。Embedding 与 Reranker 共享 PoolingEngineSample，不各建一个同结构的类。
+```mermaid
+sequenceDiagram
+    participant Monitor
+    participant Collector as VllmCollector
+    participant HTTP as HttpPort
+    participant State as MonitorState
+    participant Accumulator as VllmAccumulator
+    Monitor->>Collector: collect()
+    Collector->>HTTP: GET /version
+    HTTP-->>Collector: 版本字节
+    Collector->>HTTP: GET /v1/models
+    HTTP-->>Collector: 身份字节
+    Collector->>HTTP: GET /metrics
+    HTTP-->>Collector: 指标字节
+    Collector->>Collector: 验证版本、身份并解析观测
+    Collector-->>Monitor: VllmCollectionResult
+    Monitor->>State: accept(result, sampled_at)
+    State->>Accumulator: accept(result, sampled_at)
+    Accumulator-->>State: 派生指标与窗口投影
+    Note over Collector,HTTP: 正常路径按上述顺序请求并共享整轮超时；任一步失败不继续后续请求，不伪造零值
+    Note over State,Accumulator: 失败保留相应最后值并产生历史缺口，客户端不重算
+```
+
+简化类图只展示核心类的 UML 关联、组合和依赖，箭头不表示运行时数据流，也不在线上添加说明文字；辅助类型的完整继承与实现关系保留在代码注释中。公共结果体系见[Monitor / State](monitor-state.md#collection-results)。VllmCollectionResult 与观测使用普通关联：观测是可共享不可变值，不要求与单个结果独占生命周期。
+
+简化类图省略 EngineSample、CounterSample、LatencySample 等辅助值类型及数学函数，字段与类型约束仍以 `data/vllm.py` 的完整接口注释为准。EngineSample 只提供三种模型共有的身份、运行/等待数量和排队延迟；实际 engines 必须全是与 model_type 匹配的同一种具体子类，裸基类、混合子类及错类型在消费边界拒绝。Embedding 与 Reranker 共享 PoolingEngineSample，不各建一个同结构的类。
 
 构造配置、静态 spec、采集器或 HTTP 适配器时不执行 I/O；关闭一个模型不能关闭其他模型的 HTTP client。数学函数无状态，accumulator 由 State 独占，不能移到 Collector 或 UI。
 
 ## 3. 配置、身份与版本
 
-`ModelConfig` 的字段合法性、展示名称与期望服务身份的区分、`served_model_name` 回退及 URL 约束统一见[配置字段契约](configuration.md#configuration-fields)。采集器使用解析后的期望身份执行下述响应核对，不重复配置校验或猜测部署信息。
+`ModelConfig` 的字段合法性、展示名称与期望服务身份的区分、`served_model_name` 回退及 URL 约束统一见[配置字段契约](configuration.md#configuration-fields)。采集器使用解析后的期望身份执行下述响应核对，不重复配置校验或猜测部署信息。服务投影 ModelDisplay 时固化 `name` 和已回退的 `served_model_name`；前者显示在列表，后者显示在详情，二者不从运行中的成功采样推断。
 
 每次采样依次读取 `/version`、`/v1/models`、`/metrics`，不永久缓存版本或身份。要求版本精确为 `0.31.0`；期望身份必须同时出现在 models 的 `data[].id` 及所用 metrics 的 `model_name` 标签中。只作完整精确匹配，不按子串、GPU、端口或模型类型猜测；同名不同端点不合并，报告身份改变不改绑配置 id。
 
@@ -177,7 +165,7 @@ Chat DECODE/PREFILL 分别从 `generation_tokens_total`、`prompt_tokens_total` 
 
 KV Cache 来源比例范围为 `[0,1]`，按同模型 engine 的算术平均 ×100。该方式与目标源码聚合日志一致，是 engine 等权平均，不声称是按容量加权的总占用率；与 GPU 显存完全独立。同一快照某指标缺少引擎分片时，不把已知子集当完整服务值；完整engine集合相较上次变化则属于拓扑变化，采用新集合的瞬时计数并重新建立差分基线。
 
-TTFT 和 Avg latency 沿用来源内部请求 `arrival_time` 到相关输出处理时刻的定义；Avg queue 为来源记录的 QUEUED 到首次 SCHEDULED。Avg latency 不包括之后整批结果后处理、完整 HTTP 发送或网关/客户端时间；Embedding 不额外承诺 tokenization 是否计入。精确证据见[指标证据第 4 节](../dev-workflow/dev-0/REQ-004/metric-evidence.md#4-延迟计时范围与分母)。
+TTFT 和 Avg latency 沿用来源内部请求 `arrival_time` 到相关输出处理时刻的定义；Avg queue 为来源记录的 QUEUED 到首次 SCHEDULED。Avg latency 不包括之后整批结果后处理、完整 HTTP 发送或网关/客户端时间；Embedding 不额外承诺 tokenization 是否计入。该口径的历史证据路径为 `docs/dev-workflow/dev-0/REQ-004/metric-evidence.md` 第 4 节，当前工作区未包含，不作为本轮验证证据；本轮保留既有业务契约。
 
 ## 6. 字节解析与资源边界
 
@@ -251,25 +239,29 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 
 - 每次 collect 严格顺序读取同一配置 origin 的 `/version` → `/v1/models` → `/metrics`。三次请求共享 `collection_timeout` 总预算，后续只获得剩余时间；每份解压后正文最多 2 MiB，不能每个请求重新获得整轮预算。
 - `AsyncHttpClient` 使用 `HTTPX>=0.28.1,<0.29`。构造只保存 factory，默认首次 get 才懒加载 HTTPX 并创建 client；注入替身不需要安装或导入 HTTPX。
-- 本轮未安装HTTPX，也不单独修改既有依赖清单而使离线锁文件失配。R4实现真实后端时须一并更新`pyproject.toml`、`uv.lock`及离线wheel集合，验证真实HTTPX的stream、取消、TLS和解压行为；当前factory替身验证的是接口契约，不能替代这些依赖集成检查。
+- HTTPX 依赖及适配器沿用已纳入仓库的实现和锁文件。dev-1 不生成或重建离线安装包，不更新旧 GUI/回放；既有离线 factory/transport 测试继续验证 stream、取消、TLS 参数和解压边界，不以连接真实服务替代。
 - 默认 client 固定 `follow_redirects=False, trust_env=False, verify=True`，不读环境代理或隐式凭据，正常验证 HTTPS 证书。每个 get 只创建一次 `stream("GET", ...)`，不重试、不自动访问重定向地址。
 - 按解压后的流式字节检查上限，即使无 Content-Length 也受限；达到上限合法，超过立即中止并关闭流，不先读完无限正文。client 的 stream/response/aclose 接口允许离线替身观察调用与释放行为。
 - HTTP 401/403 → `permission/access.denied`，404 → `not_found/object.not_found`；其余非 200，包括 3xx → `unavailable/source.unavailable`。非法状态/载荷与响应超限 → `parse/response.invalid`；TimeoutError → `collection.timeout`，网络/TLS/依赖不可用 → `source.unavailable`。本轮任一请求失败后停止剩余请求。
 - CancelledError 是关闭控制流，清理后传播，不变成 CollectionResult failure。get/close 清理遵守 250ms 预算；同实例 get 不重入，close 幂等，关闭后 get 抛 RuntimeError。Monitor 继续执行每对象不重叠、忙时跳过采样槽、统一外层超时与全局退出预算，不留迟到提交。
 - Monitor超时/未知异常的公共失败路径遵守[公共结果契约](monitor-state.md#collection-results)，模型基线及历史按[第8节](#8-失败保值与历史缺口)处理。
-- 组合根新增 vLLM 工厂依赖注入并调用 `build_vllm_collectors`，与硬件、Docker 交给同一个 Monitor/State。替换旧手工 vLLM 占位 spec，避免重复注册；所有模型持续采集，视图选择不创建请求。
+- 常驻服务的 CollectorRuntime 复用既有 `build_vllm_collectors` 及 HTTP 工厂注入，与硬件、Docker 交给同一个 Monitor/State。所有模型持续采集，视图选择不创建请求；TUI/Web 不导入工厂启动采集。
 
-本轮公共结果类型拆分及已有硬件/Docker/普通 State 路径仅作类型迁移，保持原业务行为；vLLM 部分继续只提供依赖声明、字段、接口签名、完整注释及 NotImplementedError 骨架。真实 client、配置解析、vLLM State 专支、组合根和呈现行为由 R4 实现。当前环境不安装或连接服务来掩盖未实现基线。R4 需在本地 Ubuntu/WSL、具备目标依赖后验证真实 HTTPX adapter；本轮 fake client 测试不能替代真实库兼容验证。
+dev-1 复用现有类型、解析、HTTP 适配、State accumulator 和全部有效黑盒测试，不改变指标算法。新运行期接线及展示元数据迁移由 R4 完成；本轮新增骨架测试失败须与现有回归失败分别记录。所有必需验证在本地 Ubuntu/WSL 使用离线来源完成，不连接服务器。
 
 <a id="vllm-view"></a>
 
 ## 10. 展示与固定布局
+
+dev-1 / REQ-002 的浏览器复用本模块指标、单位及展示元数据。模型列表取 `name`，详情取服务已回退的 `served_model_name`。Running/Total 使用服务给出的计数，pooling 速率用 seq/s。浏览器像素布局、60 秒曲线和超量处理见 [Neon Grid 页面](web-dashboard.md)，以下字符坐标属于 TUI。
 
 本节是服务窗口内部呈现的唯一契约。外部 Region、半页预算、最低终端尺寸及帧调度由[应用外壳](application-shell.md)维护；选择、按键和服务入口由[导航](navigation.md)维护；所有颜色角色、主题默认值及终端字体实现由[主题](theme.md)维护。
 
 ### 职责与输入
 
 `vllm_cells(snapshot, config, region, view, *, now, history_scales=None)` 返回服务区内容 `tuple[TextCell, ...]`。只读取 `ObjectKey("vllm", model.id)`，不持有采集器、Monitor 或状态写接口，不计算计数差分、延迟窗口或跨采样 Total。选择、主题和调用次数不会影响采集、历史或快照 revision。
+
+dev-1 中上述 `config` 参数的生产输入迁移为 DisplayMetadata（参数名称可保留兼容），模型项为 ModelDisplay；客户端不得接收或重建含 base_url 的完整 AppConfig。列表名称取 `model.name`；详情标题取 `model.served_model_name`，服务已完成省略时的 name 回退。列表端口取 `explicit_port`（None 则不显示端口）；详情取 `effective_port`。二者均是服务端脱敏投影，不用来访问 vLLM。元数据与快照必须来自同一服务实例/配置，详见[IPC协议](ipc.md)。
 
 `now` 是与历史点同域的有限非负单调秒数，不能由页眉 datetime 墙钟转换。`compose_frame(..., monotonic_now=None)` 的显式值用于离线时钟，缺省生产路径取 `time.monotonic()` 后传入；应用如何共用帧时刻与冻结尺度见[帧时钟和尺度接线](application-shell.md#帧时钟和尺度接线)。
 
@@ -284,13 +276,13 @@ parser 按配置 model_type 构造 ChatEngineSample 或 PoolingEngineSample；�
 | 区域 / 相对行 | 内容 |
 | --- | --- |
 | 左 `+1` | `MODELS / n`；n为配置模型总数 |
-| 左第i个可见项 `+2+4i` | `column+2`为选中`›`，名称从`column+4`开始且末端不超过`column+19`；状态槽从`column+20`起占6列，文字右对齐到`column+26` |
-| 左名称下一行 | 大写类型和URL显式端口，如`CHAT / :8000`；未写端口则只显示类型，不猜80/443 |
+| 左第i个可见项 `+2+4i` | `column+2`为选中`›`，`name` 从`column+4`开始且末端不超过`column+19`；状态槽从`column+20`起占6列，文字右对齐到`column+26` |
+| 左名称下一行 | 大写类型和元数据显式端口，如`CHAT / :8000`；`explicit_port=None` 则只显示类型，不猜80/443 |
 | 左名称后两行 | 左槽`[column+2,column+14)`的`3 running`左齐；空1格；右槽`[column+15,column+26)`的`7 waiting`右齐；数字与标签分别生成cell |
 | 左名称后三行 | 分隔留白，不增加独立行框或将三行合为一行 |
 | 右 `+1`、`+5`、`+11` | 空行，分别位于模型名、RUNNING/WAITING统计及历史标题上方 |
-| 右 `+2` | 模型名左，状态槽`[R-6,R)`右对齐且无尾空格；不重复左栏已有类型 |
-| 右 `+3` | 仅显示服务端口，如 `:8000`。若 `base_url` 省略端口，HTTP 显示 `:80`，HTTPS 显示 `:443` |
+| 右 `+2` | `served_model_name` 左，省略时服务已回退为 name；状态槽`[R-6,R)`右对齐且无尾空格；长名称沿用现有裁切，不重复左栏已有类型 |
+| 右 `+3` | 仅显示元数据有效端口，如 `:8000`。服务端在 URL 省略端口时投影 HTTP 为 80、HTTPS 为 443 |
 | 右 `+4`、`+8` | `[L,R)`横向分隔线 |
 | 右 `+6` | RUNNING / WAITING 两统计组：标签组内左对齐，至少留1空格，纯数值组内右对齐；无ASCII大数字、分母或Total第三组 |
 | 右 `+7` | 左从L起`Total {state.total} seq`；右从`S+2`起Chat的`Avg queue {seconds}s`或pooling的`Unit: seq`；caption限于各自统计组 |
@@ -331,6 +323,8 @@ Total直接读取状态层按[指标投影](#5-指标投影和类型适用性)�
 ### 10.1 固定位置扫描折线与显示尺度
 
 正式 TUI 使用固定位置扫描折线。Chat 绘制 decode_rate，单位 tok/s；Embedding 和 Reranker 绘制 rate，单位 seq/s。曲线使用每个字符 2×4 点的 Braille 字形，颜色引用[主题设计](theme.md)。`▼` 使用明亮正文色和加粗字重。图内显示纵轴刻度、曲线、游标及循环秒刻度。
+
+HTML 的 Neon Grid 历史图使用可左右平移的平滑曲线，曲线下以主题主色向下渐隐填充，不使用主副双色渐变。这是设计预览的呈现与交互，正式 TUI 继续遵循本节的固定位置扫描、缺口和显示尺度契约。
 
 **固定秒位**
 
@@ -389,11 +383,11 @@ cursor_slot = current_second % 60
 | 低档期间目标继续降低/回升/无观测/全0 | 计时按上述规则延续或清零，未知与真实0区分 |
 | 切模型/主题、宽度变化、未选中模型继续采样 | 尺度按模型指标隔离，重分桶不清历史或重建会话 |
 
-tests/test_vllm_view.py的短轴、共享桶和“峰值填满”断言、test_vllm_pty.py的短轴期待，以及test_navigation_app.py的时序现已按新契约同步；原值/单位、无I/O、失败缺口和终端恢复断言继续保留。新帧调度规则见[应用外壳](application-shell.md)，完整文档修订和历史测试证据边界见[REQ-006 R2交接](../dev-workflow/dev-0/REQ-006/handoff-r2.md)。
+tests/test_vllm_view.py 的短轴、共享桶和“峰值填满”断言、test_vllm_pty.py 的短轴期待，以及 test_navigation_app.py 的时序已在既有阶段同步；原值/单位、无 I/O、失败缺口和终端恢复断言继续保留。帧调度规则见[应用外壳](application-shell.md)。当时修订交接的历史路径为 `docs/dev-workflow/dev-0/REQ-006/handoff-r2.md`，当前工作区未包含，不作为本轮验证证据。
 
 ## 11. 黑盒测试与验证边界
 
-导航贯穿验证另外位于 `tests/test_navigation.py`、`tests/test_navigation_app.py` 和 `tests/test_navigation_pty.py`；这些新增用例的 R2 未实现基线记录在 [REQ-005 交接](../dev-workflow/dev-0/REQ-005/handoff-r2.md)，不改写 REQ-004 已通过的历史验收。
+导航贯穿验证另外位于 `tests/test_navigation.py`、`tests/test_navigation_app.py` 和 `tests/test_navigation_pty.py`；这些用例当时的 R2 基线历史路径为 `docs/dev-workflow/dev-0/REQ-005/handoff-r2.md`，当前工作区未包含，不作为本轮验证证据，也不改写既有阶段记录。
 
 测试从公开函数、注入字节端口、client factory、State 快照和 TextCell 观察正确业务行为；不模拟被测 parser、reducer 或渲染结果。未实现导致的失败保留为 R2 基线，不以断言 NotImplementedError 的方式“通过”业务验收。
 
@@ -415,7 +409,15 @@ tests/test_vllm_view.py的短轴、共享桶和“峰值填满”断言、test_v
 
 必须在本地 Ubuntu/WSL Ubuntu 执行所需验证。R2 记录实际导入、测试计数及失败分类：业务未实现、真实契约/回归问题、环境/依赖问题分开；完整结果与命令由交接单引用。真实服务联调、多 engine 实采和不可见重启检验不属于本轮已完成证据。
 
+dev-1 / AC-114 的新增入口为 `tests/test_display_metadata_view.py` 和协议元数据投影测试，覆盖名称不同、字段省略、同名不同 id、长名称槽位保护和全帧元数据输入；失败对象身份及 GPU 关联继续复用既有 `tests/test_vllm_view.py`、导航/硬件映射测试，只迁移确认变化的断言。已有 AppConfig 输入用例保留兼容。协议往返测试须保留原指标精度、单位、未知/不适用和历史缺口；实际覆盖及执行结果以[本轮 R2 交接](../dev-workflow/dev-1/REQ-001/handoff-r2.md)为准。
+
 ## 12. 修订记录
+
+- v2.2：在图前合并介绍核心类及其时序对象别名，保留原接口、指标数学、图和测试契约。
+
+- v2.1：2026-11-16，统一整体设计引用、核心类图和关键交互时序；原业务与测试契约保留。
+
+- v2.0：dev-1 服务/客户端分离及名称映射；没有更改采集身份、业务计算或 TUI 几何，下列版本记录保留历史时点。
 
 - v0.1～v0.3：先固定独立窗口数学，D-001 等待用户采证；按用户偏好修订 CollectionResult 的类图连线，省略 Monitor/MonitorState 对它的依赖线。
 - v1.0：基于用户回传样本及源码冻结 D-001、三类型精确映射与 seq 单位、STOP 完成筛选、独立延迟窗口、KV engine 算术平均、结构化观测/State accumulator、直接 HTTP 和离线黑盒入口。保留既定图面偏好，业务实现仍留 R4。

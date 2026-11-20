@@ -832,6 +832,9 @@ def test_http_close_cancels_inflight_get_and_rejects_later_requests():
         if task.done():
             await task
         await asyncio.wait_for(response.started.wait(), 0.3)
+        with pytest.raises(RuntimeError):
+            await port.get("http://chat.example.invalid/version", timeout=1, max_bytes=10)
+        assert len(client.calls) == 1
         await asyncio.wait_for(port.close(), 0.25)
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -845,9 +848,11 @@ def test_http_close_cancels_inflight_get_and_rejects_later_requests():
 def test_http_transport_failure_is_not_retried():
     async def case():
         client = OfflineClient(OSError("PRIVATE transport detail"))
-        with pytest.raises(OSError):
-            await AsyncHttpClient(client_factory(client, [])).get(
-                "http://chat.example.invalid/metrics", timeout=1, max_bytes=10)
+        port = AsyncHttpClient(client_factory(client, []))
+        with pytest.raises(OSError) as error:
+            await port.get("http://chat.example.invalid/metrics", timeout=1, max_bytes=10)
         assert len(client.calls) == 1
+        assert "PRIVATE" not in str(error.value)
+        await port.close()
 
     asyncio.run(case())

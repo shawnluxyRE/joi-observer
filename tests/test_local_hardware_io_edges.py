@@ -10,43 +10,149 @@ import pytest
 
 from joi_observer.collectors import _local_io
 from joi_observer.collectors.hardware import LocalHardwareIO
+from test_hardware_spawn_failure_edges import assert_pipes_released, observe_pipes, rescue_pipes
 from test_local_hardware_io import INVENTORY, LINUX, assert_reaped, executable, wait_marker
 
 
 @LINUX
-@pytest.mark.parametrize("finish", ["normal", "cancel", "close"])
-def test_owned_output_pipes_work_on_native_event_loop(tmp_path, monkeypatch, capsys, finish):
-    """Exercise real Linux output pipes, cancellation and direct-child reaping."""
+def test_cleanup_task_allocation_failure_cannot_leave_an_owned_hardware_child(
+        tmp_path, monkeypatch):
+    marker = tmp_path / "allocation-child-pid"
+    executable(tmp_path, monkeypatch,
+        "import os, time\nfrom pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(30)\n")
+    real_create_task = asyncio.create_task
+    real_spawn = asyncio.create_subprocess_exec
+    real_pipe = _local_io.LocalProcessIO._open_pipe
+    children, transports, rejected_coroutines = [], [], []
+
+    async def spawn(*args, **kwargs):
+        process = await real_spawn(*args, **kwargs)
+        children.append(process)
+        return process
+
+    async def open_pipe():
+        result = await real_pipe()
+        transports.append(result[1])
+        return result
+
+    def create_task(coroutine, *args, **kwargs):
+        if (getattr(coroutine, "__qualname__", "").endswith(
+                "LocalProcessIO._execute.<locals>.cleanup") and not rejected_coroutines):
+            rejected_coroutines.append(coroutine)
+            raise MemoryError("injected cleanup task allocation failure")
+        return real_create_task(coroutine, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+    monkeypatch.setattr(_local_io.LocalProcessIO, "_open_pipe", staticmethod(open_pipe))
+
+    async def scenario():
+        before = asyncio.all_tasks()
+        port = LocalHardwareIO(timeout=0.1)
+        operation = asyncio.create_task(port.run(INVENTORY))
+        try:
+            pid = await wait_marker(marker)
+            assert children and children[0].pid == pid
+            outcome, = await asyncio.wait_for(
+                asyncio.gather(operation, return_exceptions=True), 0.6,
+            )
+            assert isinstance(outcome, BaseException) and rejected_coroutines
+            await asyncio.wait_for(port.close(), 0.5)
+            assert_reaped(pid)
+        finally:
+            # An intentionally failing implementation must not leave the real
+            # owned child or pipe-reader tasks behind in the test environment.
+            for coroutine in rejected_coroutines:
+                coroutine.close()
+            for child in children:
+                if child.returncode is None:
+                    child.kill()
+                await child.wait()
+            for transport in transports:
+                transport.close()
+            await asyncio.sleep(0)
+            remaining = [task for task in asyncio.all_tasks()
+                         if task not in before and not task.done()]
+            for task in remaining:
+                task.cancel()
+            await asyncio.gather(*remaining, return_exceptions=True)
+            await asyncio.gather(operation, return_exceptions=True)
+            await port.close()
+
+    asyncio.run(scenario())
+
+
+@LINUX
+@pytest.mark.parametrize("stage", ["fdopen", "reader"])
+def test_partial_pipe_initialization_failure_closes_both_real_descriptors(monkeypatch, stage):
+    real_pipe, real_fdopen = os.pipe, os.fdopen
+    descriptors = []
+
+    def pipe():
+        pair = real_pipe()
+        descriptors.extend(pair)
+        return pair
+
+    def fdopen(*args, **kwargs):
+        if stage == "fdopen":
+            raise MemoryError("injected read-file allocation failure")
+        return real_fdopen(*args, **kwargs)
+
+    def reader(*args, **kwargs):
+        raise MemoryError("injected stream-reader allocation failure")
+
+    def still_open(descriptor):
+        try:
+            os.fstat(descriptor)
+        except OSError as error:
+            assert error.errno == errno.EBADF
+            return False
+        return True
+
+    async def scenario():
+        monkeypatch.setattr(os, "pipe", pipe)
+        monkeypatch.setattr(os, "fdopen", fdopen)
+        if stage == "reader":
+            monkeypatch.setattr(asyncio, "StreamReader", reader)
+        try:
+            with pytest.raises(MemoryError):
+                await _local_io.LocalProcessIO._open_pipe()
+            assert len(descriptors) == 2
+            leaked = [descriptor for descriptor in descriptors if still_open(descriptor)]
+            assert leaked == [], f"Owned pipe descriptors remain open after {stage} failure: {leaked}"
+        finally:
+            for descriptor in descriptors:
+                if still_open(descriptor):
+                    os.close(descriptor)
+
+    asyncio.run(scenario())
+
+
+@LINUX
+def test_owned_output_pipes_capture_worker_streams_and_close_on_success(tmp_path, monkeypatch, capsys):
     marker = tmp_path / "native-pid"
     worker = tmp_path / "native-worker.py"
-    worker.write_text("import os, sys, time\nfrom pathlib import Path\n"
+    worker.write_text("import os, sys\nfrom pathlib import Path\n"
         f"marker = Path({str(marker)!r})\n"
         "pending = marker.with_name(marker.name + '.pending')\n"
         "pending.write_text(str(os.getpid()))\npending.replace(marker)\n"
-        + ("sys.stdout.write('captured output')\nsys.stderr.write('captured diagnostic')\n"
-           if finish == "normal" else "time.sleep(30)\n"), encoding="utf-8")
+        "sys.stdout.write('captured output')\nsys.stderr.write('captured diagnostic')\n", encoding="utf-8")
     monkeypatch.setattr(_local_io, "_WORKER", worker)
 
     async def scenario():
+        baseline = asyncio.all_tasks()
+        owned = observe_pipes(monkeypatch)
         port = LocalHardwareIO()
-        operation = asyncio.create_task(port.read_text("/proc/stat"))
         try:
-            pid = await wait_marker(marker)
-            started = time.monotonic()
-            if finish == "normal":
-                assert await operation == "captured output"
-            else:
-                if finish == "cancel":
-                    operation.cancel()
-                else:
-                    await port.close()
-                with pytest.raises(asyncio.CancelledError):
-                    await operation
-                assert time.monotonic() - started < 0.25
-            assert_reaped(pid)
+            assert await port.read_text("/proc/stat") == "captured output"
+            assert_reaped(int(marker.read_text()))
+            assert len(owned) == 2
+            await assert_pipes_released(owned)
         finally:
             await port.close()
-            await asyncio.gather(operation, return_exceptions=True)
+            await rescue_pipes(owned)
+        assert not (asyncio.all_tasks() - baseline)
 
     asyncio.run(scenario())
     assert capsys.readouterr() == ("", "")
@@ -344,7 +450,7 @@ def test_timeout_cleanup_is_bounded_when_descendant_keeps_pipes_in_new_session(t
             quit_requested = asyncio.Event()
             terminal = None
             if finish == 'runtime':
-                from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+                from runtime_harness import ApplicationRuntime, RuntimeComponents
                 from joi_observer.config import AppConfig, LogConfig
                 from joi_observer.data.models import MetricCollectionResult, Metric, ObjectKey, ObjectSpec
                 from joi_observer.data.state import MonitorState
@@ -419,6 +525,8 @@ def test_timeout_cleanup_is_bounded_when_descendant_keeps_pipes_in_new_session(t
                 elif finish == 'runtime':
                     quit_requested.set()
                     await asyncio.wait({operation}, timeout=1)
+                    assert operation.done() and not runtime.sampling.done()
+                    await runtime.close()  # explicit service stop owns IO cleanup
                 else:
                     closing = [asyncio.create_task(io.close()) for io in ports]
                     await asyncio.wait(closing, timeout=0.25)

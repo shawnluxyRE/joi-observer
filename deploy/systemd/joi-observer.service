@@ -1,0 +1,26 @@
+[Unit]
+Description=Joi Observer host collection service
+After=local-fs.target
+
+[Service]
+Type=simple
+User=joi-observer
+Group=joi-observer-readers
+WorkingDirectory=/opt/joi-observer
+ExecStart=/opt/joi-observer/.venv/bin/joi-observer service --config /etc/joi-observer/config.yaml
+RuntimeDirectory=joi-observer
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=joi-observer
+StateDirectoryMode=0750
+UMask=0077
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=3
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

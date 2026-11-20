@@ -34,12 +34,16 @@ def models():
 
 
 @pytest.mark.parametrize("count", (0, 1, 3))
-def test_default_selection_uses_first_configured_id_and_session_theme(count):
+def test_default_selection_and_two_theme_toggles_keep_first_configured_id(count):
     configured = models()[:count]
     actions = SessionViewActions(configured)
     expected = ViewSelection(configured[0].id if configured else None, "hologram")
     assert actions.selection() == expected
+    actions.on_key("t")
+    assert actions.selection() == replace(expected, theme="moonlight")
+    actions.on_key("t")
     assert actions.selection() == expected
+    assert SessionViewActions(configured).selection() == expected
 
 
 def test_arrows_traverse_configuration_order_and_stop_at_both_ends():
@@ -70,17 +74,13 @@ def test_distinct_ids_with_same_type_and_name_remain_distinct_choices(second_url
 
 
 @pytest.mark.parametrize("count", (0, 1))
-def test_empty_and_single_model_lists_accept_arrows_and_theme(count):
+def test_empty_and_single_model_lists_keep_selection_with_arrows(count):
     configured = models()[:count]
     actions = SessionViewActions(configured)
     expected_id = configured[0].id if configured else None
     for key in ("up", "down", "left", "right") * 3:
         actions.on_key(key)
         assert actions.selection() == ViewSelection(expected_id, "hologram")
-    actions.on_key("t")
-    assert actions.selection() == ViewSelection(expected_id, "moonlight")
-    actions.on_key("t")
-    assert actions.selection() == ViewSelection(expected_id, "hologram")
 
 
 @pytest.mark.parametrize("key", (

@@ -96,33 +96,6 @@ def test_gpu_csv_quoted_name_keeps_comma_without_changing_fields():
     assert values(result)["utilization_percent"] == 50
 
 
-@pytest.mark.parametrize("power", ["1_0", "１", "1e999", "[Driver Error]"])
-def test_gpu_non_driver_numeric_formats_are_partial_failures(power):
-    result = asyncio.run(GpuCollector(UUIDS[0], RawIO(outputs=[
-        CommandOutput(0, gpu_row(power=power)),
-    ])).collect())
-    assert_failure(result, ErrorKind.PARSE, "response.invalid")
-    assert "power_w" not in values(result)
-    assert values(result)["utilization_percent"] == 50
-
-
-@pytest.mark.parametrize("raw", [f"0, GPU-prefix\n", f"0, {UUIDS[0]}suffix\n"])
-def test_discovery_rejects_incomplete_or_extended_uuid(raw):
-    result = asyncio.run(GpuDiscovery(RawIO(outputs=[CommandOutput(0, raw)])).discover())
-    assert_failure(result.inventory, ErrorKind.PARSE, "response.invalid")
-    assert result.specs == ()
-
-
-@pytest.mark.parametrize("output", [
-    CommandOutput(9, "No devices were found\n"),
-    CommandOutput(6, "prefix No devices were found\n"),
-])
-def test_no_devices_phrase_cannot_hide_other_command_failures(output):
-    result = asyncio.run(GpuDiscovery(RawIO(outputs=[output])).discover())
-    assert_failure(result.inventory, ErrorKind.UNAVAILABLE, "source.unavailable")
-    assert result.specs == ()
-
-
 def test_gpu_factory_is_strict_and_creates_independent_owned_io(monkeypatch):
     class FactoryIO(RawIO):
         def __init__(self, *, timeout):
@@ -216,3 +189,75 @@ def test_gpu_capacity_conversion_overflow_retains_both_old_capacity_values():
     assert values(snapshot)["memory_used_bytes"] == 8 * 2**30
     assert values(snapshot)["memory_total_bytes"] == 16 * 2**30
     assert values(snapshot)["utilization_percent"] == 0
+
+
+def test_real_gpu_discovery_failures_recovery_and_retained_slots_cross_the_wire(
+        tmp_path, monkeypatch):
+    from joi_observer.ipc.protocol import DisplayMetadata, SnapshotEnvelope, decode_envelope, encode_envelope
+    from test_hardware_monitor import running_monitor, tick
+
+    inventory_io = RawIO(outputs=[
+        CommandOutput(0, f"0, {UUIDS[0]}\n"),
+        CommandOutput(9, "PRIVATE driver failure"),
+        CommandOutput(0, f"1, {UUIDS[1]}\n0, {UUIDS[0]}\n"),
+        CommandOutput(6, "No devices were found\n"),
+        CommandOutput(0, f"0, {UUIDS[0]}\n"),
+    ])
+    child_ports = []
+
+    def child_io(*, timeout):
+        index = len(child_ports)
+        outputs = ([
+            CommandOutput(0, gpu_row()),
+            CommandOutput(0, gpu_row(power="[Unknown Error]")),
+            CommandOutput(0, gpu_row(utilization="0")),
+            CommandOutput(1, "PRIVATE missing GPU"),
+            CommandOutput(0, gpu_row(power="0")),
+        ] if index == 0 else [
+            CommandOutput(0, gpu_row(index=1)),
+            CommandOutput(1, "PRIVATE missing GPU"),
+            CommandOutput(1, "PRIVATE missing GPU"),
+        ])
+        port = RawIO(outputs=outputs)
+        child_ports.append(port)
+        return port
+
+    monkeypatch.setattr(hardware, "LocalHardwareIO", child_io)
+    discovery = GpuDiscovery(inventory_io)
+
+    async def scenario():
+        snapshots = []
+        async with running_monitor(tmp_path) as (monitor, state, log, clock, _):
+            monitor.register_discovery(discovery)
+            for at in range(5):
+                await tick(monitor, clock, at)
+                reference = state.snapshot()
+                envelope = SnapshotEnvelope(
+                    "gpu-discovery-instance", "gpu-discovery-config", at + 1, float(at),
+                    DisplayMetadata("Offline host", "Ubuntu 24.04"), reference,
+                )
+                assert decode_envelope(encode_envelope(envelope)).snapshot == reference
+                snapshots.append(reference)
+            assert await log.flush()
+        assert inventory_io.closed and all(port.closed for port in child_ports)
+        assert len(child_ports) == 2
+        assert [len(port.calls) for port in child_ports] == [5, 3]
+        return [{item.key: item for item in snapshot.objects} for snapshot in snapshots]
+
+    initial, partial, added, absent, recovered = asyncio.run(scenario())
+    inventory = ObjectKey("gpu_inventory", "local")
+    first, second = ObjectKey("gpu", UUIDS[0]), ObjectKey("gpu", UUIDS[1])
+    assert list(initial) == [inventory, first]
+    assert partial[inventory].stale and partial[first].stale
+    assert values(partial[first])["power_w"] == values(initial[first])["power_w"]
+    assert partial[first].history[-1].metrics is None
+    assert list(added) == [inventory, first, second]
+    assert all(not item.stale for item in added.values())
+    assert values(added[first])["utilization_percent"] == 0
+    assert not absent[inventory].stale and values(absent[inventory])["device_count"] == 0
+    assert absent[first].stale and absent[second].stale
+    assert list(recovered) == [inventory, first, second]
+    assert values(recovered[inventory])["device_count"] == 1
+    assert not recovered[first].stale and values(recovered[first])["power_w"] == 0
+    assert recovered[second].stale and recovered[second].history[-1].metrics is None
+    assert values(recovered[second]) == values(added[second])

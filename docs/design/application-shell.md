@@ -1,66 +1,128 @@
 # Application Shell 模块设计
 
 - 关联需求：dev-0 / REQ-001、REQ-005、REQ-006，需求说明 v1.24；AC-101～106、AC-110、AC-111、AC-113、AC-114、AC-501～504；共享布局约束关联 AC-202/203/207/301/304/605/607/608/613/614/616。
-- 修订：v1.24，2026-11-09。页眉字标采用无阴影字形，保留既有字面位置。
+- 关联需求补充：dev-1 / REQ-001，需求说明 v1.3，AC-101～114。
+- 修订：v2.3，2026-11-16；在图前集中说明核心类、对象职责及其时序别名。
+- 整体设计：[组件边界与依赖](architecture.md)。
 - 相关代码：`src/joi_observer/cli.py`、`__main__.py`、`tui/app.py`、`tui/layout.py`。
-- 关联模块：[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
-- 当前阶段：REQ-006布局、Frame主题、帧时钟和历史尺度接线已由R4实现。输入/绘制公平性沿用AC-603/609/612与原始帧相位；本轮按用户反馈同步设备标签、发行版本与显示细节。R5-006-001/002返修及当前复验证据见[REQ-006 R4交接](../dev-workflow/dev-0/REQ-006/handoff-r4.md)及[R5交接](../dev-workflow/dev-0/REQ-006/handoff-r5.md)。
+- 关联模块：[TUI 客户端](tui-client.md)、[配置](configuration.md)、[错误日志](error-logging.md)；状态和调度共享 `data/models.py`、`data/state.py`、`monitor.py`。
+- 当前阶段：dev-0 的布局、主题和帧调度是保留基线；dev-1 本轮为 R2 设计及接口骨架，下面的新启动与生命周期规则由 R4 接线，不能解释为已实现。旧阶段交接历史路径为 `docs/dev-workflow/dev-0/REQ-006/handoff-r4.md`、`handoff-r5.md`；当前工作区未包含这些文件，不作为本轮验证证据。
 
 ## 职责与边界
 
-本模块负责命令参数、进入全屏前的检查、运行期资源组装、终端恢复、只读刷新和终端容量判定。REQ-001 的 v1.12 公共基础已实现并通过验收；REQ-002 硬件与 REQ-003 Docker 来源共用唯一的 MonitorState、Monitor 和 ErrorLog。REQ-004 提供 vLLM 采集，REQ-005 已完成模型导航，REQ-006 已实现完整主题及显示调度，均复用本模块的生命周期与容量约束；当前验收状态以对应交接单为准。
+dev-1 / REQ-002 的 Web 入口由同机容器单独启动。页面生命周期、浏览器键位和像素断点见 [Web 数据通道](web.md)和 [Neon Grid 页面](web-dashboard.md)。本模块的终端尺寸、退出键及 TTY 探测只用于宿主 TUI。
 
-ApplicationRuntime 通过 build_hardware_sources、build_docker_collectors 和 build_vllm_collectors 组装三类来源，将全部采集器及其状态声明接入同一套状态与调度，并注册 GPU 发现器。docker_command_factory 与 vllm_http_factory 分别替换外部命令和 HTTP IO；全部配置容器和模型参与采集，不按可见行数裁剪。每个模型使用独立端口，空 models 不调用 HTTP 工厂；Monitor 负责关闭所有来源端口。构造与 prepare_log 不执行采集命令或 HTTP 请求；注入 RuntimeComponents 时直接使用已有组件，不创建额外来源。详见[本机硬件](hardware.md)、[Docker](docker.md)与[vLLM](vllm.md)。
+本模块负责命令分派、TUI 进入全屏前的检查、客户端接线、终端恢复、只读刷新和终端容量判定。常驻服务与客户端是不同进程：服务拥有唯一的 MonitorState、Monitor 和 ErrorLog；TUI 只接收白名单展示元数据和不可变快照，不加载监控配置、不创建采集器。
 
-组合根只配对状态声明与采集来源，不拆解或转换业务载荷。公共结果分型、spec 匹配和失败接收规则统一见[Monitor 与内存状态](monitor-state.md#collection-results)。
+现有 ApplicationRuntime 的采集装配与清理移交 [CollectorRuntime 与常驻服务](collector-service.md)，复用 build_hardware_sources、build_docker_collectors、build_vllm_collectors 及既有外部端口。全部配置容器和模型参与采集，不按可见行数裁剪。TUI 端使用 [IPC 客户端](ipc.md)的本地快照缓存；不会以传输失败为理由回退到独立采集。
+
+服务组合根只配对状态声明与采集来源，不拆解或转换业务载荷。公共结果分型、spec 匹配和失败接收规则统一见[Monitor 与内存状态](monitor-state.md#collection-results)。客户端只持有传输解码后的视图值，不跨进程直接共享 Python 状态对象。
 
 目标是 Ubuntu Server 24.04 amd64 / Python 3.12+。使用标准库 `asyncio` 协调任务、`curses` 管理终端。`curses` 只在生产后端 `enter()` 中延迟导入，使模块导入、配置加载及非终端离线测试不依赖终端初始化。必需验证在本地 Ubuntu 或 WSL Ubuntu 执行，Windows 工作区通过 WSL 运行测试，不要求维护原生 Windows 专用测试或执行 Windows 全量回归。源码无需安装 Windows curses 兼容包；真实终端验收在本地 Ubuntu 或 WSL Ubuntu 完成，不连接任何服务器。
 
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `ObserverApp`（对象别名 `App`） | TUI 应用类，负责协调本会话的帧调度、按键处理、只读绘制和终端恢复。 |
+| `SnapshotReader`（对象别名 `Cache`） | 快照读取协议，供应用同步读取本地不可变缓存而不执行 I/O。 |
+| `TerminalPort`（对象别名 `Terminal`） | 终端操作协议，封装进入全屏、尺寸读取、绘制、读键和恢复。 |
+| `CursesTerminal` | `TerminalPort` 的 curses 实现，负责真实终端输入输出及会话状态恢复。 |
+| `FrameSchedule` | 会话帧时钟类，按固定起点维护绘制截止时间并跳过过期帧槽。 |
+| `HistoryScaleTracker` | 会话历史显示尺度类，独立维护各模型的纵轴档位及迟降计时。 |
+
+## 简化类图
+
 ```mermaid
-flowchart LR
-    CLI[CLI main] --> CFG[配置解析]
-    CLI --> CHECK[TTY 检查]
-    CLI --> RT[ApplicationRuntime]
-    RT --> LOG[ErrorLog]
-    RT --> MON[Monitor]
-    RT --> UI[ObserverApp]
-    MON --> STATE[MonitorState]
-    STATE --> READ[SnapshotReader]
-    READ --> UI
-    UI --> FRAME[compose_frame]
-    FRAME --> TERM[TerminalPort / CursesTerminal]
-    KEY[键盘与窗口尺寸] --> UI
+classDiagram
+    class ObserverApp {
+        +run()
+    }
+    class SnapshotReader {
+        <<interface>>
+        +snapshot() StateSnapshot
+    }
+    class TerminalPort {
+        <<interface>>
+        +enter()
+        +render(frame)
+        +read_key(timeout)
+        +restore()
+    }
+    class CursesTerminal
+    class FrameSchedule {
+        +due(now) bool
+        +timeout(now) float
+        +advance(now)
+    }
+    class HistoryScaleTracker {
+        +update(snapshot, now, columns) tuple
+    }
+    ObserverApp --> SnapshotReader
+    ObserverApp --> TerminalPort
+    ObserverApp *-- FrameSchedule
+    ObserverApp *-- HistoryScaleTracker
+    CursesTerminal ..|> TerminalPort
+```
+
+## 关键交互时序图
+
+```mermaid
+sequenceDiagram
+    participant App as ObserverApp
+    participant Cache as SnapshotReader
+    participant Terminal as TerminalPort
+    App->>Terminal: enter()
+    loop 会话未结束
+        App->>Cache: snapshot()
+        Cache-->>App: 本地不可变快照
+        App->>App: 读取一次选择并 compose_frame()
+        App->>Terminal: render(frame)
+        App->>Terminal: read_key(帧截止点剩余时间)
+        Terminal-->>App: 归一化按键或超时
+        alt 方向键或主题键
+            App->>App: 更新本会话选择
+        else q 或可处理的退出
+            App->>App: 结束会话
+        end
+    end
+    App->>Terminal: restore()
+    Note over App,Terminal: enter 部分失败、取消和异常也经 finally 恢复；诊断由外层之后输出
 ```
 
 ## uv 安装与开发运行
 
-安装与日常使用命令统一见 [README](../../README.md#安装与启动)。uv 是安装/开发工具，不加入应用的 Python 运行依赖；应用启动不修改 PATH 或 shell 配置。构建后端、依赖、命令入口和示例资源由 `pyproject.toml` 声明，项目开发锁文件与已安装工具环境分开管理。
+uv 是安装/开发工具，不加入应用的 Python 运行依赖；应用启动不修改 PATH 或 shell 配置。构建后端、依赖、命令入口和示例资源由 `pyproject.toml` 声明。本轮新命令的目标规则以本文为准，R4 需同步 [README](../../README.md#安装与启动)；不生成或重建离线安装包，不更新既有 GUI 启动/回放入口。
 
-AC-114 的本地安装验证使用预先准备好的 uv、Python 和离线依赖：安装工具并完成一次 PATH 配置，打开未激活虚拟环境的新 shell，在无项目 `config.yaml` 的其他目录验证 `joi-observer --version`、`--example-config` 的命令解析与资源可读性。有效配置进入/退出 TUI 的验证接入离线采集端口或禁用网络的本地测试环境，检查确实不依赖源码当前目录或 `VIRTUAL_ENV`。不能用 `uv run` 代替此工具安装验收，因为那不能证明裸命令可用。已有结果见 REQ-001 的 R4/R5 交接与历史证据；本次未重新安装，也不把旧布局通过结果计作新布局验证。这不构成服务器连接授权。
+dev-0 / AC-114 的工具安装证据保留在该批次 R4/R5 交接，不能作为本轮服务或布局验证。dev-1 在本地 Ubuntu/WSL 使用当前源码与已有依赖验证命令分派、资源定位及离线终端行为，不生成安装包、不更新历史 GUI/回放，不连接服务器。
 
 ## 命令与启动序列
 
-安装入口 `joi-observer` 与包内模块入口均调用 `cli.main()`。日常通过 uv 安装后的裸命令启动；开发时也可执行 `uv run python -m joi_observer`，不能假定任意系统 Python 都已安装此包。入口只返回整数退出码，由包装层调用 `SystemExit`；导入模块时不初始化终端、日志、驱动或网络。
+安装入口 `joi-observer` 与包内模块入口均调用 `cli.main()`，R4 需将 main 委派至本轮声明的 `cli.run_command()` 完成新分派；R2 保留旧 main 执行体及既有回归，新增入口是未实现骨架。日常通过 uv 安装后的裸命令启动；开发时也可执行 `uv run python -m joi_observer`，不能假定任意系统 Python 都已安装此包。入口只返回整数退出码，由包装层调用 `SystemExit`；导入模块时不初始化终端、日志、驱动或网络。
 
 | 参数 | 行为 |
 | --- | --- |
-| 无参数 | 按配置查找规则读取用户配置，通过检查后直接进入全屏 |
-| `--config PATH` | 指定唯一配置，缺失或无效不回退 |
-| `--help` | 打印参数说明并返回 0，不需要配置/TTY |
-| `--version` | 打印包版本并返回 0，不需要配置/TTY |
+| 无参数 / `tui` | 检查交互终端，只连接 `/run/joi-observer/snapshot.sock`，收到首个完整合法快照后进入全屏 |
+| `[tui] --socket PATH` | 覆盖本机 Unix socket 绝对路径；不接受 URL，不改变采集配置 |
+| `service [--config PATH] [--socket PATH]` | 无 TTY 要求，运行宿主机常驻采集服务，配置只加载一次 |
+| 默认入口或 `tui --config PATH` | 返回 2，提示 `Use joi-observer service --config PATH.`，不加载文件、不发起连接 |
+| `--help` / `-h` | 打印参数说明并返回 0，不需要配置/TTY/服务 |
+| `--version` / `-V` | 打印包版本并返回 0，不需要配置/TTY/服务 |
 | `--example-config` | 打印随包示例的绝对路径，供复制使用，不加载该示例启动采集 |
 
-普通启动严格按以下顺序执行：参数解析 → 配置查找与完整验证 → 交互终端检查 → 组装运行期 → 日志预检查 → 全屏运行 → 资源清理。缺配置时必须同时显示需要准备的配置路径与示例文件位置；具体配置搜索顺序见配置模块。未知参数/配置错误不会创建日志文件或采集器。
+普通 TUI 启动严格按以下顺序执行：参数解析 → 交互终端检查 → 创建只读客户端 → 单次连接并接收首帧 → 原子安装元数据与快照 → 构造展示会话 → 全屏运行 → 客户端清理。客户端不查询配置路径，不创建 ErrorLog；当前目录存在非法 YAML 也不影响客户端。服务启动检查与配置错误由[服务设计](collector-service.md)定义。
 
-`stdin`、`stdout` 都必须是 TTY，`TERM` 必须非空且不等于 `dumb`；管道/重定向输出返回 3，提示需要交互终端。首版不提供非交互监控输出、Web 页面或菜单模式。`stderr` 可重定向，但仍只接受全屏前的配置诊断或一次日志初始化提示。
+TUI 的 `stdin`、`stdout` 都必须是 TTY，`TERM` 必须非空且不等于 `dumb`；管道/重定向输出返回 3，提示需要交互终端。`stderr` 可重定向，连接诊断必须发生在未进入全屏或恢复终端之后。服务子命令不使用 curses；Web 由 dev-1 / REQ-002 单独实现。
 
-`ErrorLog.prepare()` 失败只输出一次英文 `Error log unavailable; monitoring will continue.`，随后继续运行。该提示不是日志记录；运行中的日志写入问题由日志模块静默处理，不再次通知 UI 或控制台。
+`ErrorLog.prepare()` 的一次降级提示属于采集服务标准错误输出，不向 TUI 或快照转发。TUI 不读取日志，不输出来源异常或采集诊断。
 
 | 情形 | 退出码 | 控制台行为 |
 | --- | --- | --- |
 | q 正常退出 | 0 | 仅恢复终端，不补打采集错误 |
 | 参数/配置错误 | 2 | 全屏前显示可定位错误；不记录 ERROR 日志 |
 | 非交互终端 | 3 | 全屏前显示简短英文提示 |
+| 初次连接失败 / 运行中连接中断 / 协议非法 | 4 | 未进入全屏或恢复终端后输出 `Cannot connect to collector service. Run joi-observer again to retry.` |
+| 服务启动、实例锁或 socket 错误 | 5 | 服务 stderr 输出 `Collector service could not start.`，不输出原始异常或堆栈 |
 | SIGINT / Ctrl+C | 130 | 完成清理，不显示采集诊断 |
 | SIGTERM | 143 | 完成相同清理路径 |
 | 内部程序错误 | 1 | 先恢复终端，再显示固定 `Observer stopped unexpectedly.`；不输出异常内容或堆栈 |
@@ -69,13 +131,13 @@ AC-114 的本地安装验证使用预先准备好的 uv、Python 和离线依赖
 
 ## 生命周期与异步协作
 
-`ApplicationRuntime` 是唯一组合根。先构建初始只读快照，让 UI 可显示 `—`，再并发执行 `Monitor.run(stop_event)` 与 `ObserverApp.run()`。一个会话只创建一个 MonitorState、一个 Monitor 和一个 ErrorLog；界面不拥有采集器或写状态接口。
+TUI 运行期拥有一个 SnapshotClient 和一个 ObserverApp。连接及持续收帧位于独立异步任务；同步 `snapshot()` 只读当前缓存，不等待字节、不读取文件、不发起连接。服务首帧可以包含尚未观测的 `—`，但必须有同一生效配置的完整展示元数据；不得先使用本地旧配置绘制再异步替换。
 
-REQ-002接线：`build_hardware_sources(config)`无IO创建CPU/RAM/前三挂载与GPU发现器；静态spec纳入同一个State，静态来源交Monitor后调用`register_discovery`。由host/cpu、host/ram取代host/local占位；REQ-004也已接入全部vLLM模型，RuntimeComponents注入路径仍保留。GPU发现和首次采集只能由Monitor.run/poll发起，不在CLI预检查、构造或渲染时执行。
+服务在状态更新后合并发布完整快照；无更新时最多间隔 1 秒发布心跳。生产采样间隔为 1～60 秒，发布不额外触发采样。5 秒内未收到首帧或后续完整合法帧即判定连接失败；EOF、传输错误、协议版本错误、实例身份变化也立即失败。一份快照以有序字节流分批读写，零碎字节不重置完整帧超时；不采用应用层分片协议或固定 8 MiB 总量限制。采样周期可能大于 5 秒，服务心跳仍持续，未产生新样本不等于失联。失败后客户端关闭接收任务并退出，不能后台重连；重新运行命令建立新会话。来源 STALE 是快照内容，不中断连接。
 
 绘制接线：compose_frame沿用本模块全部Region和required_size，硬件内部内容委托`widgets.hardware_cells`替换旧通用占位；不增加区域或改行数。ObserverApp的gpu_slots仍只收集collector=gpu的UUID，gpu_inventory不计数；硬件控件根据ViewSelection计算关联色，不负责方向键导航。具体字段、挂载序号、STALE和颜色角色见[硬件设计](hardware.md)。
 
-`RuntimeComponents` 允许注入真实 Monitor、ObserverApp 与日志端口的组合，注入时二者仍须共享同一个 MonitorState。这使联合黑盒测试能够使用真实调度和 UI 入口，仅替换外部采集源、终端与文件日志边界；不能把组合根编排替换为返回预定结果的 mock。
+每条连接固定 `instance_id`、`config_revision` 和展示元数据，后续只接受递增传输序号。服务重启产生新实例；旧连接失效并退出，不把新历史拼到旧会话。新的用户命令读取新元数据并新建选择和历史尺度。慢传输不得阻塞 q、导航、主题或终端恢复。联合黑盒只替换外部采集字节、传输端口、终端和时钟，保留真实服务、客户端与视图编排。
 
 UI 首次绘制发生在读取第一个按键前。正常绘制以 **60 FPS** 为目标，间隔 `P=1/60s`；它是调度目标而非任意终端的实测保证。快照/按键变化在下一个普通绘制机会呈现，尺寸变化可在下一次读键前立即重绘。主机时间至少每秒更新一次，使用带时区的墙钟；采样与帧调度均用各自单调时钟，Monitor 保持配置采样周期，UI 不启动新采集。本期不增加帧率切换或配置项。
 
@@ -94,46 +156,17 @@ UI 首次绘制发生在读取第一个按键前。正常绘制以 **60 FPS** �
 
 `timing.py`已实现常量`FRAME_RATE=60`、`FRAME_INTERVAL=1/60`和`FrameSchedule(start)`。`due(now)`只读判断到期；`timeout(now)`返回0..50ms的剩余等待；`advance(completion_now)`跳到严格晚于完成时刻的首个原始节拍。同一完成时刻重复advance不额外跳槽，查询不改变状态。起点/时刻拒绝bool、非有限值、负值和早于起点的值；advance另拒绝时间回退，异常不能改变原进度。构造只保存起点和进度，不访问外部时钟；ObserverApp已使用此帧时钟替换原last_draw逻辑。
 
-应用实例拥有一个`HistoryScaleTracker(config.models)`；每个生成帧从reader取一次快照、actions取一次selection，并用同一单调now推进全部模型尺度。冻结尺度元组显式传给`compose_frame(..., history_scales=scales, monotonic_now=now)`，再由布局传给`vllm_cells`。小窗口使用最近正常图区宽度，尚未有正常帧时使用最小正常布局的图区宽度；不能为小窗口销毁尺度。主题/模型/resize/同实例再次run保持会话，新的应用实例独立。帧时钟每次run重新以本次起点调度，不补画上次run期间的帧。
+应用实例拥有一个 `HistoryScaleTracker(metadata.models)`；每个生成帧从 reader 取一次缓存快照、actions 取一次 selection，并用同一单调 now 推进全部模型尺度。`metadata` 为服务投影的 DisplayMetadata，不含 URL 或采集参数；既有纯视图参数名 `config` 可以兼容保留，但其生产输入迁移为该展示结构，不能用伪造 base_url 重建 AppConfig。冻结尺度元组显式传给 `compose_frame(..., history_scales=scales, monotonic_now=now)`，再由布局传给 `vllm_cells`。小窗口使用最近正常图区宽度，尚未有正常帧时使用最小正常布局的图区宽度；主题/模型/resize 不重建尺度。帧时钟每次 run 重新以本次起点调度，不补画上次 run 期间的帧。
 
-```mermaid
-classDiagram
-    class ObserverApp {
-        +run() None
-    }
-    class FrameSchedule {
-        +__init__(start)
-        +due(now) bool
-        +timeout(now) float
-        +advance(now) None
-    }
-    class HistoryScaleTracker {
-        +__init__(models)
-        +update(snapshot, now, columns) tuple
-    }
-    class HistoryScale {
-        +model_id str
-        +field str
-        +upper int
-    }
-    class Layout["tui.layout"] {
-        <<module>>
-        +compose_frame(snapshot, config, size, host, now, history_scales) Frame
-    }
-    ObserverApp *-- FrameSchedule
-    ObserverApp *-- HistoryScaleTracker
-    ObserverApp ..> Layout
-    HistoryScaleTracker ..> HistoryScale
-    Layout ..> HistoryScale
-```
 
-图示为当前已实现的所有权及传递关系：应用拥有尺度控制器，并显式传递冻结尺度。纯布局不能通过模块全局状态保存迟降计时。默认接线的黑盒为`tests/test_history_app.py`：未选中模型继续迟降、主题/resize/小窗口保持、同实例重入与新实例隔离，输入仅替换外部时钟与只读样本。
 
-q 使 UI 正常返回，组合根通知/停止 Monitor；UI 内部异常同样停止 Monitor。Monitor 的非采集类内部异常取消 UI，让 UI 的 `finally` 恢复终端。终端 `enter()` 也位于该 `try/finally` 内，覆盖部分初始化失败；`restore()` 幂等且必须尝试恢复光标、输入回显和原终端显示。协程取消、可捕获的 SIGINT/SIGTERM 使用同一路径。SIGKILL、断电和终端设备本身失效无法保证恢复。
+图示保留已实现的应用/尺度所有权，dev-1 将模型输入替换为展示元数据；纯布局不能通过模块全局状态保存迟降计时。默认接线的黑盒为 `tests/test_history_app.py`：未选中模型继续迟降、主题/resize/小窗口保持、同实例重入与新实例隔离，输入仅替换外部时钟与只读样本。既有 AppConfig 纯视图用例保持兼容，不因新增 DisplayMetadata 输入而删除。
 
-总体清理预算不超过 1 秒，`run()` 与 `close()` 共享预算；采集端口必须合作取消，底层同步操作必须有超时，不能等待无限阻塞线程退出。日志关闭不向 stdout/stderr 输出积压记录，也不要求补写停机时尚未落盘的事件。清理中的异常不能掩盖原异常。
+q 使 UI 正常返回并关闭本会话 IPC；UI 内部异常、进程终止或连接失败均不停止宿主机 Monitor，也不影响其他客户端。连接任务失败时，TUI 运行期取消 UI 并等待其 `finally` 恢复终端，随后才输出固定连接错误。终端 `enter()` 也位于该 `try/finally` 内，覆盖部分初始化失败；`restore()` 幂等且尝试恢复光标、输入回显和原终端显示。可捕获的 SIGINT/SIGTERM 使用同一路径。SIGKILL、断电和终端设备本身失效无法保证恢复。
 
-`ObserverApp` 在 `actions is None` 时创建默认 `SessionViewActions(config.models)`，显式注入原样保留；每帧只读取一次选择并用于整帧。全局退出由应用处理，其他键分派给会话控制器。按键、选择生命周期及服务页脚统一见[模型导航](navigation.md)。
+客户端总体清理预算不超过 1 秒，`run()` 与 `close()` 共享预算，先恢复终端，再有界关闭接收任务和传输；取消不能被误报成来源失败。服务的采集/日志清理有独立预算，见[服务设计](collector-service.md)。清理中的异常不能掩盖原异常。
+
+`ObserverApp` 在 `actions is None` 时从展示模型元组创建默认 `SessionViewActions(metadata.models)`，显式注入原样保留；每帧只读取一次选择并用于整帧。全局退出由应用处理，其他键分派给会话控制器。按键、选择生命周期及服务页脚统一见[模型导航](navigation.md)。
 
 布局从 `services.VLLM_SERVICE` 取得一次描述，同时用于当前服务标题、入口及 `footer_text(service)`，避免分别拼装不同服务的文案。服务描述和页脚接口契约见[导航设计](navigation.md#服务入口与键位呈现)。
 
@@ -184,6 +217,8 @@ docker_capacity = max(0, hardware_rows - 15)
 
 主机信息行沿用HostInfo.hostname字段承载固定设备标签H3C R5300 G6，紧随` / `及HostInfo.system发行版本。组合根`_local_host_info()`只在启动装配时读取本地os-release：按`/etc/os-release`、`/usr/lib/os-release`顺序尝试，打开或读取发生OSError时尝试下一候选；首个读取成功的文件一次解析，缺字段或空文件不与低优先级文件合并。只使用文件实际提供的字段，优先非空PRETTY_NAME，缺失或空值时组合NAME与VERSION_ID，名称/版本缺失或空值分别用Ubuntu/—。显式提供的字面值Linux是有效名称，不能当成库默认值丢弃；空文件、全部候选读取失败或所选文件UTF-8解码失败显示Ubuntu —。解析沿用标准库已核对的字段赋值、引号及五类转义规则，不执行shell、不使用标准库注入的Linux默认字段或全局缓存，不新增依赖。该读取不使用platform.release内核版本、不读取DMI、不发起网络探测；布局自身仍为纯函数，显式HostInfo注入接口保持。合计左区最多`C-19-2`列，按终端显示宽度裁切；右侧19列固定为传入本机aware墙钟的`YYYY-MM-DD HH:MM:SS`，右端同为C，中间至少空两格。不把时间转换成UTC，不追加设计稿模拟的CST，不使用采样时间。控制字符和双向控制符先净化，宽字符/组合字符不得穿越时钟保护区。
 
+上述主机信息读取在 dev-1 中只由采集服务执行一次，结果进入 DisplayMetadata.hostname/system；TUI 使用服务元数据，不重新读取自己的 os-release，Web 容器也不拿容器发行信息覆盖宿主信息。该展示行为由 R4 从旧 `_local_host_info()` 接线迁移，读取规则与回退保持不变。
+
 面板标题复用上边框行，保持既有内缩，不增加布局高度。正式标题与颜色角色、HTML 边框/表面的采用范围统一见[主题设计](theme.md#color-roles)。
 
 水平分区按Neon Grid参考稿接近3:2：`gpu_width=floor((columns−1)*3/5)`；GPU从0列起，空1列，Host/Storage/Docker共用右侧余宽。120列时GPU外宽71，右侧起点72/外宽48；140列时分别83与84/56。横向调整不改变上面的高度公式、GPU槽数规则或Docker容量。
@@ -220,21 +255,30 @@ Docker 条目内部名称、状态槽及失败替换规则统一见[Docker 行�
 
 | 接口 | 公开行为测试 | 验收 |
 | --- | --- | --- |
-| `main` / `CliDependencies` | `tests/test_cli.py`：直接启动、缺配置、显式路径、非法配置、重新读取配置、非TTY、帮助、日志初始化失败、退出清理 | AC-104/105/110/111/113 |
+| `main` / CLI 依赖端口 | `tests/test_cli.py` 保留参数/非TTY/安全错误及清理覆盖；配置与日志的旧默认入口场景迁移到 service，客户端新增无配置启动、禁止本地采集、连接失败与手动重试 | dev-1 AC-102/111/112/113 |
+| `run_command` | `tests/test_client_cli_contract.py`：纯 TUI 分派、service 独立配置、参数迁移、无本地采集、连接错误与退出码 | dev-1 AC-101/102/112/113 |
+| `TuiClientSession` / `SnapshotClient` | `tests/test_client_session.py`、`tests/test_ipc_client.py`：离线字节接收、原子缓存、无 I/O snapshot、连接失败后退出、慢传输取消与终端恢复 | dev-1 AC-103/105/107/108/109/112 |
+| DisplayMetadata → 真实视图 | `tests/test_display_metadata_view.py`：服务元数据模型顺序、列表/详情名称、端口、长名称和 GPU 关联；保留 AppConfig 输入兼容 | dev-1 AC-104/105/106/107/114 |
 | `required_size` | `tests/test_tui.py`：GPU容量、非负整数边界、容器不限量且不增高、挂载点尾项不增高 | AC-106 |
 | `compose_frame` / `format_metric` | 标题/值槽/STALE、偶数及奇数半页、8区边界、Storage固定及无补位、两种页眉的 Docker 可见前缀、零行与空态、失败恢复稳定 | AC-101/106/110/207/304/607/608 |
 | HTML外壳 / `compose_frame` | `tests/test_html_shell_layout.py`：两主题/多宽右边缘、主机与非UTC时钟分色、Unicode/ANSI保护、完整面板标题角色、7种Docker生命周期/未知/STALE固定槽、容量0与空配置 | REQ-006排版与颜色契约 |
 | `ObserverApp.run` / `TerminalPort` | 初次绘制、q、部分进入异常、绘制异常、Ctrl+C、小窗口退出、缩放恢复、键位只分派展示操作 | AC-103/104/106 |
 | `SessionViewActions` / 默认 `ObserverApp` | `tests/test_navigation.py`、`tests/test_navigation_app.py`、`tests/test_navigation_pty.py`：真实控制器、默认接线、只读采样隔离、失败/缩放保持、真实方向键、页脚与禁用入口 | AC-501～504 |
 | `ServicePresentation` / `footer_text` / `compose_frame` | `tests/test_service_footer.py`：服务描述冻结、同描述驱动标题/当前入口/导航提示、其余全局文字不变 | AC-504及用户补充 |
-| `ApplicationRuntime` / `RuntimeComponents` | `tests/test_tui.py`联合真实Monitor/State/UI：慢采集仍绘制和q退出、键盘异常使采集取消/关闭、终端恢复先于日志关闭；采样时序另见调度测试 | AC-102/103/104 |
+| 服务 / 客户端运行期 | `tests/test_tui.py` 等旧联合测试保留慢来源响应性与真实状态覆盖；同生命周期断言迁移为单客户端退出后采集和另一客户端继续，补充慢传输、失联恢复终端、新实例历史隔离 | dev-1 AC-101～109/111/112 |
 | uv 工具安装与命令入口 | 新 shell、未激活环境、不同工作目录、命令/示例资源定位及离线 TUI 启停；已有 R4/R5 历史证据，布局边界变更后须重新验证 | AC-114 |
 
-离线命令：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。配置解析与屏幕生成没有被替换；运行期/终端替身只隔离操作系统、驱动和终端。REQ-001～005已合并的采集/退出等非呈现行为继续回归；REQ-006当前实现与验证记录在R4/R5交接，R2记录只保留当时的未实现基线。REQ-002最初骨架/未接线记录同样保留为历史，不使用skip/xfail掩盖当前差异。
+保留回归入口：`python -m pytest tests/test_cli.py tests/test_tui.py tests/test_shell_edges.py`。新增客户端、服务、协议测试与实际执行结果见[dev-1 REQ-001 R2交接](../dev-workflow/dev-1/REQ-001/handoff-r2.md)。R4 只能因接口迁移或已确认变化调整旧入口和相应断言；未变更功能必须继续通过，不能删除、跳过、弱化断言或用 mocked 业务结果掩盖回归。所有必需验证在本地 Ubuntu/WSL 执行，禁止服务器连接；传输依赖使用离线端口替身。
 
 现有PTY输入、终端恢复、最低尺寸、边界与缩放测试继续保留，涵盖奇偶半页、Storage/Docker区域和可见条目；返修后按影响范围重跑。当前整体观感已由用户在R5确认，GUI-006-001关闭，详见R5交接。历史`verify_pty.py` / `verify_uv_install.py`中以5容器抬高到120×38的版本不再适用：无GPU最低120×36，5GPU最低120×39；这些旧JSON不改写为新通过，新证据须注明当前需求及源码版本。`tests/test_terminal_pty.py`的Esc/方向键时限测试只针对终端适配器，不因布局改写。上述验证不授权连接服务器。
 
 ## 修订说明
+
+v2.3 按更新后的 R2 模板增加图前类与对象简介，合并同一元素的类名和时序别名，不改变接口或行为契约。
+
+v2.2 按更新后的 R2 模板统一整体设计引用、简化类图和关键交互时序；原业务与测试契约继续保留。
+
+v2.0 固定 dev-1 的服务/TUI 分离、单次连接、元数据原子接收、终端恢复和测试迁移边界。以下 dev-0 修订是历史记录，其中同生命周期和安装包验证不再定义本轮目标。
 
 v1.15按用户反馈同步静态设备标签、本地os-release发行版本及回退、斜线分隔、Storage路径正文色和主题切换整帧重绘；不自动更改TERM或扩大采集范围。
 

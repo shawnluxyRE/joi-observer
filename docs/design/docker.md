@@ -1,8 +1,10 @@
 # Docker 容器采集模块设计
 
 - 关联需求：dev-0 / REQ-003、REQ-006，requirements.md v1.16，AC-301～304及HTML外壳排版；依赖 REQ-001 的配置、调度、状态、日志与布局。
-- 修订：v1.3，2026-11-05；保留采集身份、命令边界和逐行显示契约，公共结果、全页容量与配色改为引用所属模块；行为不变。
-- 相关代码：`src/joi_observer/collectors/docker.py`、`config.py::ContainerConfig`、`cli.py::ApplicationRuntime`。
+- 关联需求补充：dev-1 / REQ-001，AC-101～104/110/111，复用本机容器采集和身份规则。
+- 修订：v2.1，2026-11-16；在图前集中说明容器采集类、对象职责与时序别名。
+- 整体设计：[组件边界与依赖](architecture.md)。
+- 相关代码：`src/joi_observer/collectors/docker.py`、`config.py::ContainerConfig`、`runtime.py::CollectorRuntime`；`cli.py::ApplicationRuntime` 仅为迁移基线。
 - 关联模块：[配置](configuration.md)、[Monitor / State](monitor-state.md)、[错误日志](error-logging.md)、[应用外壳](application-shell.md)。
 
 ## 职责与范围
@@ -11,56 +13,64 @@
 
 本文维护 Docker 专属的读取、身份匹配、取消和逐行展示规则；配置输入校验、通用状态与日志、全页布局和主题分别引用对应模块。
 
-## 类图
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `DockerCollector` / `Collector` | `Collector` 是 `DockerCollector` 的对象别名，负责读取一个配置容器的生命周期并返回其配置身份对应的结果。 |
+| `DockerCommandPort` / `Command` | `Command` 是 `DockerCommandPort` 协议端口的对象别名，负责带超时和输出边界的只读 Docker 命令执行及资源关闭。 |
+| `LocalDockerCommand` | `LocalDockerCommand` 是命令端口的本机实现，负责以固定 argv 执行容器 inspect 并回收子进程。 |
+| `ContainerConfig` | `ContainerConfig` 是不可变容器配置，分别保存状态显示使用的稳定 id 和实际查询目标 name。 |
+| `MetricCollectionResult` | `MetricCollectionResult` 承载一次采集的对象身份、指标和可选受控失败信息，供 Monitor 提交状态。 |
+| `Monitor` | `Monitor` 按独立周期调度容器采集，并统一提交结果、记录真实失败和关闭来源。 |
+| `MonitorState` / `State` | `State` 是 `MonitorState` 的对象别名，负责按配置身份合并容器结果并维护最新状态与有界历史。 |
+
+## 简化类图
 
 ```mermaid
 classDiagram
-    class ApplicationRuntime {
-        -_docker_command_factory
-        +run() None
-        +close() None
-    }
-    class Collector {
-        <<interface>>
-        +spec ObjectSpec
-        +collect() CollectionResult
-        +close() None
-    }
     class DockerCollector {
         +spec ObjectSpec
         +collect() MetricCollectionResult
-        +close() None
+        +close()
     }
     class DockerCommandPort {
         <<interface>>
         +run(argv, timeout) CommandOutput
-        +close() None
+        +close()
     }
     class LocalDockerCommand
-    class CommandOutput {
-        +returncode int
-        +stdout bytes
-        +stderr bytes
-    }
-    class Monitor
-    class MonitorState
-    class CollectionResult {
-        +key ObjectKey
-        +failure Failure[0..1]
+    class ContainerConfig {
+        +id str
+        +name str
     }
     class MetricCollectionResult {
+        +key ObjectKey
         +metrics tuple
+        +failure Failure
     }
-    Collector <|.. DockerCollector
-    CollectionResult <|-- MetricCollectionResult
-    DockerCommandPort <|.. LocalDockerCommand
-    DockerCollector *-- "1" DockerCommandPort
-    Collector ..> CollectionResult
+    DockerCollector *-- DockerCommandPort
+    DockerCollector --> ContainerConfig
     DockerCollector ..> MetricCollectionResult
-    DockerCommandPort ..> CommandOutput
-    ApplicationRuntime ..> DockerCollector
-    Monitor --> "0..*" Collector
-    Monitor --> "1" MonitorState
+    LocalDockerCommand ..|> DockerCommandPort
+```
+
+## 关键交互时序图
+
+```mermaid
+sequenceDiagram
+    participant Monitor
+    participant Collector as DockerCollector
+    participant Command as DockerCommandPort
+    participant State as MonitorState
+    Monitor->>Collector: collect()
+    Collector->>Command: run(固定 inspect argv, 剩余超时)
+    Command-->>Collector: returncode 与有界原始字节
+    Collector->>Collector: parse_inspect() 与身份核对
+    Collector-->>Monitor: 配置 id 的 MetricCollectionResult
+    Monitor->>State: accept(result, sampled_at)
+    Note over Monitor,State: Exited 是成功状态；真实失败保值并插入历史缺口
+    Note over Collector,Command: 无 shell 拼接或容器控制；每项命令资源独立关闭
 ```
 
 图为目标依赖结构，接口实现使用 Python 结构化 Protocol。每个采集器独占一个命令端口，避免关闭一项影响其他项。原始命令输出仅在采集模块内解析，不进入快照或日志。
@@ -133,15 +143,15 @@ docker --host unix:///var/run/docker.sock container inspect --format <template> 
 
 `build_docker_collectors(containers, timeout=..., command_factory=...)` 按完整配置顺序创建独立采集器，空配置返回空 tuple 且不创建端口。默认工厂创建 LocalDockerCommand；工厂、采集器构造与 prepare_log 都不执行命令。
 
-`ApplicationRuntime._components()`已调用该工厂，以全部spec替换Docker静态模板，并把全部采集器交给同一个Monitor；硬件、Docker与已合并的vLLM共享唯一State/Log和只读reader。传入RuntimeComponents时沿用注入组件，不创建额外采集器。`docker_command_factory`只隔离外部命令，不能替换采集结果或另建一套状态。
+R4 在 `CollectorRuntime` 中复用旧 `ApplicationRuntime._components()` 的工厂接线：全部 spec 加入服务唯一 State，全部采集器交给同一个 Monitor，硬件、Docker、vLLM 共用服务内日志。注入 CollectorComponents 时不创建额外采集器；`docker_command_factory` 只隔离外部命令，不能替换采集结果或另建状态。TUI/Web 从 IPC 获取白名单快照及容器 id，不持有命令端口或 Docker 访问权限。
 
 <a id="docker-row"></a>
 
 ## 逐行展示
 
-面板容量、可见前缀、空配置/零容量以及缩放行为统一见[应用外壳](application-shell.md#可验证的字符容量)。每个可见容器占一行，名称沿用 `ContainerConfig.name`；有可用内容行且未配置容器时，空态文案为 `No containers configured`。
+面板容量、可见前缀、空配置/零容量以及缩放行为统一见[应用外壳](application-shell.md#可验证的字符容量)。每个可见容器占一行，名称显示配置的 `ContainerConfig.id`；`ContainerConfig.name` 仅作为实际容器查询目标。有可用内容行且未配置容器时，空态文案为 `No containers configured`。
 
-内容左端 `L=region.column+2`、右端 `R=region.column+region.width-2`（不含 R）。状态固定占 `[R-14,R)`，全部生命周期、未知 `—` 和 `STALE` 均按文字宽度右对齐到 R。名称在 `[L,R-15)` 内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长 Unicode 名不能覆盖状态。状态变化、失败恢复及 resize 不会重排配置前缀或增加行。
+内容左端 `L=region.column+2`、右端 `R=region.column+region.width-2`（不含 R）。状态固定占 `[R-14,R)`，全部生命周期、未知 `—` 和 `STALE` 均按文字宽度右对齐到 R。显示的配置 ID 在 `[L,R-15)` 内单行裁切，始终留一格间隔；不因状态短或未知收回预留宽度，长 ID 不能覆盖状态。状态变化、失败恢复及 resize 不会重排配置前缀或增加行。
 
 STALE 优先替换旧生命周期，只显示该状态文字，无错误原因或时间；初始无对象/无状态使用 `—`。成功 Exited/Dead 仍显示生命周期，不误报采集失败。状态新鲜性及颜色角色统一遵守[主题角色表](theme.md#color-roles)，本模块不维护另一份颜色映射。
 
@@ -153,12 +163,18 @@ STALE 优先替换旧生命周期，只显示该状态文字，无错误原因�
 | DockerCollector / build_docker_collectors | 同上 | 固定单次只读命令、全量顺序、重复目标不同 id、无 IO 构造、失败恢复、取消、关闭 |
 | LocalDockerCommand | `tests/test_docker_command.py` | 仅替换 asyncio 子进程创建端口；参数/环境、原始字节、并发排空、两流上限、超时/取消/close 回收 |
 | Collector→Monitor→State→Frame/Log | `tests/test_docker_integration.py` | 真实采集业务入口与离线命令样本；隐藏项采样/日志、容量变化、恢复及错误净化 |
-| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 全7种生命周期、初始未知、STALE、长名称、两主题、多宽、14格槽内统一右对齐；核对主题角色和外壳容量契约 |
-| ApplicationRuntime | 同上 | 用fake命令与终端运行真实生产组装，验证全部容器实际采样及隔离、恢复、退出清理 |
+| 固定状态右边缘与角色 | `tests/test_html_shell_layout.py`、`tests/test_docker_integration.py` | 配置 ID 显示、全7种生命周期、初始未知、STALE、长 ID、两主题、多宽、14格槽内统一右对齐；核对主题角色和外壳容量契约 |
+| 旧 ApplicationRuntime 装配用例的迁移 | 同上及 `tests/test_snapshot_pipeline.py` | 复用原始命令样本和真实采集逻辑，验证全部容器采样/失败隔离/恢复；客户端退出后采集继续，服务停止才清理采集资源 |
 | 配置与容量 | `tests/test_config.py`、`test_config_boundaries.py`、`test_tui.py`、`test_integration.py` | 复用 REQ-001 的 1/5/6/10 项完整保留、空态、0 容量、半页、配置不修改等测试 |
 
 运行入口：`python -m pytest tests/test_docker.py tests/test_docker_command.py tests/test_docker_integration.py`，以及全量 `python -m pytest`。所有 Docker IO 使用离线替身；不运行实际 docker、不访问 Unix socket 或网络。现有两个生产首帧测试增加 pending command 工厂，保持首次采样前的断言，并为 R4 接入后继续隔离真实 IO。
 
-测试不以 NotImplementedError 为成功条件。REQ-003 最初 R2 的业务骨架/未接线失败是历史基线，实际命令与当时结果见[历史R2交接](../dev-workflow/dev-0/REQ-003/handoff-r2.md)；当前验证分别覆盖采集、运行期接线及本节逐行展示契约，不把业务失败当作导入/环境错误。
+测试不以 NotImplementedError 为成功条件。REQ-003 最初 R2 的业务骨架/未接线失败属于历史基线，交接路径为 `docs/dev-workflow/dev-0/REQ-003/handoff-r2.md`，当前工作区未包含，不作为本轮验证证据。现有有效回归分别覆盖采集、运行期及逐行显示契约，服务/客户端迁移须保留对应断言，不把业务失败当作导入/环境错误。
 
 后续集成待验证：真实 Docker CLI 与模板、Unix socket 权限和错误文案、真实进程取消的时限。当前仅验证离线协议和本地公共 TUI；不得将样本结果表述为实机验证，也不因交接自动获得服务器连接授权。
+
+## 修订说明
+
+v2.1 在图前合并介绍类图和时序图元素，明确 Collector、Command、State 的对应类；原图与采集、呈现及验证契约保持不变。
+
+v2.0：2026-11-16，按更新后的 R2 模板补充整体设计引用、核心类图和关键交互时序，保留业务与测试契约。

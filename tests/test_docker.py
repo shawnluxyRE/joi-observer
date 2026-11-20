@@ -274,13 +274,20 @@ def test_collector_executes_one_local_read_with_target_as_single_argument(capsys
     (TimeoutError("PRIVATE timeout"), ErrorKind.TIMEOUT, "collection.timeout"),
     (DockerOutputLimitError(), ErrorKind.PARSE, "response.invalid"),
 ])
-def test_expected_io_failures_are_controlled_and_do_not_print(error, kind, code, capsys):
+def test_expected_io_failure_is_sanitized_and_next_sample_recovers(error, kind, code, capsys):
     async def scenario():
-        command = OfflineCommand(error)
-        result = await DockerCollector(CONFIG, command=command).collect()
-        assert_failure(result, kind, code)
+        command = OfflineCommand(error, response(document(status="paused")))
+        collector = DockerCollector(CONFIG, command=command)
+        failed = await collector.collect()
+        assert_failure(failed, kind, code)
         assert len(command.calls) == 1
-        assert "PRIVATE" not in repr(result)
+        assert "PRIVATE" not in repr(failed)
+        recovered = await collector.collect()
+        assert recovered.failure is None and recovered.metrics == (Metric("state", "Paused"),)
+        assert failed.key == recovered.key == collector.spec.key
+        assert len(command.calls) == 2 and command.calls[0] == command.calls[1]
+        assert command.close_calls == 0
+        await collector.close()
     asyncio.run(scenario())
     assert capsys.readouterr() == ("", "")
 
@@ -395,30 +402,5 @@ def test_full_id_collector_follows_rename_without_rebinding_to_a_recreated_conta
         assert_failure(recreated, ErrorKind.NOT_FOUND, "object.not_found", object_id=config.id)
         assert all(result.key == collector.spec.key for result in (original, renamed, recreated))
         assert [argv[-1] for argv, _ in command.calls] == [CONTAINER_ID] * 3
-        await collector.close()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("error", [
-    FileNotFoundError("PRIVATE missing CLI"),
-    PermissionError("PRIVATE denied"),
-    OSError("PRIVATE transient IO fault"),
-    TimeoutError("PRIVATE timeout"),
-    DockerOutputLimitError(),
-])
-def test_expected_io_failure_does_not_disable_later_collection(error):
-    async def scenario():
-        command = OfflineCommand(error, response(document(status="paused")))
-        collector = DockerCollector(CONFIG, command=command)
-
-        failed = await collector.collect()
-        recovered = await collector.collect()
-
-        assert failed.failure is not None and failed.metrics == ()
-        assert recovered.failure is None
-        assert recovered.metrics == (Metric("state", "Paused"),)
-        assert failed.key == recovered.key == collector.spec.key
-        assert len(command.calls) == 2 and command.calls[0] == command.calls[1]
-        assert command.close_calls == 0
         await collector.close()
     asyncio.run(scenario())

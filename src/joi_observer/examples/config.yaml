@@ -1,12 +1,13 @@
 # Joi::Observer example — copy to your own config.yaml and review before use.
 # This file is never loaded automatically as a monitoring configuration.
 
-sample_interval: 1.0       # Seconds; finite number from 0.1 through 60.
+sample_interval: 1.0       # Seconds; finite number from 1 through 60.
 collection_timeout: 3.0    # Seconds; a slow object never overlaps itself.
 mount_points: ["/", "/data"]  # Only the first three items are monitored; later items are ignored.
 
 # Add actual Docker names or full IDs; all configured items are monitored.
 # Only first items that fit in the Docker panel are displayed; others stay hidden.
+# id is the display label in the Docker panel; name is the actual lookup target.
 # Compose project/service names are not automatically container names.
 # Replace the example name below with your actual Docker name or full ID.
 # Use containers: [] if you do not want to monitor containers.
@@ -15,7 +16,8 @@ containers:
     name: flash-next-vllm
 
 models:
-  # name is the display label used in both the model list and its detail heading.
+  # name is the display label in the model list.
+  # The detail heading uses served_model_name, or name when it is omitted.
   # served_model_name must exactly match the vLLM service identity.
   - id: chat
     type: chat
@@ -37,6 +39,6 @@ models:
     gpu_ids: []
 
 logging:
-  directory: ~/.joi-observer
+  directory: /var/lib/joi-observer
   max_bytes: 10000000       # Decimal 10 MB; minimum 1024 bytes.
   backup_count: 3           # Positive integer; oldest backup is discarded.

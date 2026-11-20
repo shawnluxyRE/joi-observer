@@ -1,31 +1,88 @@
 # 采集错误日志模块设计
 
 - 关联需求：dev-0 / REQ-001，AC-107～AC-112；需求说明 v1.9。
-- 修订：v1.1，2026-10-28；按用户要求日志时间采用服务器本地时间，不附带时区信息；业务仍为R2骨架。
+- 关联需求补充：dev-1 / REQ-001，日志单写者与客户端隔离。
+- 修订：v2.2，2026-11-16；在图前集中说明日志类、端口对象与单写者线程角色。
+- 整体设计：[整体组件与进程边界](architecture.md)。
 - 相关代码：[error_log.py](../../src/joi_observer/error_log.py)、[test_error_log.py](../../tests/test_error_log.py)。
 - 关联模块：[配置](configuration.md)、[调度与状态](monitor-state.md)。
 
 ## 职责与依赖
 
 只接收 Monitor 已分类的真实采集失败，将诊断追加到 `logging.directory` 下的 `error.log`。
-日志不属于监控快照，不向 TUI、stdout/stderr 或 root logger 传播。启动/退出、正常采样、
+日志不属于监控快照，不向 TUI、Web、IPC、stdout/stderr 或 root logger 传播。启动/退出、正常采样、
 恢复、无负载、已知不支持/不适用字段、成功取得的 Exited 状态均没有日志事件。
 
+## 类与对象简介
+
+| 图中名称 | 简介 |
+| --- | --- |
+| `ErrorLog` / `Log` | `Log` 是 `ErrorLog` 的对象别名，负责接收受控采集错误、限频入队并管理日志单写者和关闭流程。 |
+| `Failure` | `Failure` 是不可变的受控失败值，携带错误类别、代码和安全原因供日志分类。 |
+| `LogIO` / `IO` | `IO` 是 `LogIO` 协议端口的对象别名，负责准备本地日志目录并追加已编码的安全日志行。 |
+| `FileLogIO` | `FileLogIO` 是日志文件端口的本机实现，负责文件追加、大小检查与轮转。 |
+| `Monitor` | `Monitor` 在提交采集结果后报告真实失败或恢复，不等待日志文件 I/O。 |
+| `Writer` | `Writer` 表示 ErrorLog 拥有的专用日志写线程角色，负责消费有界队列并调用日志文件端口。 |
+
+## 简化类图
+
 ```mermaid
-flowchart LR
-    CLI[CLI 启动检查] -->|prepare| ErrorLog
-    Monitor -->|record / recovered| ErrorLog
-    ErrorLog --> Dedup[按对象和稳定错误限频]
-    Dedup --> Queue[有界非阻塞队列]
-    Queue --> Writer[专用单写者]
-    Writer --> LogIO[LogIO 文件边界]
-    LogIO --> Files[error.log 与轮转备份]
-    CLI -->|首次 prepare 失败时提示一次| Preflight[全屏前输出]
+classDiagram
+    class ErrorLog {
+        +prepare() bool
+        +record(collector, object_id, failure) bool
+        +recovered(collector, object_id)
+        +flush(timeout) bool
+        +close(timeout) bool
+    }
+    class Failure {
+        +kind: ErrorKind
+        +code: str
+        +reason: str
+    }
+    class LogIO {
+        <<interface>>
+        +prepare(directory)
+        +append(config, line)
+    }
+    class FileLogIO {
+        +prepare(directory)
+        +append(config, line)
+    }
+    ErrorLog --> LogIO
+    ErrorLog ..> Failure
+    FileLogIO ..|> LogIO
 ```
 
-构造器无文件/线程副作用。CLI 配置校验完成后调用一次 `prepare()`，实际创建目录并以
-追加方式打开文件检查，不用仅检查权限位的方式代替真实打开。False 只触发 CLI 全屏前
-的一次英文提示，监控照常启动。不得换到临时、XDG、项目目录，不修改 YAML。
+## 关键交互时序图
+
+```mermaid
+sequenceDiagram
+    participant Monitor as Monitor
+    participant Log as ErrorLog
+    participant Writer as 专用日志写线程
+    participant IO as LogIO
+    Monitor->>Log: record(对象身份、受控 Failure、发生时间)
+    alt 限频、队满或已关闭
+        Log-->>Monitor: False，不等待文件 IO
+    else 接纳本次错误
+        Log-->>Monitor: True，仅表示已入队
+        Log-)Writer: 唤醒有界队列单写者
+        Writer->>IO: append(config, 安全 JSON 行)
+        alt 写入成功
+            IO-->>Writer: 完成
+        else 文件 IO 失败
+            IO-->>Writer: 失败
+            Writer->>Log: 撤销该事件的限频预占
+        end
+    end
+    Monitor->>Log: recovered(对象身份)
+    Note over Log: 清除该对象指纹，不写恢复日志
+```
+
+构造器无文件/线程副作用。采集服务配置校验完成、取得独占运行锁后调用一次 `prepare()`，实际创建目录并以
+追加方式打开文件检查，不用仅检查权限位的方式代替真实打开。False 只触发服务 stderr
+的一次英文提示 `Error log unavailable; monitoring will continue.`，监控照常启动。TUI 不调用 prepare，不输出该提示。不得换到临时、XDG、项目目录，不修改 YAML。
 运行中后续错误可重新尝试 prepare/append；失败记录丢弃，不补写；恢复本身不写日志。
 
 ## 错误类别、数据边界和限频
@@ -74,15 +131,15 @@ Monitor 不调用 recovered；历史成功样本或无关对象恢复也不能�
 备份数至少 1。追加后会超过阈值时先轮转，等于阈值允许写入，备份为 `.1` 到 `.N`，
 最旧淘汰。从空日志开始且文件仅由本实例写入时，当前文件加备份最多占
 `(N+1) × max_bytes`；启动前已有超阈值文件先轮转而不截断，它可能使过渡期间
-总容量超过此值，随后按同一备份规则淘汰。首版同一日志路径只允许一个写入进程；
-多实例需分别配置日志目录，不承诺跨进程轮转协调。
+总容量超过此值，随后按同一备份规则淘汰。同一日志路径只允许一个写入进程；
+dev-1 由常驻服务的独占实例锁保证产品内单写者，多个 TUI/Web 客户端不创建日志。不承诺与外部程序跨进程轮转协调。
 
 默认队列容量 256 条，不含当前正在写入的一条。每条最多 1024 字节；队满丢弃新事件，
 不记录“丢弃日志”、不提示，不阻塞采集/界面。单个专用守护线程串行文件写入，避免占用
 采集线程池；只能轮转和写入目标日志文件，不访问服务器。各采样周期不等待 flush。
 `flush(timeout=1)` 仅作为测试屏障/退出手段：已成功处理或失败丢弃均算排空；超时 False。
-`close(timeout=1)` 停止接纳，等待有界后丢弃未开始记录，幂等且无终端输出；终端恢复不能
-无限等待文件系统。系统调用本身不可强制取消，已经开始的单次本地写入可能稍后完成，
+`close(timeout=1)` 停止接纳，等待有界后丢弃未开始记录，幂等且无终端输出；采集服务退出不能
+无限等待文件系统，TUI 终端恢复也不依赖服务日志关闭。系统调用本身不可强制取消，已经开始的单次本地写入可能稍后完成，
 守护线程不阻止进程退出。真实文件系统长期阻塞的行为须在 R4/R5 本地集成验证。
 
 ## 接口与验证依据
@@ -98,10 +155,15 @@ Monitor 不调用 recovered；历史成功样本或无关对象恢复也不能�
 运行入口为仓库根目录 `python -m pytest tests/test_error_log.py`。只用临时目录和可注入
 文件 IO；不 mock 限频/轮转业务，不连接服务。R2 断言期待已实现后的正确行为，未实现入口
 抛 NotImplementedError 为正常业务基线，不使用 xfail。实际执行结果记录在 REQ-001 交接单。
-正常采样/N/A/Exited 不产生日志、UI 不显示日志以及“全屏前仅提示一次”的跨模块行为由
-Monitor/CLI 测试覆盖；真实终端恢复、磁盘权限与文件系统异常仍须后续离线集成验证。
+正常采样/N/A/Exited 不产生日志、UI 不显示日志由既有 Monitor/CLI 测试覆盖。dev-1 把“日志不可写只提示一次”的入口迁移到 service，并补充客户端退出不关闭服务日志、快照不泄漏日志/原因的断言；磁盘权限与文件系统异常仍须后续离线集成验证。
 
 ## 修订说明
+
+v2.2 在图前合并介绍类图与时序图元素，明确端口对象别名及 Writer 的线程角色；原日志、资源和验证契约保持不变。
+
+2026-11-16：按更新后的 R2 图文规范补充核心类图、关键交互时序和整体设计入口；原有接口行为、数值及测试契约不因图面修订改变。
+
+v2.0 只迁移日志拥有者与提示输出归属；错误分类、限频、文件格式、轮转及全部有效回归保持不变。
 
 v1.1 采纳用户对日志time的修订：使用服务器本地 `YYYY-MM-DD HH:MM:SS`，去掉原先
 带时区ISO-8601的落盘约定。同步ErrorLog/Monitor接口注释和既有日志黑盒断言；测试

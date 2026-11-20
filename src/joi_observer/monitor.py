@@ -9,6 +9,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+from joi_observer._shutdown import (
+    ShutdownBudget, await_owner, cancel_once, cleanup_inline, run_cleanup, settle, spawn,
+)
 from joi_observer.collectors.base import Collector, Discovery, DiscoveryResult
 from joi_observer.data.models import CollectionResult, ObjectKey, ObjectSpec
 from joi_observer.data.state import MonitorState
@@ -44,7 +47,8 @@ class Monitor:
     collectors 的 spec.key 唯一；state 包含这些声明（动态发现通过 register）。
     容器来源包含全部有效配置项，挂载来源只包含有效配置的前三项；UI可见行数
     不参与本模块调度，隐藏容器仍按相同周期更新状态并记录真实采集错误。
-    interval/timeout 为有限正秒数；生产值由配置限制在[0.1,60]，测试可用更短超时。
+    interval/timeout 为有限正秒数；生产 interval 由配置限制在[1,60]，
+    timeout 为[0.1,60]。离线调度测试可直接注入更短周期，不改变生产配置校验。
     clock 必须为单调时钟；wall_clock 返回服务器本地的带时区 datetime，仅用于
     错误发生时间，未注入时取运行主机 datetime.now().astimezone()。日志只输出其
     YYYY-MM-DD HH:MM:SS 本地时间部分，不附带时区信息，也不转换成UTC。
@@ -80,11 +84,14 @@ class Monitor:
         self._stopped: bool = False
         self._polling = False
         self._shutdown_task: asyncio.Task[None] | None = None
+        self._shutdown_budget = ShutdownBudget()
         self._started = False
         self._specs: dict[ObjectKey, ObjectSpec] = {}
         self._owners: dict[ObjectKey, ObjectKey] = {}
         self._resources: dict[int, Collector | Discovery] = {}
         self._retiring: set[asyncio.Task[None]] = set()
+        self._retiring_sources: dict[int, Collector] = {}
+        self._retiring_owners: dict[int, asyncio.Task] = {}
         for value in (interval, timeout):
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError("Sampling interval and timeout must be finite positive numbers.")
@@ -195,17 +202,23 @@ class Monitor:
 
     def _retire(self, sources: list[Collector]) -> None:
         """Release rejected factory results without delaying the scheduler."""
-        seen: set[int] = set()
         for source in sources:
             identity = id(source)
-            if (identity in seen or identity in self._resources
+            if (identity in self._retiring_sources or identity in self._resources
                     or not callable(getattr(source, "close", None))):
                 continue
-            seen.add(identity)
-            task = asyncio.create_task(self._close_source(source))
+            # Own every rejected child before any subsequent Task allocation.
+            self._retiring_sources[identity] = source
+        for identity, source in tuple(self._retiring_sources.items()):
+            if identity in self._retiring_owners:
+                continue
+            task = spawn(self._close_source(source))
             self._retiring.add(task)
+            self._retiring_owners[identity] = task
             task.add_done_callback(self._retiring.discard)
             task.add_done_callback(self._consume)
+            task.add_done_callback(lambda task, identity=identity: self._retiring_sources.pop(identity, None))
+            task.add_done_callback(lambda task, identity=identity: self._retiring_owners.pop(identity, None))
 
     def _adopt_discovery(self, slot: _CollectorSlot, result: DiscoveryResult) -> CollectionResult:
         """Validate a complete round before touching live objects or scheduling children.
@@ -259,7 +272,7 @@ class Monitor:
             slot.origin = now
         slot.next_due = self._after(slot, now)
         slot.completed_at = slot.completed_wall_at = None
-        slot.task = asyncio.create_task(self._collect(slot))
+        slot.task = spawn(self._collect(slot))
 
     async def _iterate(self) -> None:
         if self._stopped:
@@ -322,6 +335,7 @@ class Monitor:
             raise RuntimeError("Monitor has stopped.")
         self._running = True
         self._started = True
+        error: BaseException | None = None
         try:
             while not stop.is_set() and not self._stopped:
                 await self._iterate()
@@ -329,11 +343,18 @@ class Monitor:
                     await asyncio.wait_for(stop.wait(), timeout=0.025)
                 except TimeoutError:
                     pass
+        except BaseException as caught:
+            error = caught
         finally:
             try:
                 await self.stop()
+            except BaseException as caught:
+                if error is None:
+                    error = caught
             finally:
                 self._running = False
+        if error is not None:
+            raise error
 
     async def stop(self) -> None:
         """幂等停止调度，取消并回收采集任务，关闭各采集器，不再提交迟到结果。
@@ -343,12 +364,23 @@ class Monitor:
         由组合根持有，本方法不关闭它。进程被 SIGKILL/断电无法保证恢复终端。
         """
         if self._shutdown_task is None:
+            self._shutdown_budget.begin()
             self._stopped = True
             active = [slot.task for slot in self._slots.values() if slot.task is not None]
             for task in active:
-                task.cancel()
-            self._shutdown_task = asyncio.create_task(self._cleanup(active))
-        await asyncio.shield(self._shutdown_task)
+                cancel_once(task)
+            await run_cleanup(lambda: self._cleanup(active),
+                              publish=lambda owner: setattr(self, "_shutdown_task", owner))
+        else:
+            await await_owner(self._shutdown_task)
+
+    def _bind_cleanup_budget(self, budget: ShutdownBudget) -> None:
+        """Internal lifecycle wiring; never refresh a started deadline."""
+        if self._shutdown_task is not None and self._shutdown_task.done():
+            return  # An already joined owner has no remaining source work.
+        if self._shutdown_task is not None and budget is not self._shutdown_budget:
+            raise RuntimeError("Cannot replace an active cleanup budget.")
+        self._shutdown_budget = budget
 
     @staticmethod
     def _consume(task: asyncio.Task) -> None:
@@ -358,18 +390,34 @@ class Monitor:
     async def _cleanup(self, active: list[asyncio.Task]) -> None:
         tasks = set(active)
         tasks.update(self._retiring)
-        tasks.update(asyncio.create_task(self._close_source(source))
-                     for source in self._resources.values())
+        sources = list(self._resources.values())
+        sources.extend(source for identity, source in self._retiring_sources.items()
+                       if identity not in self._retiring_owners)
+        deferred = []
+        error: BaseException | None = None
+        deadline = self._shutdown_budget.begin()
+        for source in sources:
+            factory = lambda source=source: self._close_source(source)
+            try:
+                task = spawn(factory())
+                tasks.add(task)
+            except BaseException as caught:
+                if error is None:
+                    error = caught
+                deferred.append(factory)
+        for factory in deferred:
+            try:
+                await cleanup_inline(factory, deadline)
+            except BaseException as caught:
+                if error is None:
+                    error = caught
         try:
-            if tasks:
-                done, pending = await asyncio.wait(tasks, timeout=1.0)
-                for task in done:
-                    self._consume(task)
-                for task in pending:
-                    task.cancel()
-                    task.add_done_callback(self._consume)
+            await settle(tasks, deadline)
+        except BaseException as caught:
+            if error is None:
+                error = caught
         finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-                    task.add_done_callback(self._consume)
+            self._retiring_sources.clear()
+            self._retiring_owners.clear()
+        if error is not None:
+            raise error

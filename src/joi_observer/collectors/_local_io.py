@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import errno
 import json
 import math
@@ -14,6 +15,7 @@ import subprocess
 import sys
 
 from joi_observer.collectors._hardware_worker import LIMIT, PROC_FILES
+from joi_observer._shutdown import await_owner, cancel_once, join_tasks, run_cleanup, spawn
 
 
 _WORKER = Path(__file__).with_name("_hardware_worker.py")
@@ -31,8 +33,8 @@ class LocalProcessIO:
         self.timeout = timeout
         self._operations: set[asyncio.Task] = set()
         self._closed = False
-        self._close_task: asyncio.Task | None = None
-        self._cleanup_tasks: set[asyncio.Task] = set()
+        self._close_task: asyncio.Future | None = None
+        self._cleanup_tasks: set[asyncio.Future] = set()
 
     async def read_text(self, path: str) -> str:
         if path not in PROC_FILES:
@@ -90,29 +92,38 @@ class LocalProcessIO:
         leave a detached descendant holding its inherited output handles.
         Windows requires an overlapped read handle for the Proactor loop.
         """
-        if os.name == "nt":
-            import msvcrt
-            from asyncio.windows_utils import PipeHandle, pipe
-
-            read_handle, write_handle = pipe(overlapped=(True, False))
-            read_pipe = PipeHandle(read_handle)
-            try:
-                writer = msvcrt.open_osfhandle(write_handle, 0)
-            except BaseException:
-                read_pipe.close()
-                PipeHandle(write_handle).close()
-                raise
-        else:
-            read_descriptor, writer = os.pipe()
-            read_pipe = os.fdopen(read_descriptor, "rb", buffering=0)
-        reader = asyncio.StreamReader(limit=65536)
+        read_descriptor = writer = None
+        read_pipe = None
         try:
+            if os.name == "nt":
+                import msvcrt
+                from asyncio.windows_utils import PipeHandle, pipe
+
+                read_handle, write_handle = pipe(overlapped=(True, False))
+                read_pipe = PipeHandle(read_handle)
+                try:
+                    writer = msvcrt.open_osfhandle(write_handle, 0)
+                except BaseException:
+                    PipeHandle(write_handle).close()
+                    raise
+            else:
+                read_descriptor, writer = os.pipe()
+                read_pipe = os.fdopen(read_descriptor, "rb", buffering=0)
+                read_descriptor = None  # The file now owns the read descriptor.
+            reader = asyncio.StreamReader(limit=65536)
             transport, _ = await asyncio.get_running_loop().connect_read_pipe(
                 lambda: asyncio.StreamReaderProtocol(reader), read_pipe,
             )
         except BaseException:
-            read_pipe.close()
-            os.close(writer)
+            if read_pipe is not None:
+                with suppress(OSError):
+                    read_pipe.close()
+            if read_descriptor is not None:
+                with suppress(OSError):
+                    os.close(read_descriptor)
+            if writer is not None:
+                with suppress(OSError):
+                    os.close(writer)
             raise
         return reader, transport, writer
 
@@ -128,7 +139,7 @@ class LocalProcessIO:
         except ProcessLookupError:
             pass
 
-    def _track_cleanup(self, task: asyncio.Task) -> asyncio.Task:
+    def _track_cleanup(self, task: asyncio.Future) -> asyncio.Future:
         self._cleanup_tasks.add(task)
 
         def completed(done):
@@ -142,9 +153,30 @@ class LocalProcessIO:
     async def _reap(self, process: asyncio.subprocess.Process, deadline: float) -> None:
         # No PIPE streams belong to Process, so this waits only for its direct
         # child watcher, even if an external descendant keeps writing forever.
-        reaped = self._track_cleanup(asyncio.create_task(process.wait()))
-        async with asyncio.timeout_at(deadline):
-            await asyncio.shield(reaped)
+        try:
+            reaped = self._track_cleanup(spawn(process.wait()))
+        except BaseException:
+            # No auxiliary task exists, so this cleanup owner must reap inline
+            # before reporting the allocation error to its caller.
+            async with asyncio.timeout_at(deadline):
+                interrupted = False
+                while True:
+                    try:
+                        await process.wait()
+                        break
+                    except asyncio.CancelledError:
+                        interrupted = True
+                if interrupted:
+                    raise asyncio.CancelledError
+            raise
+        try:
+            async with asyncio.timeout_at(deadline):
+                await asyncio.shield(reaped)
+        except BaseException:
+            # Cancelling a wrapper cannot detach the already registered reaper.
+            with suppress(BaseException):
+                await await_owner(reaped)
+            raise
 
     async def _execute(self, argv: tuple[str, ...]) -> tuple[int, str, str]:
         if self._closed:
@@ -152,11 +184,12 @@ class LocalProcessIO:
         operation = asyncio.current_task()
         self._operations.add(operation)
         process = None
-        spawn = None
+        child_start = None
         readers: list[asyncio.Task] = []
         streams = []
         transports = []
         writers: list[int] = []
+        failure = None
 
         def close_writers():
             while writers:
@@ -172,51 +205,71 @@ class LocalProcessIO:
                     streams.append(stream)
                     transports.append(transport)
                     writers.append(writer)
-                spawn = asyncio.create_task(asyncio.create_subprocess_exec(
+                child_start = spawn(asyncio.create_subprocess_exec(
                     *argv, stdin=asyncio.subprocess.DEVNULL, stdout=writers[0],
                     stderr=writers[1], **options,
                 ))
                 # Cancellation must not lose ownership during subprocess setup.
-                process = await asyncio.shield(spawn)
+                process = await asyncio.shield(child_start)
                 close_writers()
-                readers = [asyncio.create_task(self._read(stream)) for stream in streams]
+                for stream in streams:
+                    readers.append(spawn(self._read(stream)))
                 stdout, stderr = await asyncio.gather(*readers)
                 code = await process.wait()
                 try:
                     return code, stdout.decode("utf-8"), stderr.decode("utf-8")
                 except UnicodeError as error:
                     raise OSError(errno.EINVAL, "Invalid hardware output encoding") from error
+        except BaseException as error:
+            failure = error
+            raise
         finally:
             async def cleanup():
                 deadline = asyncio.get_running_loop().time() + _CLEANUP_SECONDS
+                join_error = None
                 for reader in readers:
                     if not reader.done():
-                        reader.cancel()
+                        cancel_once(reader)
                 if readers:
-                    await asyncio.gather(*readers, return_exceptions=True)
+                    try:
+                        await join_tasks(set(readers))
+                    except BaseException as error:
+                        join_error = error
                 owned = process
-                if owned is None and spawn is not None:
+                if owned is None and child_start is not None:
                     try:
                         async with asyncio.timeout_at(deadline):
-                            owned = await asyncio.shield(spawn)
-                    except TimeoutError:
-                        for transport in transports:
-                            transport.close()
-                        # Retain ownership if OS process creation itself has not
-                        # returned by the cleanup deadline. Do not close/reuse
-                        # its descriptors while the spawn still references them.
-                        async def finish_spawn():
+                            owned = await asyncio.shield(child_start)
+                    except BaseException as error:
+                        if join_error is None:
+                            join_error = error
+                        if child_start.done():
+                            # A failed constructor owns no child, but its pipes
+                            # still belong to this cleanup. A cancelled waiter
+                            # may also race with successful creation; inspect
+                            # the settled result before releasing any writer.
+                            with suppress(BaseException):
+                                owned = child_start.result()
+                        else:
+                            for transport in transports:
+                                transport.close()
+                            # A refused wait or the cleanup deadline can leave
+                            # creation pending. Keep its writers in a registered
+                            # late owner until the actual spawn has settled.
+                            async def finish_spawn():
+                                try:
+                                    late_process = await child_start
+                                    self._terminate(late_process)
+                                    await self._reap(late_process, asyncio.get_running_loop().time()
+                                                     + _CLEANUP_SECONDS)
+                                finally:
+                                    close_writers()
                             try:
-                                late_process = await spawn
-                                self._terminate(late_process)
-                                await self._reap(late_process, asyncio.get_running_loop().time()
-                                                 + _CLEANUP_SECONDS)
-                            finally:
-                                close_writers()
-                        self._track_cleanup(asyncio.create_task(finish_spawn()))
-                        raise
-                    except (OSError, asyncio.CancelledError):
-                        pass
+                                self._track_cleanup(spawn(finish_spawn()))
+                            except BaseException:
+                                await finish_spawn()
+                                raise
+                            raise
                 close_writers()
                 if owned is not None:
                     self._terminate(owned)
@@ -231,28 +284,23 @@ class LocalProcessIO:
                     # writer cannot delay direct-child reaping or port close.
                     async with asyncio.timeout_at(min(
                             deadline, asyncio.get_running_loop().time() + 0.025)):
-                        await asyncio.gather(*(discard(stream) for stream in streams))
+                        for stream in streams:
+                            await discard(stream)
                 except (TimeoutError, OSError):
                     pass
                 finally:
                     for transport in transports:
                         transport.close()
-                if owned is not None:
-                    await self._reap(owned, deadline)
+                    if owned is not None:
+                        await self._reap(owned, deadline)
+                if join_error is not None:
+                    raise join_error
 
-            cleanup_task = asyncio.create_task(cleanup())
-            interrupted = False
             try:
-                # A simultaneous Monitor cancellation and close cannot interrupt
-                # OS reaping. close waits for this operation within the same loop.
-                while not cleanup_task.done():
-                    try:
-                        await asyncio.shield(cleanup_task)
-                    except asyncio.CancelledError:
-                        interrupted = True
-                cleanup_task.result()
-                if interrupted:
-                    raise asyncio.CancelledError
+                await run_cleanup(cleanup, publish=self._track_cleanup)
+            except BaseException:
+                if failure is None:
+                    raise
             finally:
                 self._operations.discard(operation)
 
@@ -263,10 +311,17 @@ class LocalProcessIO:
 
             async def finish():
                 for task in active:
-                    if not task.done() and not task.cancelling():
-                        task.cancel()
-                if active:
-                    await asyncio.gather(*active, return_exceptions=True)
+                    cancel_once(task)
+                try:
+                    if active:
+                        await join_tasks(set(active))
+                finally:
+                    # An earlier operation may have retained a late spawn/reap
+                    # owner after its bounded wait; close must join that ownership.
+                    remaining = {task for task in self._cleanup_tasks if not task.done()}
+                    if remaining:
+                        await join_tasks(remaining)
 
-            self._close_task = asyncio.create_task(finish())
-        await asyncio.shield(self._close_task)
+            await run_cleanup(finish, publish=lambda owner: setattr(self, "_close_task", owner))
+        else:
+            await await_owner(self._close_task)

@@ -163,35 +163,6 @@ def assert_contained(cells, region=REGION):
                    for row_index, column in pixels((cell,)))
 
 
-def test_chat_named_metrics_units_and_precomputed_total():
-    cells = cells_for()
-    counts = row(cells, 6)
-    assert "RUNNING" in counts and "WAITING" in counts and "Total" not in counts
-    assert "3" in counts and "7" in counts and "/" not in counts
-    assert "Total 10 seq" in row(cells, 7) and "Avg queue 0.5s" in row(cells, 7)
-    assert "DECODE / tok/s" in row(cells, 9) and "PREFILL / tok/s" in row(cells, 9)
-    assert "TTFT / s" in row(cells, 9) and "KV CACHE / %" in row(cells, 9)
-    assert row(cells, 10).split() == ["100", "500", "3", "25"]
-    assert "DECODE HISTORY" in row(cells, 12) and "tok/s" in row(cells, 12)
-    assert "Avg latency" not in content(right_cells(cells))
-    assert_contained(cells)
-
-
-@pytest.mark.parametrize("kind", [ModelType.EMBEDDING, ModelType.RERANKER])
-def test_pooling_uses_sequence_rate_and_its_own_latency_slots(kind):
-    cells = cells_for(kind=kind)
-    text = content(right_cells(cells))
-    assert "RATE / seq/s" in row(cells, 9)
-    assert "Avg queue / s" in row(cells, 9) and "Avg latency / s" in row(cells, 9)
-    assert "KV CACHE / %" in row(cells, 9)
-    assert "Total 10 seq" in row(cells, 7) and "Unit: seq" in row(cells, 7)
-    assert "RATE HISTORY" in row(cells, 12) and "seq/s" in row(cells, 12)
-    assert row(cells, 10).split() == ["3", "0.5", "3", "N/A"]
-    for forbidden in ("TTFT", "DECODE", "PREFILL", "tok/s", "req/s"):
-        assert forbidden not in text
-    assert_contained(cells)
-
-
 def test_unknown_total_is_not_recomputed_from_potentially_mixed_values():
     cells = cells_for(object_snapshot(total=None))
     counts = row(cells, 7)
@@ -281,7 +252,7 @@ def test_duplicate_display_names_remain_separate_configured_id_rows():
     assert "EMBEDDING / :8000" in row(tuple(cell for cell in cells if cell.column < 27), 7, right=False)
 
 
-def test_display_name_is_shared_by_both_titles_while_metrics_match_only_configured_id():
+def test_list_and_served_titles_differ_while_metrics_match_only_configured_id():
     configured_model = replace(model("stable-id", name="Flash-Next"),
                                served_model_name="upstream-model")
     configuration = config(configured_model)
@@ -292,16 +263,17 @@ def test_display_name_is_shared_by_both_titles_while_metrics_match_only_configur
     ))
     before = deepcopy((configuration, snapshot))
     cells = vllm_cells(snapshot, configuration, REGION, ViewSelection("stable-id"), now=NOW)
-    titles = [cell for cell in cells if cell.text == "Flash-Next"]
-    assert {(cell.row, cell.column, cell.role) for cell in titles} == {
-        (REGION.row + 2, REGION.column + 4, "primary"),
-        (REGION.row + 2, REGION.column + 30, "primary"),
+    titles = [cell for cell in cells if cell.text in {"Flash-Next", "upstream-model"}]
+    assert {(cell.text, cell.row, cell.column, cell.role) for cell in titles} == {
+        ("Flash-Next", REGION.row + 2, REGION.column + 4, "primary"),
+        ("upstream-model", REGION.row + 2, REGION.column + 30, "primary"),
     }
     assert slot_text(cells, REGION.row + 6, 38, 73).strip() == "13"
     assert slot_text(cells, REGION.row + 6, 84, 118).strip() == "17"
     assert "Total 30 seq" in row(cells, 7)
     assert "QUEUED" in row(cells, 2)
-    assert "stable-id" not in content(cells) and "upstream-model" not in content(cells)
+    assert "stable-id" not in content(cells)
+    assert "91" not in row(cells, 6) and "92" not in row(cells, 6)
     assert (configuration, snapshot) == before
 
 
@@ -401,13 +373,6 @@ def test_mixed_gap_and_value_in_one_time_bin_does_not_fill_the_gap():
     assert pixels(plot(mixed_cells)) == pixels(plot(gap_cells))
 
 
-def test_old_and_future_history_points_are_not_drawn():
-    valid = (point(98, 2), point(100, 4))
-    extra = (point(39, 999999), *valid, point(101, 999999))
-    assert pixels(plot(cells_for(object_snapshot(history=valid)))) == pixels(
-        plot(cells_for(object_snapshot(history=extra))))
-
-
 def test_empty_history_is_unavailable_without_a_fabricated_zero_line():
     cells = cells_for(object_snapshot(history=()))
     assert "—" in content(plot(cells))
@@ -430,16 +395,6 @@ def test_switching_models_reuses_their_retained_history_without_mutating_snapsho
     assert {x for x, _ in braille_points(a)} == {scan_x(98)}
     assert {x for x, _ in braille_points(b)} == {scan_x(96)}
     assert a == again and sample == before
-
-
-@pytest.mark.parametrize("kind,stale", [(kind, stale) for kind in ModelType for stale in (False, True)])
-def test_types_failure_and_recovery_use_same_fixed_slots(kind, stale):
-    cells = cells_for(object_snapshot(kind=kind, stale=stale), kind=kind)
-    assert row(cells, 2).strip() and row(cells, 3).strip()
-    assert "RUNNING" in row(cells, 6)
-    assert row(cells, 8).strip() and row(cells, 9).strip() and row(cells, 10).strip()
-    assert "HISTORY" in row(cells, 12)
-    assert_contained(cells)
 
 
 @pytest.mark.parametrize("region", [REGION, Region("service", 22, 5, 160, 20)])
@@ -560,8 +515,8 @@ def test_unknown_history_bin_excludes_its_other_values_from_plot_scale(kind):
 @pytest.mark.parametrize("kind", list(ModelType))
 def test_history_retains_current_scan_cycle_and_excludes_expired_and_future_points(kind):
     boundary = (point(NOW - 59, 0, kind), point(NOW, 5, kind))
-    outside = (point(NOW - 59 - 1e-6, 1e300, kind), *boundary,
-               point(NOW + 1e-6, 1e300, kind))
+    outside = (point(39, 999999, kind), point(NOW - 59 - 1e-6, 1e300, kind),
+               *boundary, point(NOW + 1e-6, 1e300, kind), point(101, 999999, kind))
     cells = cells_for(object_snapshot(kind=kind, history=outside), kind=kind)
     expected = cells_for(object_snapshot(kind=kind, history=boundary), kind=kind)
     assert pixels(plot(cells)) == pixels(plot(expected))
@@ -824,10 +779,12 @@ def test_smallest_positive_float_stays_visible_when_ratio_underflows(mode):
     assert_contained(cells, region)
 
 
-@pytest.mark.parametrize("region", (REGION, Region("service", 22, 5, 160, 20)))
+@pytest.mark.parametrize("region,stale", [
+    (REGION, False), (REGION, True), (Region("service", 22, 5, 160, 20), False),
+], ids=["minimum", "minimum-stale", "expanded"])
 @pytest.mark.parametrize("kind", tuple(ModelType), ids=lambda kind: kind.value)
-def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(region, kind):
-    cells = cells_for(kind=kind, region=region)
+def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(region, stale, kind):
+    cells = cells_for(object_snapshot(kind=kind, stale=stale), kind=kind, region=region)
     grid = pixels(cells)
     left, right = region.column + 30, region.column + region.width - 2
     for offset in (1, 5, 11):
@@ -843,8 +800,11 @@ def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(regio
     assert name.column + len(name.text) <= region.column + 19
     marker = next(cell for cell in rail if cell.text == "›")
     assert (marker.row, marker.column) == (name.row, region.column + 2)
-    status = next(cell for cell in rail if cell.text == "QUEUED")
-    assert (status.row, status.column) == (name.row, region.column + 20)
+    status = "STALE" if stale else "QUEUED"
+    status_cell = next(cell for cell in rail if cell.text == status)
+    assert (status_cell.row, status_cell.column + len(status)) == (name.row, region.column + 26)
+    assert slot_text(cells, name.row, right - 6, right) == status.rjust(6)
+    assert_span_role(cells, name.row, right - len(status), status, "text" if stale else "amber")
     type_port = next(cell for cell in rail if cell.text == f"{kind.value.upper()} / :8000")
     assert (type_port.row, type_port.column, type_port.role) == (region.row + 3, region.column + 2, "muted")
     assert all(region.column + 2 <= column < region.column + 26
@@ -858,6 +818,11 @@ def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(regio
     assert grid[region.row + 7, middle][0] in "│┃"
     assert grid[region.row + 6, middle][1] == grid[region.row + 7, middle][1] == "muted"
     detail = right_cells(cells, region)
+    assert row(cells, 3, region).strip() == ":8000"
+    history_title = "DECODE HISTORY | tok/s" if kind == ModelType.CHAT else "RATE HISTORY | seq/s"
+    assert history_title in row(cells, 12, region)
+    forbidden = ("Avg latency",) if kind == ModelType.CHAT else ("TTFT", "DECODE", "PREFILL", "tok/s", "req/s")
+    assert all(text not in content(detail) for text in forbidden)
     bold_positions = set()
     for label, start, end, expected in (("RUNNING", left, left_end, "3"),
                                         ("WAITING", right_start, right, "7")):
@@ -872,10 +837,12 @@ def test_html_service_rail_counts_and_four_metric_columns_keep_fixed_slots(regio
     assert_span_role(cells, region.row + 7, left, "Total 10 seq", "muted")
     assert_span_role(cells, region.row + 7, right_start,
                      "Avg queue 0.5s" if kind == ModelType.CHAT else "Unit: seq", "muted")
-    assert "Total" not in row(cells, 6, region)
+    counts = row(cells, 6, region)
+    assert "Total" not in counts and "/" not in counts
     captions = ("DECODE / tok/s", "PREFILL / tok/s", "TTFT / s", "KV CACHE / %") if kind == ModelType.CHAT else (
         "RATE / seq/s", "Avg queue / s", "Avg latency / s", "KV CACHE / %")
     values = ("100", "500", "3", "25") if kind == ModelType.CHAT else ("3", "0.5", "3", "N/A")
+    assert row(cells, 10, region).split() == list(values)
     width = (right - left - 3) // 4
     for index, (caption, value) in enumerate(zip(captions, values)):
         start = left + index * (width + 1)
@@ -958,33 +925,6 @@ def test_all_model_types_keep_missing_and_zero_values_in_their_four_fixed_slots(
         *((REGION.row + 10, start) for start in ((30, 52, 74, 96) if kind == ModelType.CHAT else (30, 52, 74))),
     }
     assert {(cell.row, cell.column) for cell in cells if cell.bold and cell.text != "▼"} == expected_bold
-
-
-@pytest.mark.parametrize("kind", tuple(ModelType), ids=lambda kind: kind.value)
-@pytest.mark.parametrize("stale", (False, True), ids=("fresh", "stale"))
-def test_statistic_lines_caption_ownership_and_title_status_edge(kind, stale):
-    # A focused check reaches the detail contract independently of the new rail.
-    cells = cells_for(object_snapshot(kind=kind, stale=stale), kind=kind)
-    assert {(cell.row, cell.column) for cell in cells if cell.bold and cell.text != "▼"} == {
-        (REGION.row + 6, 72), (REGION.row + 6, 117),
-        *((REGION.row + 10, start) for start in ((30, 52, 74, 96) if kind == ModelType.CHAT else (30, 52, 74))),
-    }
-    grid = pixels(cells)
-    for offset in (4, 8):
-        for column in range(30, 118):
-            char, role = grid[REGION.row + offset, column]
-            assert char in "─━" and role == "muted"
-    for offset in (6, 7):
-        char, role = grid[REGION.row + offset, 74]
-        assert char in "│┃" and role == "muted"
-    status = "STALE" if stale else "QUEUED"
-    assert_span_role(cells, REGION.row + 2, 118 - len(status), status, "text" if stale else "amber")
-    assert slot_text(cells, REGION.row + 2, 112, 118) == status.rjust(6)
-    assert_span_role(cells, REGION.row + 6, 30, "RUNNING", "text")
-    assert_span_role(cells, REGION.row + 6, 76, "WAITING", "text")
-    assert_span_role(cells, REGION.row + 7, 30, "Total 10 seq", "muted")
-    assert_span_role(cells, REGION.row + 7, 76,
-                     "Avg queue 0.5s" if kind == ModelType.CHAT else "Unit: seq", "muted")
 
 
 @pytest.mark.parametrize("kind", tuple(ModelType), ids=lambda kind: kind.value)

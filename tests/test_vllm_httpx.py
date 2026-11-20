@@ -56,6 +56,48 @@ def memory_port(stream, *, headers=None, status=200):
     return AsyncHttpClient(factory), clients, requests
 
 
+@pytest.mark.parametrize("owner", ["port", "collector"])
+def test_response_close_task_allocation_failure_still_releases_real_httpx_stream(monkeypatch, owner):
+    real_create_task = asyncio.create_task
+    rejected = []
+
+    def create_task(coroutine, *args, **kwargs):
+        if (getattr(coroutine, "__qualname__", "") == "Response.aclose"
+                and not rejected):
+            rejected.append(coroutine)
+            raise MemoryError("injected response-close task allocation failure")
+        return real_create_task(coroutine, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+
+    async def case():
+        # Yield a complete HTTPX chunk before EOF so the byte limit, rather
+        # than natural EOF, triggers the context manager's first release.
+        stream = MemoryStream((b"x" * 65536,) * (33 if owner == "collector" else 1)
+                              + (b"not-read",))
+        port, clients, requests = memory_port(stream)
+        resource = (VllmCollector(
+            ModelConfig("model", ModelType.CHAT, "model", "https://model.invalid"), port,
+        ) if owner == "collector" else port)
+        try:
+            if owner == "port":
+                with pytest.raises(HttpBodyTooLargeError):
+                    await port.get("https://model.invalid/metrics", timeout=1, max_bytes=1024)
+            else:
+                result = await resource.collect()
+                assert result.observation is None and result.failure.kind is ErrorKind.PARSE
+            assert len(rejected) == 1 and len(requests) == 1
+            assert stream.closed, "A failed cleanup task allocation must not abandon its HTTP stream"
+        finally:
+            for coroutine in rejected:
+                coroutine.close()
+            await resource.close()
+            await stream.aclose()
+        assert clients[0].is_closed
+
+    asyncio.run(case())
+
+
 @pytest.mark.parametrize("size", [MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES + 1])
 def test_real_httpx_gzip_uses_decompressed_limit_and_closes_response(size):
     async def case():

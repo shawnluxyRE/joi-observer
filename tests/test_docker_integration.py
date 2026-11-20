@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from joi_observer.cli import ApplicationRuntime, RuntimeComponents
+from runtime_harness import ApplicationRuntime, RuntimeComponents
 from joi_observer.collectors import hardware
 from joi_observer.collectors.docker import CommandOutput, DockerCollector
 from joi_observer.config import AppConfig, ContainerConfig, LogConfig
@@ -137,23 +137,23 @@ def frame_text(frame):
     return " ".join(cell.text for cell in frame.cells)
 
 
-def visible_names(frame, config):
-    configured = {item.name for item in config.containers}
+def visible_ids(frame, config):
+    configured = {item.id for item in config.containers}
     return [cell.text for cell in frame.cells if cell.text in configured]
 
 
-def row_status(frame, name):
+def row_status(frame, container_id):
     docker = next(region for region in frame.regions if region.name == "docker")
     cells = [cell for cell in frame.cells
              if docker.row <= cell.row < docker.row + docker.height
              and docker.column <= cell.column < docker.column + docker.width]
-    row = next(cell.row for cell in cells if cell.text == name)
-    return [cell.text for cell in cells if cell.row == row and cell.text != name]
+    row = next(cell.row for cell in cells if cell.text == container_id)
+    return [cell.text for cell in cells if cell.row == row and cell.text != container_id]
 
 
 @pytest.mark.parametrize("same_row", [False, True], ids=["different-row", "same-row"])
-def test_docker_row_status_ignores_same_named_stale_gpu_cells(tmp_path, same_row):
-    """Both the name lookup and its status cells must stay inside Docker."""
+def test_docker_row_status_ignores_same_id_stale_gpu_cells(tmp_path, same_row):
+    """Both the ID lookup and its status cells must stay inside Docker."""
     config = configuration(tmp_path, count=1)
 
     async def collected_snapshot():
@@ -167,19 +167,19 @@ def test_docker_row_status_ignores_same_named_stale_gpu_cells(tmp_path, same_row
 
     frame = compose_frame(asyncio.run(collected_snapshot()), config, TerminalSize(120, 44),
                           HostInfo("offline-host", "Ubuntu"), NOW)
-    name = config.containers[0].name
+    container_id = config.containers[0].id
     gpu = next(region for region in frame.regions if region.name == "gpu")
     docker = next(region for region in frame.regions if region.name == "docker")
     row = docker.row + 2 if same_row else gpu.row + 1
     assert gpu.row <= row < gpu.row + gpu.height
-    # Put the left-hand namesake first to expose a global first-match lookup;
+    # Put the left-hand ID first to expose a global first-match lookup;
     # its STALE cell must also be excluded when the two panels share this row.
     frame = replace(frame, cells=(
-        TextCell(row, gpu.column + 2, name),
+        TextCell(row, gpu.column + 2, container_id),
         TextCell(row, gpu.column + gpu.width - 7, "STALE"),
         *frame.cells,
     ))
-    status = row_status(frame, name)
+    status = row_status(frame, container_id)
     assert "Running" in status
     assert "STALE" not in status
     running = [cell for cell in frame.cells if cell.text == "Running"
@@ -213,8 +213,8 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
             await sample(monitor, clock, 0)
             assert [len(command.calls) for command in commands] == [1] * 10
             ready = frame_at(50)
-            assert visible_names(ready, config) == [item.name for item in config.containers[:4]]
-            assert "Exited" in row_status(ready, config.containers[1].name)
+            assert visible_ids(ready, config) == [item.id for item in config.containers[:4]]
+            assert "Exited" in row_status(ready, config.containers[1].id)
             assert all(not item.stale for item in state.snapshot().objects)
             assert await log.flush()
             log_path = config.logging.directory / "error.log"
@@ -229,9 +229,9 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
             assert failed.objects[5].history[-1].metrics is None
             assert "STALE" not in frame_text(frame_at(50))
             expanded = frame_at(54)
-            assert visible_names(expanded, config) == [item.name for item in config.containers[:6]]
-            assert "STALE" in row_status(expanded, config.containers[5].name)
-            assert visible_names(frame_at(48), config) == [item.name for item in config.containers[:3]]
+            assert visible_ids(expanded, config) == [item.id for item in config.containers[:6]]
+            assert "STALE" in row_status(expanded, config.containers[5].id)
+            assert visible_ids(frame_at(48), config) == [item.id for item in config.containers[:3]]
             assert [len(command.calls) for command in commands] == [2] * 10
             assert await log.flush()
             entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -243,7 +243,7 @@ def test_all_raw_docker_sources_sample_while_hidden_and_recover_without_layout_c
             await sample(monitor, clock, 2)
             recovered = frame_at(54)
             assert [len(command.calls) for command in commands] == [3] * 10
-            assert "Restarting" in row_status(recovered, config.containers[5].name)
+            assert "Restarting" in row_status(recovered, config.containers[5].id)
             assert "STALE" not in frame_text(recovered)
             assert recovered.regions == expanded.regions
             assert state.snapshot().objects[5].history[-1].metrics[0].value == "Restarting"
@@ -296,7 +296,7 @@ def test_docker_failure_categories_keep_values_layout_and_recover(
         try:
             await sample(monitor, clock, 0)
             ready = frame()
-            assert "Running" in row_status(ready, config.containers[0].name)
+            assert "Running" in row_status(ready, config.containers[0].id)
             command.error = failure
             await sample(monitor, clock, 1)
             failed = state.snapshot().objects[0]
@@ -304,7 +304,7 @@ def test_docker_failure_categories_keep_values_layout_and_recover(
             assert failed.stale and failed.metrics[0].value == "Running"
             assert failed.history[-1].metrics is None
             assert stale.regions == ready.regions
-            assert "STALE" in row_status(stale, config.containers[0].name)
+            assert "STALE" in row_status(stale, config.containers[0].id)
             assert await log.flush()
             log_path = config.logging.directory / "error.log"
             entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -320,7 +320,7 @@ def test_docker_failure_categories_keep_values_layout_and_recover(
             recovery_frame = frame()
             assert not recovered.stale and recovered.metrics[0].value == "Restarting"
             assert recovered.history[-1].metrics[0].value == "Restarting"
-            assert "Restarting" in row_status(recovery_frame, config.containers[0].name)
+            assert "Restarting" in row_status(recovery_frame, config.containers[0].id)
             assert "STALE" not in frame_text(recovery_frame)
             assert recovery_frame.regions == ready.regions
             assert len(command.calls) == 3
@@ -403,7 +403,7 @@ def test_production_runtime_connects_every_configured_docker_collector(tmp_path,
             commands.append(command)
             return command
 
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=command_factory)
         assert commands == []
         assert runtime.prepare_log()
@@ -431,7 +431,7 @@ def test_production_runtime_connects_every_configured_docker_collector(tmp_path,
             assert [item.key.object_id for item in objects] == [item.id for item in config.containers]
             assert all(not item.stale and item.metrics[0].value == "Running" for item in objects)
             assert terminal.entered and terminal.frames
-            assert visible_names(terminal.frames[0], config) == [item.name for item in config.containers[:4]]
+            assert visible_ids(terminal.frames[0], config) == [item.id for item in config.containers[:4]]
         finally:
             terminal.keys.put_nowait("q")
             try:
@@ -466,7 +466,7 @@ def test_prepare_without_run_owns_and_closes_all_commands_without_sampling(tmp_p
             commands.append(command)
             return command
 
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=command_factory)
         assert commands == []
         assert not config.logging.directory.exists()
@@ -494,7 +494,7 @@ def test_empty_production_configuration_never_creates_docker_port(tmp_path, monk
         def forbidden_factory():
             pytest.fail("Empty Docker configuration must not construct a command port.")
 
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=forbidden_factory)
         assert runtime.prepare_log()
         try:
@@ -553,9 +553,9 @@ def test_injected_components_keep_sole_sampling_and_cleanup_ownership(tmp_path):
     asyncio.run(scenario())
 
 
-def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample(
+def test_production_timeout_recovers_and_service_stop_cancels_next_pending_docker_sample(
         tmp_path, monkeypatch, capsys):
-    """真实定时超时、恢复和 q 退出贯穿生产组装，不以预设 TimeoutError 代替。"""
+    """真实超时/恢复、客户端 q 与显式服务停止，不以预设 TimeoutError 代替。"""
     async def scenario():
         config = replace(configuration(tmp_path, count=2),
                          sample_interval=0.1, collection_timeout=0.1)
@@ -573,7 +573,7 @@ def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample
         slow = ObservedCommand(blocked=True)
         fast = ObservedCommand(status="exited")
         commands = iter((slow, fast))
-        monkeypatch.setattr("joi_observer.cli.CursesTerminal", lambda: terminal)
+        monkeypatch.setattr("runtime_harness.CursesTerminal", lambda: terminal)
         runtime = ApplicationRuntime(config, docker_command_factory=lambda: next(commands))
         assert runtime.prepare_log()
         task = asyncio.create_task(runtime.run())
@@ -595,7 +595,7 @@ def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample
             assert slow.cancelled
             assert first.metrics[0].value is None and first.history[-1].metrics is None
             assert sibling.metrics[0].value == "Exited" and not sibling.stale
-            await until(lambda: any("STALE" in row_status(frame, config.containers[0].name)
+            await until(lambda: any("STALE" in row_status(frame, config.containers[0].id)
                                     for frame in terminal.frames))
             stale_frame = terminal.frames[-1]
             assert await runtime.components.error_log.flush()
@@ -607,12 +607,12 @@ def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample
             slow.status = "restarting"
             slow.gate.set()
             await until(lambda: not docker_objects()[0].stale)
-            await until(lambda: "Restarting" in row_status(terminal.frames[-1], config.containers[0].name))
+            await until(lambda: "Restarting" in row_status(terminal.frames[-1], config.containers[0].id))
             recovered = docker_objects()[0]
             assert recovered.metrics[0].value == "Restarting"
             assert recovered.history[-1].metrics[0].value == "Restarting"
             assert terminal.frames[-1].regions == stale_frame.regions
-            assert "STALE" not in row_status(terminal.frames[-1], config.containers[0].name)
+            assert "STALE" not in row_status(terminal.frames[-1], config.containers[0].id)
             assert len(fast.calls) >= 2
 
             # Leave a new real collection await pending when q is delivered.
@@ -623,6 +623,11 @@ def test_production_timeout_recovers_and_quit_cancels_next_pending_docker_sample
             last_sample = docker_objects()[0].sampled_at
             terminal.keys.put_nowait("q")
             await asyncio.wait_for(task, 1.1)
+            assert not runtime.sampling.done()
+            assert not any(command.closed for command in (slow, fast))
+            # q only closes this UI. Explicit service stop still owns the
+            # original cancellation, close-order and unchanged-state checks.
+            await runtime.close()
             assert slow.cancelled and not slow.gate.is_set()
             assert terminal.restored
             assert all(command.closed and command.closed_after_restore for command in (slow, fast))
