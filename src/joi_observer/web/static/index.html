@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en" data-release="__JOI_RELEASE__">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Joi::Observer</title>
+  <script>
+    /** The HTML shell owns startup even if its versioned JS or CSS never arrives. */
+    class DashboardBoot {
+      /** Optional ports supply resource readiness and a monotonic millisecond clock. */
+      constructor(page, {whenAssetsReady = null, now = () => performance.now()} = {}) {
+        this.page = page;
+        this.whenAssetsReady = whenAssetsReady;
+        this.now = now;
+      }
+      /** Own pagehide and the absolute deadline until the view takes over. */
+      start() {
+        if (this.started) return;
+        this.started = true;
+        const doc = this.page, win = doc.defaultView;
+        const deadline = this.now() + 8000;
+        const listeners = new AbortController();
+        const options = {signal: listeners.signal};
+        let retired = false, stylesheetObserver;
+
+        const stop = () => {
+          retired = true;
+          win.clearTimeout(timer);
+          listeners.abort();
+          stylesheetObserver?.disconnect();
+        };
+        const fail = (id = "asset-error") => {
+          if (retired) return;
+          stop();
+          // A resource can fail in the head, before the error region is parsed.
+          const show = () => {
+            doc.getElementById("loading").hidden = true;
+            doc.getElementById("dashboard").hidden = true;
+            doc.getElementById(id).hidden = false;
+          };
+          if (doc.getElementById("dashboard")) show();
+          else doc.addEventListener("readystatechange", show, {once: true});
+        };
+        const timer = win.setTimeout(fail, 8000);
+        win.addEventListener("pagehide", () => fail("error"), options);
+        const activate = () => {
+          if (retired) return;
+          if (this.now() >= deadline) return fail();
+          let feed;
+          try {
+            feed = new LiveFeed();
+            doc.getElementById("loading").textContent = "Connecting to collector…";
+            new Dashboard(doc, feed).start();
+            stop();
+          } catch {
+            feed?.close();
+            fail();
+          }
+        };
+        if (this.whenAssetsReady) {
+          Promise.resolve().then(() => this.whenAssetsReady()).then(activate, () => fail());
+          return;
+        }
+        // Deferred JS has executed at DOMContentLoaded. The print-media link
+        // independently switches to screen media after its CSS is loaded.
+        let domReady = false;
+        const check = () => {
+          if (!domReady || retired) return;
+          if (typeof Dashboard !== "function" || typeof LiveFeed !== "function") return fail();
+          const style = doc.querySelector('link[rel="stylesheet"]');
+          if (style?.sheet && style.media === "all") activate();
+        };
+        doc.addEventListener("error", event => {
+          if (event.target.matches?.('link[rel="stylesheet"], script[src]')) fail();
+        }, {capture: true, signal: listeners.signal});
+        stylesheetObserver = new MutationObserver(check);
+        stylesheetObserver.observe(doc.head, {subtree: true, attributes: true, attributeFilter: ["media"]});
+        doc.addEventListener("DOMContentLoaded", () => {
+          domReady = true;
+          check();
+        }, options);
+      }
+    }
+  </script>
+  <script id="dashboard-boot-entry">new DashboardBoot(document).start();</script>
+  <link rel="stylesheet" media="print" onload="this.media='all'" href="/static/__JOI_RELEASE__/dashboard.css">
+  <script defer src="/static/__JOI_RELEASE__/dashboard.js"></script>
+</head>
+<body>
+  <p id="loading" role="status">Loading dashboard…</p>
+  <p id="asset-error" role="alert" hidden>Dashboard resources unavailable. Refresh this page to retry.</p>
+  <p id="error" role="alert" hidden>Connection lost. Refresh this page to retry.</p>
+  <p id="snapshot-wait" role="status" hidden>Waiting for a fresh snapshot…</p>
+  <main id="dashboard" aria-label="Joi::Observer" data-theme="hologram" hidden>
+    <div class="upper">
+      <header>
+        <div class="neon-wordmark" role="img" aria-label="Joi::Observer">
+          <pre aria-hidden="true"><span class="secondary"> ▀▀█  ▄▄   ▀  </span><span class="dim">    </span><span class="accent">▄▀▀▄ █     ▄▄▄  ▄▄  ▄ ▄▄ ▄   ▄  ▄▄  ▄ ▄▄ </span>
+<span class="secondary">   █ █  █ ▀█  </span><span class="dim">▀ ▀ </span><span class="accent">█  █ █▀▀▄ ▀▄▄  █▄▄█ █▀   █   █ █▄▄█ █▀   </span>
+<span class="secondary">▝▙▄▛ ▀▄▄▀ ▄█▄ </span><span class="dim">▀ ▀ </span><span class="accent">▀▄▄▀ █▄▄▀ ▄▄▄▀ ▀▄▄▄ █     ▀▄▀  ▀▄▄▄ █    </span></pre>
+          <span aria-hidden="true" class="compact-brand"><span class="secondary">Joi</span><span class="dim">::</span><span class="accent">Observer</span></span>
+        </div>
+        <button type="button" id="theme">Theme: Hologram ↔</button>
+      </header>
+      <div id="hostline"></div>
+      <div class="hardware-grid">
+        <fieldset id="gpu"><legend>GPU FABRIC</legend><div data-list-body="gpu"></div></fieldset>
+        <div class="host-stack">
+          <fieldset id="host"><legend>HOST RESOURCES</legend></fieldset>
+          <fieldset id="storage"><legend>STORAGE</legend></fieldset>
+          <fieldset id="docker"><legend>DOCKER</legend><div data-list-body="docker"></div></fieldset>
+        </div>
+      </div>
+    </div>
+    <div class="lower">
+      <fieldset id="vllm">
+        <legend>vLLM</legend>
+        <div class="model-layout">
+          <aside id="models" aria-label="Choose a vLLM model">
+            <h2 tabindex="-1">Models</h2><div data-list-body="model"></div>
+          </aside>
+          <section id="detail" aria-label="Model details"></section>
+        </div>
+      </fieldset>
+      <nav aria-label="Services"><button type="button" aria-current="page">vLLM</button>
+        <button type="button" disabled title="Planned">WebUI</button></nav>
+      <footer><span><b>↑↓</b> Select model</span> <span><b>t</b> Theme</span></footer>
+    </div>
+  </main>
+</body>
+</html>

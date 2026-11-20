@@ -253,6 +253,8 @@ dev-1 复用现有类型、解析、HTTP 适配、State accumulator 和全部有
 
 ## 10. 展示与固定布局
 
+dev-1 / REQ-002 的浏览器复用本模块指标、单位及展示元数据。模型列表取 `name`，详情取服务已回退的 `served_model_name`。Running/Total 使用服务给出的计数，pooling 速率用 seq/s。浏览器像素布局、60 秒曲线和超量处理见 [Neon Grid 页面](web-dashboard.md)，以下字符坐标属于 TUI。
+
 本节是服务窗口内部呈现的唯一契约。外部 Region、半页预算、最低终端尺寸及帧调度由[应用外壳](application-shell.md)维护；选择、按键和服务入口由[导航](navigation.md)维护；所有颜色角色、主题默认值及终端字体实现由[主题](theme.md)维护。
 
 ### 职责与输入

@@ -137,6 +137,8 @@ YAML 顶层须为 mapping；`{}` 有效，空文件、null、标量和列表无�
 
 ## 向客户端提供的配置投影
 
+dev-1 / REQ-002 沿用本节的服务端投影。浏览器由同一完整帧取得模型名称、容器 ID 与显示顺序。Web 容器的端口、绑定地址和读者 GID 是独立的部署参数，监控 YAML 仍只交给宿主服务。见[Web 部署](web-deployment.md)。
+
 服务调用 `ipc.protocol.build_metadata(config, hostname=..., system=...)` 得到 DisplayMetadata：挂载路径与顺序、容器 id、模型 id/type/name/已回退的 served_model_name/gpu_ids/显式端口/有效端口，以及主机展示信息。URL、容器实际查询目标、采样与超时参数、日志配置和原始错误不进入 IPC；精确字段以[协议设计](ipc.md)为准。端口只用于保留 TUI 的既有显示差异，不能据此构造请求地址。
 
 元数据与快照绑定于同一 `instance_id` 和 `config_revision`；同一连接不能更换生效配置。用户修改 YAML 后要重启服务，再重新运行 TUI；新会话收到匹配的新元数据后才绘制。客户端不保留跨实例的旧模型顺序、名称、关联或历史。

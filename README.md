@@ -2,7 +2,7 @@
 
 面向 Ubuntu Server 24.04 amd64 的宿主机监控工具。常驻服务统一采集 GPU、CPU、内存、磁盘、Docker 和 vLLM；每个 TUI 只读取同一服务的快照。无人查看时采集继续，退出 TUI 不停止服务。正常指标与约 60 秒历史仅保存在内存，受控采集错误日志单独轮转。
 
-本轮交付宿主服务和 TUI；Web 页面及容器属于后续 REQ-002。
+同机 Web 容器向内网浏览器提供 dashboard。TUI 与 Web 使用同一份宿主快照，每个页面可独立选择模型和主题。[同机 Web 看板](#同机-web-看板)
 
 ## 安装与启动
 
@@ -100,8 +100,33 @@ journalctl -u joi-observer
 
 退出码：正常退出 0，内部错误 1，参数/配置错误 2，非交互终端 3，客户端连接错误 4，服务启动/锁/监听错误 5，SIGINT 130，SIGTERM 143。
 
+## 同机 Web 看板
+
+构建环境须能提供 Dockerfile 指定的 Python 与 uv 镜像、Python 构建依赖和 `uv.lock` 锁定的软件包。
+
+管理员在采集宿主机上准备 rootful Docker Engine、Buildx、Compose v2 和读者组，在仓库根目录运行：
+
+```bash
+bash deploy/publish-web.sh
+```
+
+脚本从当前 HEAD 提交构建，以该提交的完整 SHA 作为镜像标签。
+
+首次运行会询问宿主内网 IPv4 地址及端口（默认 8090）。脚本把站点设置保存于 `/etc/joi-observer/web/.env`。
+成功后在内网浏览器打开 `http://<内网地址>:8090/`，内网访问策略由部署环境负责。
+
+升级时在新发行提交运行同一命令。
+如果升级失败，使用上次成功版本的镜像和配置恢复：
+
+```bash
+docker compose -p joi-observer -f /etc/joi-observer/web/current/compose.json up -d --pull never --no-build --force-recreate web
+```
+
+查看日志可运行 `docker compose -p joi-observer -f /etc/joi-observer/web/current/compose.json logs --tail=100 web`。
+首次发布失败时使用脚本输出的候选目录替换 `current`。启停和数据失联排查见[部署说明](docs/design/web-deployment.md#运维操作)。
+
 ## 模型导航与键位
 
-↑↓ 按配置顺序选择模型，到首尾停留，长列表随选择滚动。刷新、采集失败和窗口缩放保留选择；切换模型不清空历史或暂停其他来源。
+↑↓ 按配置顺序选择模型。`q` 退出，`t` 切换主题。
 
-底部显示 `vLLM` 和 `WebUI (disabled)`，暂不切换服务；←→、Enter、p、Tab 无操作。`q` 退出，`t` 切换主题。
+底部显示 `vLLM` 和 `WebUI (disabled)`，暂不切换服务；←→、Enter、p、Tab 无操作。

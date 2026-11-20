@@ -1,0 +1,26 @@
+services:
+  web:
+    image: "${JOI_WEB_IMAGE:?Set JOI_WEB_IMAGE to the local release image}"
+    user: "65532:65532"
+    group_add:
+      - "${JOI_READERS_GID:?Set JOI_READERS_GID to the host reader group ID}"
+    ports:
+      - target: 8080
+        published: "${JOI_WEB_PORT:-8090}"
+        host_ip: "${JOI_WEB_BIND:?Set JOI_WEB_BIND to the host LAN address}"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: /run/joi-observer
+        target: /run/joi-observer
+        read_only: true
+        bind:
+          create_host_path: false
+    runtime: runc
+    environment:
+      NVIDIA_VISIBLE_DEVICES: void
+    read_only: true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    stop_grace_period: 10s

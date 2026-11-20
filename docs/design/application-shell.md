@@ -10,6 +10,8 @@
 
 ## 职责与边界
 
+dev-1 / REQ-002 的 Web 入口由同机容器单独启动。页面生命周期、浏览器键位和像素断点见 [Web 数据通道](web.md)和 [Neon Grid 页面](web-dashboard.md)。本模块的终端尺寸、退出键及 TTY 探测只用于宿主 TUI。
+
 本模块负责命令分派、TUI 进入全屏前的检查、客户端接线、终端恢复、只读刷新和终端容量判定。常驻服务与客户端是不同进程：服务拥有唯一的 MonitorState、Monitor 和 ErrorLog；TUI 只接收白名单展示元数据和不可变快照，不加载监控配置、不创建采集器。
 
 现有 ApplicationRuntime 的采集装配与清理移交 [CollectorRuntime 与常驻服务](collector-service.md)，复用 build_hardware_sources、build_docker_collectors、build_vllm_collectors 及既有外部端口。全部配置容器和模型参与采集，不按可见行数裁剪。TUI 端使用 [IPC 客户端](ipc.md)的本地快照缓存；不会以传输失败为理由回退到独立采集。

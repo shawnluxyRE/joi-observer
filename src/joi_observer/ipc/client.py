@@ -15,7 +15,7 @@ from typing import Protocol
 
 from joi_observer.data.models import StateSnapshot
 from joi_observer._shutdown import spawn, run_cleanup, await_owner, join_tasks, cancel_once
-from joi_observer.ipc.protocol import FRAME_TIMEOUT, IO_CHUNK_BYTES, SnapshotEnvelope
+from joi_observer.ipc.protocol import FRAME_HEADER_BYTES, FRAME_TIMEOUT, IO_CHUNK_BYTES, SnapshotEnvelope
 from joi_observer.ipc._worker import decode_async
 
 
@@ -114,15 +114,17 @@ class SnapshotClient:
 
     def __init__(self, endpoint: Path = DEFAULT_ENDPOINT, *,
                  connector: Connector | None = None,
-                 timeout: float = FRAME_TIMEOUT) -> None:
-        """Store transport settings only; timeout is positive finite seconds."""
+                 timeout: float = FRAME_TIMEOUT,
+                 retain_body: bool = False) -> None:
+        """Store transport settings. Web consumers can retain the latest validated wire body."""
+        self._retain_body = retain_body
         self.endpoint = endpoint
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Timeout must be positive and finite.")
         self.connector = connector if connector is not None else UnixConnector()
         self.timeout = timeout
         self._state = ConnectionState.NEW
-        self._cached = None
+        self._cached: tuple[SnapshotEnvelope, bytes | None] | None = None
         self._stream = None
         self._receiver = None
         self._ended = asyncio.Event()
@@ -164,7 +166,7 @@ class SnapshotClient:
             self._cached = first
             self._state = ConnectionState.CONNECTED
             self._receiver = spawn(self._receive())
-            return first
+            return first[0]
         except asyncio.CancelledError:
             # An external close may be awaiting this task. Clean only its
             # transport here, avoiding a close-task/self-await cycle.
@@ -187,7 +189,22 @@ class SnapshotClient:
         """Return the atomically paired metadata, identity and snapshot cache."""
         if self._state is not ConnectionState.CONNECTED or self._cached is None:
             raise ConnectionFailure("No current snapshot connection.")
-        return self._cached
+        return self._cached[0]
+
+    def wire_publication(self) -> tuple[SnapshotEnvelope, bytes]:
+        """Read the latest validated envelope and its original UTF-8 JSON body atomically.
+
+        Available to clients created with retain_body=True. The body excludes
+        the length prefix and preserves its original whitespace. Cache the pair
+        only after full decode and session checks. A partial or invalid next
+        frame never contributes bytes to a returned publication. Before connect,
+        after failure/close, or without retention, raise ConnectionFailure.
+        Ordinary snapshot()/envelope() clients need no additional body cache.
+        """
+        publication = self._cached
+        if self._state is not ConnectionState.CONNECTED or publication is None or publication[1] is None:
+            raise ConnectionFailure("No current wire publication.")
+        return publication
 
     async def wait_failed(self) -> None:
         """Wait for terminal failure and raise ConnectionFailure; no polling IO.
@@ -201,10 +218,12 @@ class SnapshotClient:
         raise asyncio.CancelledError
 
     async def close(self) -> None:
-        """Cancel receive task and close stream within one second, idempotently.
+        """Cancel receiving and perform a bounded transport close, idempotently.
 
         Transition to CLOSED and discard cache. Never stop the service. Closing
         a NEW client performs no IO. FAILED remains observable until close.
+        A normal return acknowledges client cleanup. The client handles
+        transport-close errors and timeouts internally.
         """
         self._state = ConnectionState.CLOSED
         self._cached = None
@@ -260,22 +279,26 @@ class SnapshotClient:
             parts.append(await self._stream.readexactly(size))
             remaining -= size
             await asyncio.sleep(0)
-        return await decode_async(b"".join(parts))
+        frame = b"".join(parts)
+        del parts
+        envelope = await decode_async(frame)
+        return envelope, frame[FRAME_HEADER_BYTES:] if self._retain_body else None
 
     async def _receive(self):
         try:
             while self._state is ConnectionState.CONNECTED:
                 async with asyncio.timeout(self.timeout):
-                    value = await self._frame()
-                old = self._cached
+                    publication = await self._frame()
                 if self._state is not ConnectionState.CONNECTED:
                     return
+                old = self.envelope()
+                value = publication[0]
                 if (value.instance_id != old.instance_id or value.config_revision != old.config_revision
                         or value.metadata != old.metadata or value.sequence <= old.sequence
                         or value.snapshot.revision < old.snapshot.revision
                         or value.published_at < old.published_at):
                     raise ConnectionFailure("Snapshot session changed.")
-                self._cached = value
+                self._cached = publication
         except asyncio.CancelledError:
             raise
         except Exception:

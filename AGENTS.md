@@ -43,7 +43,7 @@
 │   ├── design/                # 模块设计与 HTML 视觉参考
 │   └── dev-workflow/          # 各工作批次的需求与阶段交接
 ├── pyproject.toml             # 包元数据、依赖与命令入口
-├── uv.lock                    # 开发依赖锁定
+├── uv.lock                    # 开发依赖与 Web 镜像安装共用的依赖锁
 ├── README.md
 └── AGENTS.md
 ```
@@ -60,8 +60,8 @@
 - project_root：D:\Documents\joi-observer
 - work_id：dev-1
 - work_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-1
-- req_id：REQ-001
-- req_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-1\REQ-001
+- req_id：REQ-002
+- req_dir：D:\Documents\joi-observer\docs\dev-workflow\dev-1\REQ-002
 - design_dir：D:\Documents\joi-observer\docs\design
 - requirements_path：D:\Documents\joi-observer\docs\dev-workflow\dev-1\requirements.md
 
@@ -82,7 +82,9 @@
 | [配置](docs/design/configuration.md) | 配置查找、字段校验、默认值与示例 |
 | [状态](docs/design/monitor-state.md) | 调度、公共结果类型、只读快照与状态更新 |
 | [错误日志](docs/design/error-logging.md) | 采集错误分类、限频、文件格式与轮转 |
-| [Web 边界](docs/design/web.md) | REQ-001 共享数据契约；REQ-002 页面与容器设计待开展 |
+| [Web 数据通道](docs/design/web.md) | 同源只读接口、共享订阅、失败锁存与刷新恢复 |
+| [Neon Grid 页面](docs/design/web-dashboard.md) | 浏览器布局、像素容量、指标呈现、键位与 60 秒曲线 |
+| [Web 容器部署](docs/design/web-deployment.md) | 单进程部署、宿主 IPC 挂载、读者组及内网端口 |
 
 [Neon Grid HTML](docs/design/joi-observer.html) 是视觉参考；dev-1 的正式行为和验收以[需求说明](docs/dev-workflow/dev-1/requirements.md)为准，包括 Web 仅展示最近 60 秒、无历史回看，以及 TUI/Web 的模型名称映射。正式 TUI 的布局与主题适配见[主题设计](docs/design/theme.md#原稿与正式终端的逐项对应)。
 
@@ -94,5 +96,6 @@
 # Tests
 
 - 产品目标为 Ubuntu Server 24.04 amd64；必需验证在本地 Ubuntu 或 WSL Ubuntu 执行。Windows 工作区通过 WSL 运行测试，目录可用 `~/projects/tmp`。
+- 使用日常配置做离线功能验证。常规样本取示例中的三类模型；验证列表溢出时只增加刚好越界的条目。不安排通过堆叠模型、重复扩充数据或指定快照总字节数进行的压力测试。
 - 不要求维护原生 Windows 专用测试或执行 Windows 全量回归；通用非终端离线测试继续保留。
 - 重构须保留并复用既有有效测试覆盖；未变更功能的原有测试必须通过，不得通过删除、跳过或弱化断言掩盖回归。接口迁移和已确认行为变化可调整相应用例，新增测试作为补充。
