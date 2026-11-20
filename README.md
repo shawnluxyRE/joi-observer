@@ -36,7 +36,15 @@ ln -s /opt/joi-observer/.venv/bin/joi-observer /usr/local/bin/joi-observer
 joi-observer --version
 ```
 
-服务账户所需 Docker/设备权限依部署环境设置；不要给 `joi-observer-readers` 组 Docker socket、GPU、监控配置或宿主根目录权限。
+启用 Docker 容器监控时，以 root 身份执行以下命令：
+
+```bash
+usermod -aG docker joi-observer
+```
+
+重启服务后，重新打开 TUI、刷新 Web 页面。
+
+`docker` 组具有宿主机管理级权限，仅授予采集服务账户。不要给 `joi-observer-readers` 组 Docker socket、GPU、监控配置或宿主根目录权限。
 
 ### 3. 创建服务配置
 

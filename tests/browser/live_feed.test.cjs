@@ -6,7 +6,7 @@ const {test} = require("node:test");
 const vm = require("node:vm");
 
 const source = readFileSync(path.join(__dirname, "../../src/joi_observer/web/static/dashboard.js"), "utf8");
-const {LiveFeed, HistoryWindowClock} = vm.runInNewContext(source + "\n({LiveFeed, HistoryWindowClock})", {
+const {LiveFeed, HistoryWindowClock, historyWithBoundary} = vm.runInNewContext(source + "\n({LiveFeed, HistoryWindowClock, historyWithBoundary})", {
   document: {addEventListener() {}}, performance, setTimeout, clearTimeout,
   TextDecoder, TextDecoderStream, AbortController, AbortSignal, ReadableStream, Response, URL, console,
 });
@@ -194,6 +194,32 @@ test("hiding a foreground page after its absolute deadline cannot revive the str
   assert.equal(r.cancelled(), true);
 });
 
+test("history retains the playback buffer plus boundary context, but never joins disjoint snapshots", () => {
+  const point = sampled_at => ({sampled_at, metrics: null});
+  const previous = [939.25, 940.25, 941.25, 942.25, 943.25].map(point);
+  const current = [943.25, 944.25].map(point);
+  const joined = historyWithBoundary(previous, current, 1003.1);
+  assert.deepEqual(Array.from(joined, p => p.sampled_at), [940.25, 941.25, 942.25, 943.25, 944.25]);
+  assert.ok(joined.every(p => p.metrics === null)); // missing observations remain gaps
+  const disjoint = [point(950)];
+  assert.equal(historyWithBoundary(previous, disjoint, 1003.1), disjoint);
+  const empty = [];
+  assert.equal(historyWithBoundary(previous, empty, 1003.1), empty);
+});
+
+test("the whole history window plays exactly one second behind at subsecond paint times", () => {
+  const clock = new HistoryWindowClock(100.25, 400);
+  for (const elapsed of [0, 16.7, 33.4, 150, 999, 1000, 1001, 4250]) {
+    assert.equal(clock.rightEdge(400 + elapsed), 99.25 + elapsed / 1000);
+  }
+  clock.publish(101.25, 4650); // delayed: keep the visible edge until the host catches up
+  assert.equal(clock.rightEdge(4650), 103.5);
+  assert.equal(clock.rightEdge(7000), 103.5);
+  assert.equal(clock.rightEdge(8000), 103.6);
+  clock.publish(101.25, 8100); // an equal publication must not reset the anchor
+  assert.equal(clock.rightEdge(8100), 103.7);
+});
+
 for (const localInterval of [1250, 750]) {
   test(`clock rate differences do not accumulate into the window (local interval ${localInterval} ms)`, () => {
     // Exaggerate the rate difference over six normal publications instead of running for days.
@@ -206,14 +232,17 @@ for (const localInterval of [1250, 750]) {
       clock.publish(100.25 + n, at);
       last = clock.rightEdge(at);
       assert.ok(last >= before);
-      assert.equal(last, 100.25 + n);
+      // A fast local clock can be ahead by this interval's fractional excess,
+      // but that excess must not accumulate across successive publications.
+      const excess = Math.max(0, (localInterval - 1001) / 1000);
+      assert.ok(Math.abs(last - (99.25 + n + excess)) < 1e-9);
     }
     const late = new HistoryWindowClock(100, 0);
-    assert.equal(late.rightEdge(4000), 104);
+    assert.equal(late.rightEdge(4000), 103);
     late.publish(101, 4000);
-    assert.equal(late.rightEdge(4000), 104);
-    assert.equal(late.rightEdge(5500), 104);
-    assert.equal(late.rightEdge(8100), 105);
+    assert.equal(late.rightEdge(4000), 103);
+    assert.equal(late.rightEdge(5500), 103);
+    assert.equal(late.rightEdge(8100), 104.1);
   });
 }
 

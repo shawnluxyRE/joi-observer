@@ -70,6 +70,8 @@ async function observe() {
   if (setup.scene === "full-window") return checkFullWindow(a);
   if (setup.scene === "left-boundary") return checkLeftBoundary(a);
   if (setup.scene === "scroll-window") return checkScrollingWindow(a);
+  if (setup.scene === "chart-lifecycle") return checkChartLifetime(a);
+  if (setup.scene === "buffered-chart") return checkBufferedHistory(a);
   if (setup.scene === "source-states") return checkSourceStates(a);
   if (setup.scene === "reference") return checkReferenceFrames(a, setup.lines);
   if (setup.scene === "field-values") return checkFieldValues(a);
