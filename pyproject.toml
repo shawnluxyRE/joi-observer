@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "joi-observer"
-version = "0.1.0.dev0"
+version = "0.2.0"
 description = "Read-only hardware and vLLM monitoring with terminal and Web dashboards"
 readme = "README.md"
 requires-python = ">=3.12"
