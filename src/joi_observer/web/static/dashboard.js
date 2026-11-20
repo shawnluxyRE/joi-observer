@@ -216,15 +216,14 @@ class LiveFeed {
   }
 }
 
-const HISTORY_DELAY_SECONDS = 1;
-
-/** Play the chart one second behind trusted host time; numeric panels stay live. */
+/** Project a document's latest trusted host publication onto its stepped time axis. */
 class HistoryWindowClock {
   /** Install the first publication and its local monotonic receipt in milliseconds. */
   constructor(publishedAt, receivedAtMs) {
+    this.firstPublication = publishedAt;
     this.publishedAt = publishedAt;
     this.receivedAtMs = receivedAtMs;
-    this.lastEdge = publishedAt - HISTORY_DELAY_SECONDS;
+    this.lastEdge = publishedAt;
   }
 
   /** Reanchor on the latest strictly advancing fresh publication; retain the last drawn edge. */
@@ -235,10 +234,11 @@ class HistoryWindowClock {
     }
   }
 
-  /** Preserve fractional seconds and never move already displayed observations backwards. */
+  /** Return and remember the nondecreasing edge, on whole seconds relative to the first frame. */
   rightEdge(nowMs) {
     const elapsed = (nowMs - this.receivedAtMs) / 1000;
-    this.lastEdge = Math.max(this.lastEdge, this.publishedAt + elapsed - HISTORY_DELAY_SECONDS);
+    const step = Math.floor((this.publishedAt - this.firstPublication) + elapsed);
+    this.lastEdge = Math.max(this.lastEdge, this.firstPublication + step);
     return this.lastEdge;
   }
 }
@@ -517,15 +517,13 @@ function scientificParts(value) {
   return {mantissa: Number(mantissa), exponent: Number(exponent)};
 }
 
-// Retain the one-second playback buffer and two earlier observations for
-// the left-edge tangents. Empty or disjoint snapshots start afresh.
-function historyWithBoundary(previous, current, publishedAt) {
+// Two observations before the first current point preserve both endpoint
+// tangents at the moving left edge. An overlap proves they belong to the
+// same uninterrupted history; an empty or disjoint snapshot starts afresh.
+function historyWithBoundary(previous, current) {
   if (!current.length) return current;
   const overlap = previous.findIndex(point => point.sampled_at === current[0].sampled_at);
-  if (overlap < 0) return current;
-  const first = previous.findIndex(point => point.sampled_at >= publishedAt - HISTORY_DELAY_SECONDS - 60);
-  const boundary = first < 0 ? overlap : Math.min(first, overlap);
-  return previous.slice(Math.max(0, boundary - 2), overlap).concat(current);
+  return overlap < 0 ? current : previous.slice(Math.max(0, overlap - 2), overlap).concat(current);
 }
 
 function drawHistory(svg, history, field, rightEdge, title) {
@@ -542,8 +540,7 @@ function drawHistory(svg, history, field, rightEdge, title) {
   const first = history.findIndex(point => point.sampled_at >= since);
   const context = first < 0 ? [] : history.slice(Math.max(0, first - 2));
   for (const point of context) {
-    // Already received samples just ahead of playback provide the right-edge
-    // interpolation. The fixed window clips them without shifting their times.
+    if (point.sampled_at > rightEdge) continue;
     const value = valueOf(point, field);
     if (value === null || value < 0) {
       run = null;
@@ -586,11 +583,9 @@ function drawHistory(svg, history, field, rightEdge, title) {
       svgElement("text", {x: x(time + rightEdge), y: height - 3, "text-anchor": "middle"},
         (time < 0 ? "−" + -time : "0") + "s")));
   }
-  // Move only the series between observations entering/leaving the window.
-  // The clipping rectangle, axes and gradient stay fixed in screen space.
-  const plot = svgElement("g", {});
+  const plot = svgElement("g", {"clip-path": "url(#history-window)"});
   for (const segment of runs) {
-    if (segment.at(-1).time < since || segment[0].time > rightEdge) continue;
+    if (segment.at(-1).time < since) continue;
     const points = segment.map(point => ({
       x: x(point.time),
       y: point.mantissa === 0 ? bottom :
@@ -605,12 +600,9 @@ function drawHistory(svg, history, field, rightEdge, title) {
         svgElement("path", {"data-curve": "", d}));
     }
   }
-  content.append(svgElement("g", {"clip-path": "url(#history-window)"}, plot));
+  content.append(plot);
   svg.setAttribute("viewBox", "0 0 " + width + " " + height);
   svg.replaceChildren(content);
-  return {plot, rightEdge, pixelsPerSecond: (right - left) / 60,
-    expiresAt: first < 0 ? Infinity : history[first].sampled_at + 60,
-    revealsAt: history.find(point => point.sampled_at > rightEdge)?.sampled_at ?? Infinity};
 }
 
 /** Own the selected model id, theme and current complete frame of one page. */
@@ -625,7 +617,6 @@ class Dashboard {
     this.frame = null;
     this.clock = null;
     this.histories = new Map();
-    this.animation = null;
     this.closed = false;
   }
 
@@ -644,11 +635,6 @@ class Dashboard {
         this.dashboard.hidden = true;
         this.byId("snapshot-wait").hidden = false;
       }
-      if (!this.closed && this.frame && !this.page.hidden && !this.dashboard.hidden) {
-        this.updateTime();
-        this.updateHistory();
-      }
-      this.scheduleAnimation();
     }, options);
     this.byId("theme").addEventListener("click", () => this.toggleTheme(), options);
     this.tracks.model.addEventListener("click", event => {
@@ -681,7 +667,7 @@ class Dashboard {
       this.objects.set(obj.key.collector + "/" + obj.key.object_id, obj);
       if (obj.key.collector === "vllm") {
         histories.set(obj.key.object_id,
-          historyWithBoundary(this.histories.get(obj.key.object_id) ?? [], obj.history, frame.published_at));
+          historyWithBoundary(this.histories.get(obj.key.object_id) ?? [], obj.history));
       }
     }
     this.histories = histories;
@@ -692,7 +678,7 @@ class Dashboard {
     this.render();
     if (this.timer === undefined) {
       this.timer = this.win.setInterval(() => {
-        if (!this.page.hidden && !this.dashboard.hidden) this.updateTime();
+        if (!this.dashboard.hidden) this.updateTime();
       }, 1000);
     }
   }
@@ -700,9 +686,7 @@ class Dashboard {
   end() {
     if (this.closed) return;
     this.closed = true;
-    this.scheduleAnimation();
     this.histories.clear();
-    this.graph = null;
     this.feed.close();
     this.events.abort();
     this.observer.disconnect();
@@ -758,8 +742,6 @@ class Dashboard {
     this.renderGpus();
     this.renderDetail(metadata.models.find(model => model.id === this.selected));
     this.updateTime();
-    this.updateHistory();
-    this.scheduleAnimation();
   }
 
   renderHost() {
@@ -918,34 +900,10 @@ class Dashboard {
     const now = this.win.performance.now();
     const utc = this.utcAt === null ? null : new Date(this.utcAt + now - this.receivedAt);
     this.time.textContent = utc ? utc.toISOString().slice(11, 19) + " UTC" : missing;
-  }
-
-  scheduleAnimation() {
-    if (this.closed || this.page.hidden || this.dashboard.hidden || !this.graph) {
-      if (this.animation !== null) this.win.cancelAnimationFrame(this.animation);
-      this.animation = null;
-      return;
-    }
-    if (this.animation !== null) return;
-    this.animation = this.win.requestAnimationFrame(() => {
-      this.animation = null;
-      if (!this.closed && !this.page.hidden && !this.dashboard.hidden) this.updateHistory();
-      this.scheduleAnimation();
-    });
-  }
-
-  updateHistory() {
-    const now = this.win.performance.now();
     const edge = this.clock.rightEdge(now);
     if (this.graph) {
       const {svg, history, field, title} = this.graph;
-      const drawing = this.graph.drawing;
-      if (!drawing || edge > drawing.expiresAt || edge >= drawing.revealsAt) {
-        this.graph.drawing = drawHistory(svg, history, field, edge, title);
-      } else {
-        const offset = (drawing.rightEdge - edge) * drawing.pixelsPerSecond;
-        drawing.plot.setAttribute("transform", "translate(" + offset + " 0)");
-      }
+      drawHistory(svg, history, field, edge, title);
     }
   }
 }

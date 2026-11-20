@@ -15,7 +15,7 @@ from joi_observer.ipc.protocol import (
     ContainerDisplay, DisplayMetadata, FRAME_HEADER_BYTES, ModelDisplay, SnapshotEnvelope, encode_envelope,
 )
 
-SCROLL_STEPS = (0, 8, 16, 24, 32, 40, 48, 56, 60, 61, 64)
+SCROLL_STEPS = (0, 8, 16, 24, 32, 40, 48, 56, 60, 64)
 
 
 def snapshot(count, *, sequence=1, now=1000, state="sampled", cpu_percent=None):
@@ -126,8 +126,7 @@ def snapshot(count, *, sequence=1, now=1000, state="sampled", cpu_percent=None):
     ("field-values", 1280, 1200), ("medium-width", 620, 900),
     ("resize-values", 1280, 900),
     ("buffered-stream", 1280, 900),
-    ("chart", 1280, 900), ("chart-lifecycle", 1280, 900), ("scroll-window", 1280, 900),
-    ("buffered-chart", 1280, 900), ("buffered-chart", 390, 844),
+    ("chart", 1280, 900), ("scroll-window", 1280, 900),
     ("empty", 390, 844), ("outage", 1280, 900), ("initial-failure", 390, 844),
     ("bfcache", 1280, 900), ("hidden-fresh", 1280, 900), ("hidden-eof", 1280, 900),
     ("hidden-silent", 1280, 900),
@@ -148,21 +147,6 @@ def test_live_document(tmp_path, case, width, height):
         settings["sample"] = snapshot(count)
     if case == "chart":
         settings["delayed"] = snapshot(count, sequence=2, now=1001, state="peak")
-    if case == "buffered-chart":
-        lines = []
-        for sequence, now in enumerate((1000, 1001, 1002), start=1):
-            sample = json.loads(snapshot(count, sequence=sequence, now=now, state="distinct"))
-            chat = next(obj for obj in sample["snapshot"]["objects"] if obj["key"] == {
-                "collector": "vllm", "object_id": "m0"})
-            chat["history"] = [
-                {"sampled_at": time, "metrics": [{"name": "decode_rate", "value": value,
-                                                  "unit": "tok/s", "applicable": True}]}
-                for time, value in ((997, 8), (999, 4), (1000, 3), (1001, 7), (1002, 5)) if time <= now
-            ]
-            next(metric for metric in chat["metrics"] if metric["name"] == "decode_rate")["value"] = (
-                chat["history"][-1]["metrics"][0]["value"])
-            lines.append(json.dumps(sample) + "\n")
-        settings["lines"] = lines
     if case == "scroll-window":
         settings["steps"] = [(offset, snapshot(count, sequence=i, now=1000 + offset, state="scroll"))
                              for i, offset in enumerate(SCROLL_STEPS, start=1)]
@@ -171,7 +155,7 @@ def test_live_document(tmp_path, case, width, height):
                         fresh=snapshot(count, sequence=3, now=1009, cpu_percent=27.5))
     if case == "hidden-fresh":
         settings["fresh"] = snapshot(count, sequence=2, now=1015, cpu_percent=29.5)
-    if case in ("outage", "chart-lifecycle"):
+    if case == "outage":
         settings["next"] = snapshot(count, sequence=2, now=1001)
     if case == "selection":
         beat = json.loads(settings["sample"])
@@ -225,7 +209,7 @@ def test_full_window_keeps_five_gpus_and_stable_gauges(tmp_path):
 @pytest.mark.parametrize("gap", [False, True])
 def test_history_clips_continuous_observations_at_the_left_window_edge(tmp_path, gap):
     lines = []
-    for sequence, published in enumerate((1000.0, 1002.1, 1003.1), start=1):
+    for sequence, published in enumerate((1000.0, 1001.1, 1002.1), start=1):
         sample = json.loads(snapshot(3, sequence=sequence, now=published))
         chat = next(obj for obj in sample["snapshot"]["objects"] if obj["key"] == {
             "collector": "vllm", "object_id": "m0"})
@@ -398,18 +382,7 @@ def observe_document(tmp_path, settings, *, interact=None):
         "Content-Type": "application/x-ndjson", "Date": "Tue, 17 Nov 2026 03:04:05 GMT",
         "X-Joi-Sent-At": "1000",
     })))
-    if settings["scene"] == "chart-lifecycle":
-        preload += """<script>
-          window.pendingPaints = new Set();
-          const paint = requestAnimationFrame.bind(window), cancelPaint = cancelAnimationFrame.bind(window);
-          window.requestAnimationFrame = callback => {
-            const id = paint(time => { pendingPaints.delete(id); callback(time); });
-            pendingPaints.add(id);
-            return id;
-          };
-          window.cancelAnimationFrame = id => { pendingPaints.delete(id); cancelPaint(id); };
-        </script>"""
-    if settings["scene"] in ("scroll-window", "left-boundary", "buffered-chart"):
+    if settings["scene"] in ("scroll-window", "left-boundary"):
         preload += """<script>window.clockOffset = 0;
           Object.defineProperty(performance, "now", {value: () => window.clockOffset});</script>"""
     elif settings["scene"] == "buffered-stream" or settings["scene"].startswith("hidden-"):

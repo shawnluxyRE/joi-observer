@@ -47,12 +47,13 @@ function sampleRuler(page, maximum) {
   requireThat(ticks.length >= 2 && zero.value === 0 && top.value >= maximum && top.y < zero.y && right > left,
     "axes cover the input's time and throughput ranges");
   // Receipt falls between enqueue and the first live paint. Both clocks below
-  // belong to this iframe, bounding the continuous motion since receipt.
+  // belong to this iframe, so at most this many one-second ticks could have elapsed.
   const elapsed = Math.max(0, page.win.performance.now() - page.firstEnqueue);
+  const maxTicks = Math.floor(elapsed/1000);
   return function measured(point, time, value) {
-    const x0 = left + (time - 939) / 60 * (right-left);
+    const x0 = left + (time - 940) / 60 * (right-left);
     const y = zero.y + value / top.value * (top.y-zero.y);
-    requireThat(point.x >= x0 - elapsed/1000*(right-left)/60 - 1 && point.x <= x0 + 1 &&
+    requireThat(point.x >= x0 - maxTicks*(right-left)/60 - 1 && point.x <= x0 + 1 &&
       Math.abs(point.y - y) <= 1.25, "measured point aligns with independent axis labels");
   };
 }
@@ -198,33 +199,22 @@ async function checkHistory(page) {
   requireThat(svg().textContent.includes("60") && !page.get("#detail button"), "read-only 60 s axis");
 
   // Sample 942 leaves the window when its right edge passes 1002. Its
-  // continuous segment is then clipped at the boundary on an animation frame.
+  // continuous segment is then clipped at the boundary by the normal tick.
   await untilShown(() => curveReader(paths()[0]).low.x < timeTickX(svg(), -60),
     "oldest point moves outside the clipped window", 4500);
+  // Any one of these observations can straddle a tick. At least one whole
+  // interval lies between ticks and should keep the same horizontal position.
   // The longest continuous segment starts at 954 throughout the scene.
   // Compare its screen pixel even if the axes move.
   const survivingX = () => Array.from(paths(), curveReader)
     .sort((a, b) => (b.high.x - b.low.x) - (a.high.x - a.low.x))[0].low.x;
-  const originalPaths = [...paths()], axes = [...svg().querySelectorAll("[data-time-tick], [data-value-tick]")];
-  const speed = (timeTickX(svg(), 0) - timeTickX(svg(), -60)) / 60 / 1000;
-  const positions = [];
-  await new Promise(resolve => {
-    function measure() {
-      positions.push({x: survivingX(), at: page.win.performance.now()});
-      if (positions.at(-1).at - positions[0].at < 450) page.win.requestAnimationFrame(measure);
-      else resolve();
-    }
-    page.win.requestAnimationFrame(measure);
-  });
-  requireThat(positions.length >= 5, "continuous motion is observed across multiple browser paints");
-  for (let i = 1; i < positions.length; i++) {
-    const elapsed = positions[i].at - positions[i-1].at;
-    const distance = positions[i-1].x - positions[i].x;
-    requireThat(distance > 0 && Math.abs(distance - elapsed * speed) < .35,
-      "each animation frame moves left at the elapsed-time rate without one-second jumps");
+  const positions = [survivingX()];
+  for (let i = 0; i < 3; i++) {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    positions.push(survivingX());
   }
-  requireThat(originalPaths.every((path, i) => path === paths()[i]) && axes.every(node => node.isConnected),
-    "ordinary animation reuses the painted paths and fixed axes");
+  requireThat(positions.slice(1).some((x, i) => Math.abs(x - positions[i]) < 0.25),
+    "the time axis rests between its one-second steps");
   let minimumX = survivingX(), maxRightward = 0, observedFrames = 0, nextPaint;
   function observeMotion() {
     const x = survivingX();
@@ -240,7 +230,7 @@ async function checkHistory(page) {
     await page.send(setup.delayed);
     await untilShown(() => page.get("#host").innerText.includes("17.5") && paths().length >= 2,
       "late frame installs its new peak in the second curve");
-    await new Promise(resolve => setTimeout(resolve, 1150)); // observe the late anchor over another second
+    await new Promise(resolve => setTimeout(resolve, 1150)); // include the next scheduled tick
   } finally {
     page.win.cancelAnimationFrame(nextPaint);
   }
@@ -249,85 +239,6 @@ async function checkHistory(page) {
     .matrixTransform(svg().getScreenCTM()).x - timeTickX(svg(), -60)) < 1 && points().length <= 1,
     "expired context stays clipped outside the window");
   requireThat(observedFrames > 1 && maxRightward <= 0.5, "the surviving sample cannot move right on screen");
-}
-
-async function checkBufferedHistory(page) {
-  await page.send(setup.lines[0]);
-  page.get("#detail svg").scrollIntoView({block: "center"});
-  const paints = point => {
-    const hit = page.doc.elementFromPoint(point.x, point.y + 1);
-    return !!hit?.matches("[data-curve], [data-area]");
-  };
-  for (let publication = 1; publication <= 2; publication++) {
-    page.win.clockOffset = publication * 1000;
-    await page.send(setup.lines[publication]);
-    const svg = page.get("#detail svg"), path = svg.querySelector("[data-curve]");
-    const right = timeTickX(svg, 0), left = timeTickX(svg, -60), speed = (right - left) / 60;
-    const latest = 1000 + publication;
-    requireThat(page.get('[data-metric="decode_rate"]').textContent === (publication === 1 ? "7" : "5"),
-      "the latest numeric metric updates immediately while the chart plays one second behind");
-    let previousY;
-    for (const elapsed of [0, 200, 400, 600, 800, 1000]) {
-      page.win.clockOffset = publication * 1000 + elapsed;
-      await new Promise(resolve => page.win.requestAnimationFrame(() => page.win.requestAnimationFrame(resolve)));
-      const currentPath = page.get("#detail svg [data-curve]");
-      const curve = curveReader(currentPath);
-      const atTime = time => curve.at((time - 997) / (latest - 997));
-      const playback = latest - 1 + elapsed / 1000;
-      const tip = atTime(playback);
-      requireThat(Math.abs(tip.x - right) < .1 && paints(atTime(playback - .08)),
-        "the buffered curve and area reach the fixed right edge with no missing strip");
-      requireThat(Math.abs(curve.low.x - (right - (playback - 997) * speed)) < .1,
-        "all historical samples use the same one-second delayed time axis");
-      requireThat(!paints({x: right + 2, y: tip.y}), "the fixed window clips the received lookahead samples");
-      if (previousY !== undefined) requireThat((tip.y - previousY) * (publication === 1 ? -1 : 1) > 0,
-        "the right-edge value changes continuously between the real samples");
-      previousY = tip.y;
-      if (elapsed < 1000) requireThat(path === currentPath, "ordinary playback reuses its SVG path");
-    }
-  }
-  const svg = page.get("#detail svg"), right = timeTickX(svg, 0);
-  const displayed = curveReader(svg.querySelector("[data-curve]")).high.x;
-  page.get('[data-model-id="m1"]').click();
-  page.get('[data-model-id="m0"]').click();
-  requireThat(Math.abs(curveReader(page.get("#detail svg [data-curve]")).high.x - displayed) < .1,
-    "switching models preserves the shared playback time");
-  page.win.clockOffset = 4000;
-  await new Promise(resolve => page.win.requestAnimationFrame(() => page.win.requestAnimationFrame(resolve)));
-  const tip = curveReader(page.get("#detail svg [data-curve]")).high;
-  requireThat(tip.x < right - 2 && !paints({x: right - 1, y: tip.y}),
-    "missing new observations remain empty instead of being extrapolated");
-  requireThat(page.win.requests.length === 1, "buffered playback uses the original data stream");
-}
-
-async function checkChartLifetime(page) {
-  const {win, doc, get} = page;
-  requireThat(win.pendingPaints.size === 0, "no animation before the first snapshot");
-  await page.send(setup.sample);
-  requireThat(win.pendingPaints.size === 1, "one animation loop for the live chart");
-  await page.send(setup.next);
-  get("#theme").click();
-  requireThat(win.pendingPaints.size === 1, "publications and theme changes do not multiply animation loops");
-  let hidden = true;
-  Object.defineProperty(doc, "hidden", {get: () => hidden});
-  doc.dispatchEvent(new win.Event("visibilitychange"));
-  requireThat(win.pendingPaints.size === 0, "hidden documents cancel their pending animation");
-  const plot = get("#detail svg");
-  const frozen = plot.innerHTML;
-  await new Promise(resolve => setTimeout(resolve, 150));
-  requireThat(plot.innerHTML === frozen, "the hidden chart does not animate");
-  hidden = false;
-  doc.dispatchEvent(new win.Event("visibilitychange"));
-  await pause();
-  requireThat(win.pendingPaints.size === 1 && plot.innerHTML !== frozen,
-    "returning to a healthy document resumes its existing chart");
-  win.connection.close();
-  await untilShown(() => shown(get("#error")), "EOF closes the animated chart");
-  requireThat(win.pendingPaints.size === 0, "failure cancels the pending animation");
-  doc.dispatchEvent(new win.Event("visibilitychange"));
-  await pause();
-  requireThat(win.pendingPaints.size === 0 && win.requests.length === 1 && !shown(get("#dashboard")),
-    "visibility cannot restart a failed chart or open a second stream");
 }
 
 async function checkLeftBoundary(page) {
@@ -339,7 +250,7 @@ async function checkLeftBoundary(page) {
     const curves = [...svg.querySelectorAll("[data-curve]")].map(curveReader);
     const main = curves.sort((a, b) => (b.high.x - b.low.x) - (a.high.x - a.low.x))[0];
     const left = timeTickX(svg, -60), right = timeTickX(svg, 0);
-    const at = left + (942.5 - (JSON.parse(line).published_at - 61)) / 60 * (right - left);
+    const at = left + (942.5 - (940 + index)) / 60 * (right - left);
     const y = main.at((at - main.low.x) / (main.high.x - main.low.x)).y;
     if (previousY !== undefined) requireThat(Math.abs(y - previousY) < .1,
       "a retained curve segment keeps its shape as older points leave");
@@ -351,7 +262,7 @@ async function checkLeftBoundary(page) {
       requireThat(main.low.x < left, "a real earlier observation supports the boundary interpolation");
     }
     const path = svg.querySelector("[data-curve]");
-    const reference = /#([^)]*)/.exec(path.closest("[clip-path]").getAttribute("clip-path"));
+    const reference = /#([^)]*)/.exec(path.parentElement.getAttribute("clip-path"));
     const clip = reference && page.doc.getElementById(reference[1])?.querySelector("rect");
     requireThat(clip, "the curve has an active clipping rectangle");
     const matrix = svg.getScreenCTM(), start = clip.x.baseVal.value;
@@ -369,20 +280,14 @@ async function checkScrollingWindow(page) {
   for (const [seconds, publication] of setup.steps) {
     page.win.clockOffset = 1000 * seconds;
     await page.send(publication);
-    if (!seconds) {
-      requireThat(!page.get("#detail [data-point]"), "the first new observation waits for the playback buffer");
-      page.win.clockOffset = 1000;
-      await new Promise(resolve => page.win.requestAnimationFrame(() => page.win.requestAnimationFrame(resolve)));
-    }
     const svg = page.get("#detail svg");
     requireThat(shown(svg), "the chart stays live on one document");
     const left = timeTickX(svg, -60), right = timeTickX(svg, 0);
     const dot = svg.querySelector("[data-point]");
-    const playbackSeconds = seconds ? seconds - 1 : 0;
-    if (playbackSeconds <= 60) {
+    if (seconds <= 60) {
       requireThat(shown(dot), "the original observation remains visible for the full window");
       const x = box(dot).left + box(dot).width / 2;
-      requireThat(Math.abs(x - (right - playbackSeconds / 60 * (right - left))) <= 1.25,
+      requireThat(Math.abs(x - (right - seconds / 60 * (right - left))) <= 1.25,
         "a retained observation moves from the right edge toward the left by elapsed time");
       if (previousX !== null) requireThat(x < previousX, "the same observation moves left on each step");
       previousX = x;
@@ -391,8 +296,8 @@ async function checkScrollingWindow(page) {
     }
     if (seconds > 0) {
       const curve = svg.querySelector("[data-curve]");
-      requireThat(curve && Math.abs(curveReader(curve).high.x - (right + (right - left) / 60)) <= 1.25,
-        "the newest received sample stays one second ahead of playback, behind the window clip");
+      requireThat(curve && Math.abs(curveReader(curve).high.x - right) <= 1.25,
+        "the newest observed sample is drawn at the right edge");
     }
   }
   requireThat(page.win.requests.length === 1, "scrolling uses only the original stream");
